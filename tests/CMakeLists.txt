@@ -25,3 +25,14 @@ target_link_libraries(test_handoff PRIVATE pthread)
 
 add_executable(verify_cli verify_cli.c)
 target_link_libraries(verify_cli PRIVATE ff-core)
+
+# Python signs, C verifies. The unit tests above sign and verify with the same
+# Monocypher code, so only this can catch a divergence from python-cryptography,
+# which is what packforge mints real licences with. Skips (77) when the
+# cryptography module is absent rather than failing the build.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME licence_interop
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/licence-interop.py $<TARGET_FILE:verify_cli>)
+  set_tests_properties(licence_interop PROPERTIES SKIP_RETURN_CODE 77)
+endif()

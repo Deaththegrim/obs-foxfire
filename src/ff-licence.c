@@ -15,44 +15,80 @@ static void *memmem(const void *h, size_t hn, const void *nd, size_t nn)
 	return NULL;
 }
 #endif
+/* Field getters. Return 1 when the field is present and parsed, 0 when it is
+   absent, and -1 when it is present but its value is unusable. JSON permits
+   whitespace around the colon, so the scanner matches the key and the colon
+   separately instead of one literal "key":" pattern. */
+static const char *skip_ws(const char *p, const char *end)
+{
+	while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+		p++;
+	return p;
+}
 
-/* find "key":<value>; copies a string value (without quotes) or an integer; returns 0 if absent */
+/* locate `"key"` followed by optional whitespace and a colon; returns the first
+   character of the value, or NULL when the key is absent */
+static const char *find_value(const char *j, size_t n, const char *key)
+{
+	char pat[80];
+	int pl = snprintf(pat, sizeof pat, "\"%s\"", key);
+	if (pl < 0 || (size_t)pl >= sizeof pat)
+		return NULL;
+	const char *p = j, *end = j + n;
+	while (p < end) {
+		const char *hit = memmem(p, (size_t)(end - p), pat, (size_t)pl);
+		if (!hit)
+			return NULL;
+		const char *q = skip_ws(hit + pl, end);
+		if (q < end && *q == ':')
+			return skip_ws(q + 1, end);
+		/* `"key"` appeared as a value, not a key -- keep looking */
+		p = hit + pl;
+	}
+	return NULL;
+}
+
 static int get_str(const char *j, size_t n, const char *key, char *out, size_t cap)
 {
-	char pat[80];
-	int pl = snprintf(pat, sizeof pat, "\"%s\":\"", key);
-	const char *p = j, *end = j + n;
-	if ((p = memmem(p, (size_t)(end - p), pat, (size_t)pl))) {
-		p += pl;
-		const char *q = memchr(p, '"', (size_t)(end - p));
-		if (!q || (size_t)(q - p) >= cap)
-			return 0;
-		memcpy(out, p, (size_t)(q - p));
-		out[q - p] = 0;
-		return 1;
-	}
-	return 0;
-}
-static int get_int(const char *j, size_t n, const char *key, int64_t *out)
-{
-	char pat[80];
-	int pl = snprintf(pat, sizeof pat, "\"%s\":", key);
 	const char *end = j + n;
-	const char *p = memmem(j, n, pat, (size_t)pl);
+	const char *p = find_value(j, n, key);
 	if (!p)
 		return 0;
-	p += pl;
-	if (p >= end || *p == '"')
+	if (p >= end || *p != '"')
+		return -1;
+	p++;
+	const char *q = memchr(p, '"', (size_t)(end - p));
+	if (!q || (size_t)(q - p) >= cap)
+		return -1;
+	memcpy(out, p, (size_t)(q - p));
+	out[q - p] = 0;
+	return 1;
+}
+
+static int get_int(const char *j, size_t n, const char *key, int64_t *out)
+{
+	const char *end = j + n;
+	const char *p = find_value(j, n, key);
+	if (!p)
 		return 0;
 	char num[25];
 	size_t k = 0;
-	for (; p < end && k < sizeof num - 1 && (*p == '-' || *p == '+' || (*p >= '0' && *p <= '9')); p++)
-		num[k++] = *p;
+	if (p < end && (*p == '-' || *p == '+'))
+		num[k++] = *p++;
+	while (p < end && k < sizeof num - 1 && *p >= '0' && *p <= '9')
+		num[k++] = *p++;
 	num[k] = 0;
 	char *e;
 	long long v = strtoll(num, &e, 10);
-	if (e == num)
-		return 0;
+	if (e == num || *e)
+		return -1;
+	/* The digit loop stops at the first non-digit, so trailing garbage ("12x3",
+	   "12.5", a number longer than num[]) would otherwise be read as a silently
+	   truncated value. Only a JSON delimiter -- or the end of the buffer, which
+	   the non-null-terminated case relies on -- may follow the digits. */
+	p = skip_ws(p, end);
+	if (p < end && *p != ',' && *p != '}' && *p != ']')
+		return -1;
 	*out = v;
 	return 1;
 }
@@ -93,13 +129,33 @@ void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], int
 	memset(L, 0, sizeof *L);
 	L->state = FF_LIC_INVALID;
 	char sig64[128];
-	if (!get_str(json, n, "discord_id", L->discord_id, sizeof L->discord_id) ||
-	    !get_str(json, n, "pack_id", L->pack_id, sizeof L->pack_id) ||
-	    !get_str(json, n, "licence_id", L->licence_id, sizeof L->licence_id) ||
-	    !get_int(json, n, "issued", &L->issued) || !get_int(json, n, "expires", &L->expires) ||
-	    !get_str(json, n, "sig", sig64, sizeof sig64)) {
-		snprintf(L->reason, sizeof L->reason,
-			 "licence file is missing a field (discord_id, pack_id, licence_id, issued, expires, sig)");
+	/* Field order matches the document's own so the field named in the reason is
+	   the first one a reader would reach. A getter returning -1 (present but
+	   unusable) must not be treated as success, which the previous `!get_str(...)
+	   || ...` chain would have done. */
+	const struct {
+		const char *key;
+		char *str;
+		size_t cap;
+		int64_t *num;
+	} fields[] = {
+		{"discord_id", L->discord_id, sizeof L->discord_id, NULL},
+		{"pack_id", L->pack_id, sizeof L->pack_id, NULL},
+		{"licence_id", L->licence_id, sizeof L->licence_id, NULL},
+		{"issued", NULL, 0, &L->issued},
+		{"expires", NULL, 0, &L->expires},
+		{"sig", sig64, sizeof sig64, NULL},
+	};
+	for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
+		int r = fields[i].num ? get_int(json, n, fields[i].key, fields[i].num)
+				      : get_str(json, n, fields[i].key, fields[i].str, fields[i].cap);
+		if (r == 1)
+			continue;
+		if (r == 0)
+			snprintf(L->reason, sizeof L->reason, "licence file has no '%s' field", fields[i].key);
+		else
+			snprintf(L->reason, sizeof L->reason, "licence file's '%s' field is not a usable %s",
+				 fields[i].key, fields[i].num ? "number" : "string");
 		return;
 	}
 	uint8_t sig[64];

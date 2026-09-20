@@ -84,7 +84,7 @@ int main(void)
 	const char *missing = "{\"discord_id\":\"1\",\"pack_id\":\"ember\",\"sig\":\"AAAA\"}";
 	ff_licence_verify(missing, strlen(missing), pk, issued, &L);
 	CHECK(L.state == FF_LIC_INVALID);
-	CHECK(strstr(L.reason, "missing") != NULL);
+	CHECK(strstr(L.reason, "no 'licence_id' field") != NULL);
 	ff_licence_verify("not json", 8, pk, issued, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 
@@ -126,6 +126,98 @@ int main(void)
 		CHECK(L.state == FF_LIC_OK);
 		CHECK(L.expires == expires);
 		free(buf);
+	}
+
+	/* --- JSON whitespace and field-diagnosis cases ---------------------------
+	 * The signature covers the canonical bytes rebuilt from the PARSED values, so
+	 * reformatting the document must not change the verdict. Before the scanner
+	 * rewrite every one of these returned INVALID "missing a field", including the
+	 * three that are plainly valid licences. */
+	{
+		char s64[100];
+		{
+			char c[512];
+			size_t cn = ff_licence_canonical("123456789012345678", "ember", "lic_test1", issued, expires, c,
+							 sizeof c);
+			uint8_t sg[64];
+			crypto_ed25519_sign(sg, sk, (const uint8_t *)c, cn);
+			b64(sg, 64, s64);
+		}
+		char v[1024];
+		const int64_t in_date = issued + 10 * 86400;
+
+		/* 1. a space after every colon and comma (python json.dumps defaults) */
+		snprintf(v, sizeof v,
+			 "{\"discord_id\": \"123456789012345678\", \"expires\": %lld, \"issued\": %lld, "
+			 "\"licence_id\": \"lic_test1\", \"pack_id\": \"ember\", \"sig\": \"%s\"}",
+			 (long long)expires, (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_OK);
+
+		/* 2. pretty-printed with newlines and indentation */
+		snprintf(v, sizeof v,
+			 "{\n  \"discord_id\": \"123456789012345678\",\n  \"expires\": %lld,\n"
+			 "  \"issued\": %lld,\n  \"licence_id\": \"lic_test1\",\n  \"pack_id\": \"ember\",\n"
+			 "  \"sig\": \"%s\"\n}\n",
+			 (long long)expires, (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_OK);
+
+		/* 3. whitespace BEFORE the colon as well */
+		snprintf(v, sizeof v,
+			 "{\"discord_id\" : \"123456789012345678\",\"expires\" : %lld,\"issued\" : %lld,"
+			 "\"licence_id\" : \"lic_test1\",\"pack_id\" : \"ember\",\"sig\" : \"%s\"}",
+			 (long long)expires, (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_OK);
+
+		/* 4. a key name occurring inside an EARLIER string value is not mistaken for
+		 *    the key itself; the scanner must walk past it to the real field. */
+		snprintf(v, sizeof v,
+			 "{\"note\":\"expires\",\"discord_id\":\"123456789012345678\",\"expires\":%lld,"
+			 "\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
+			 (long long)expires, (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_OK);
+		CHECK(L.expires == expires);
+
+		/* 5. a number written as a string is malformed, NOT absent */
+		snprintf(v, sizeof v,
+			 "{\"discord_id\":\"123456789012345678\",\"expires\":\"%lld\",\"issued\":%lld,"
+			 "\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
+			 (long long)expires, (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_INVALID);
+		CHECK(strstr(L.reason, "'expires' field is not a usable number") != NULL);
+		CHECK(strstr(L.reason, "has no") == NULL);
+
+		/* 6. trailing garbage in a number is rejected, never silently truncated */
+		snprintf(v, sizeof v,
+			 "{\"discord_id\":\"123456789012345678\",\"expires\":12x3,\"issued\":%lld,"
+			 "\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
+			 (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_INVALID);
+		CHECK(strstr(L.reason, "'expires' field is not a usable number") != NULL);
+
+		/* 7. a string too long for its destination is malformed, NOT absent */
+		snprintf(v, sizeof v,
+			 "{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,"
+			 "\"licence_id\":\"%0100d\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
+			 (long long)expires, (long long)issued, 1, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_INVALID);
+		CHECK(strstr(L.reason, "'licence_id' field is not a usable string") != NULL);
+		CHECK(strstr(L.reason, "has no") == NULL);
+
+		/* 8. an absent field names itself */
+		snprintf(v, sizeof v,
+			 "{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,"
+			 "\"licence_id\":\"lic_test1\",\"sig\":\"%s\"}",
+			 (long long)expires, (long long)issued, s64);
+		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		CHECK(L.state == FF_LIC_INVALID);
+		CHECK(strstr(L.reason, "has no 'pack_id' field") != NULL);
 	}
 
 	FF_TEST_MAIN_END();
