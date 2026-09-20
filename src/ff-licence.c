@@ -14,7 +14,7 @@ static int get_str(const char *j, size_t n, const char *key, char *out, size_t c
 {
 	char pat[80]; int pl = snprintf(pat, sizeof pat, "\"%s\":\"", key);
 	const char *p = j, *end = j + n;
-	while ((p = memmem(p, (size_t)(end - p), pat, (size_t)pl))) {
+	if ((p = memmem(p, (size_t)(end - p), pat, (size_t)pl))) {
 		p += pl; const char *q = memchr(p, '"', (size_t)(end - p));
 		if (!q || (size_t)(q - p) >= cap) return 0;
 		memcpy(out, p, (size_t)(q - p)); out[q - p] = 0; return 1;
@@ -24,11 +24,15 @@ static int get_str(const char *j, size_t n, const char *key, char *out, size_t c
 static int get_int(const char *j, size_t n, const char *key, int64_t *out)
 {
 	char pat[80]; int pl = snprintf(pat, sizeof pat, "\"%s\":", key);
+	const char *end = j + n;
 	const char *p = memmem(j, n, pat, (size_t)pl);
 	if (!p) return 0;
-	p += pl; if (*p == '"') return 0;
-	char *e; long long v = strtoll(p, &e, 10);
-	if (e == p) return 0;
+	p += pl; if (p >= end || *p == '"') return 0;
+	char num[25]; size_t k = 0;
+	for (; p < end && k < sizeof num - 1 && (*p == '-' || *p == '+' || (*p >= '0' && *p <= '9')); p++) num[k++] = *p;
+	num[k] = 0;
+	char *e; long long v = strtoll(num, &e, 10);
+	if (e == num) return 0;
 	*out = v; return 1;
 }
 static int b64dec(const char *s, uint8_t *out, size_t cap)
