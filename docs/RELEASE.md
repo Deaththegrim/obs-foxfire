@@ -24,21 +24,35 @@ skipping it has a specific, known failure mode.
    return code — the log line count matters as much as pass/fail (see `tools/proof.py`'s own
    warning scanner: any unexpected `[obs-foxfire] warn:`/`error:` line fails the run).
 
-3. **CI green on Linux and Windows.** Both `proof.yaml` (Linux, runs the same proof as step 2 under
-   software GL) and the template's `build-project` workflow (which builds Windows, macOS, and Ubuntu
-   artefacts) must be green on the commit being tagged. Check with:
+3. **CI green on Linux and Windows.** `proof.yaml` (Linux, runs the same proof as step 2 under
+   software GL) is its own workflow and shows up directly:
    ```
    gh run list --workflow proof.yaml
-   gh run list --workflow build-project.yaml
    ```
+   The Windows (and macOS, Ubuntu) build does **not** have its own workflow to list — `build-project.yaml`
+   is declared `on: workflow_call` only, so it has no trigger of its own and `gh run list --workflow
+   build-project.yaml` returns nothing, every time, regardless of whether Windows actually built. It
+   only ever runs as nested jobs *inside* a `push.yaml` or `pr-pull.yaml` run. Check it there instead:
+   ```
+   gh run list --workflow push.yaml
+   gh run view <run-id>   # look for the "Build Project 🧱 / Build for Windows 🪟" job
+   ```
+   And note the trigger itself: `push.yaml` only builds on pushes to `master`/`main`/`release/**`
+   branches or a tag — **on any other branch, including a feature/phase branch, there is no Windows
+   build to be green, at all**, not a failing one, an absent one. `gh run list --workflow
+   build-project.yaml` coming back empty proves nothing either way; only `gh run view` on the actual
+   `push`/`pull_request` run, with the commit on a branch that workflow triggers on, tells you whether
+   Windows actually built and passed.
+
    `test_handoff.c`'s `reads > 1000` check is a known timing-sensitive flake on CI runners (not on
    this dev box). If only that assertion fails, rerun the job before treating it as a real
    regression — do not weaken or delete the check to make a run go green.
 
 4. **Windows artefact smoke-tested by a Windows user.** Download the Windows zip CI produced,
    install it (see README — installs to `C:\ProgramData\obs-studio\plugins\obs-foxfire\`), open OBS,
-   add a "Foxfire Visualizer" source, pick the Demo pack, pick the Bars preset, and confirm it
-   renders. **The draft release is not published until this step has actually been done by someone
+   add a "Foxfire Visualizer" source, pick the Foxfire Demo pack ("Demo Bars" is the only preset that
+   shows up for a source — the pack's other preset is filter-only), and confirm it renders. **The
+   draft release is not published until this step has actually been done by someone
    on real Windows hardware** — nothing about a green Windows CI job proves the plugin loads or
    renders correctly there; CI only proves it built.
 
