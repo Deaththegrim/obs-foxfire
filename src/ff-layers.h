@@ -52,6 +52,7 @@ struct ff_renderer {
 	gs_texture_t *blank; /* 1x1 transparent; stands in for a NULL input so `image` is never NULL */
 	uint32_t width, height;
 	float time;
+	uint32_t rng; /* xorshift32 state; per renderer so two instances do not move in lockstep */
 	float rand_instance;
 	int64_t frames_rendered;
 };
@@ -68,7 +69,7 @@ void ff_renderer_load(struct ff_renderer *r, const struct ff_pack *pack, const s
    preset's, so call this after every load, not only when the settings change. */
 void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings);
 /* renders the layer stack; `input` may be NULL (source mode) or the filter's captured target;
-   returns the final texture -- never NULL unless w or h is 0; with no renderable layer it returns
+   returns the final texture -- NULL only when `r` is NULL or w/h is 0; with no renderable layer it returns
    `input`, or the 1x1 transparent texture when `input` is NULL. graphics context required. */
 gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, gs_texture_t *input, uint32_t w,
 				 uint32_t h, float dt);

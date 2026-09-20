@@ -27,6 +27,31 @@ static float clamp01(float v)
 	return v < 0.f ? 0.f : (v > 1.f ? 1.f : v);
 }
 
+/* Per-renderer xorshift32 instead of rand(): two sources running the same preset get different
+   streams, and nothing here perturbs the process-wide rand() sequence other code may rely on. */
+static float rng_next(uint32_t *state)
+{
+	uint32_t x = *state;
+	x ^= x << 13;
+	x ^= x >> 17;
+	x ^= x << 5;
+	*state = x;
+	return (float)(x >> 8) / (float)0x01000000u; /* top 24 bits -> [0,1) */
+}
+
+/* A slider's range is only meaningful when the author gave both ends. */
+static void clamp_to_range(struct ff_param *p)
+{
+	if (!p->has_range || p->min > p->max)
+		return;
+	if (p->type != GS_SHADER_PARAM_FLOAT && p->type != GS_SHADER_PARAM_INT)
+		return;
+	if (p->def[0] < p->min)
+		p->def[0] = p->min;
+	else if (p->def[0] > p->max)
+		p->def[0] = p->max;
+}
+
 /* gs_effect_get_default_val() returns bmemdup(default_val) and libobs's bmalloc(0) hands back a
    1-byte *uninitialised* block, so an undeclared default would read as garbage. Every read goes
    through these two helpers, which check the stored size first and only then copy. */
@@ -64,6 +89,7 @@ static void set_field(char *dst, size_t cap, const char *src)
 
 static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
 {
+	bool has_min = false, has_max = false;
 	size_t n = gs_param_get_num_annotations(ep);
 	for (size_t i = 0; i < n; i++) {
 		gs_eparam_t *a = gs_param_get_annotation_by_idx(ep, i);
@@ -84,10 +110,10 @@ static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
 			float f = *(float *)v;
 			if (!strcmp(ai.name, "minimum")) {
 				p->min = f;
-				p->has_range = true;
+				has_min = true;
 			} else if (!strcmp(ai.name, "maximum")) {
 				p->max = f;
-				p->has_range = true;
+				has_max = true;
 			} else if (!strcmp(ai.name, "step")) {
 				p->step = f;
 			}
@@ -99,16 +125,18 @@ static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
 			int iv = *(int *)v;
 			if (!strcmp(ai.name, "minimum")) {
 				p->min = (float)iv;
-				p->has_range = true;
+				has_min = true;
 			} else if (!strcmp(ai.name, "maximum")) {
 				p->max = (float)iv;
-				p->has_range = true;
+				has_max = true;
 			} else if (!strcmp(ai.name, "step")) {
 				p->step = (float)iv;
 			}
 			bfree(v);
 		}
 	}
+	/* one end alone is not a range: a lone minimum would pin the slider's top to 0 */
+	p->has_range = has_min && has_max;
 }
 
 /* The default value of a texture2d param is unusable, so packs name their textures with a string
@@ -145,7 +173,26 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 	}
 }
 
-static void read_param_default(struct ff_param *p, const struct ff_layer_def *def)
+/* A preset override must match the shape of the uniform it names. The brief's unconditional
+   16-byte copy turned `"tint": 0.5` against a float4 into (0.5, 0, 0, 0) -- a transparent black
+   tint, silently. A mismatch now keeps the shader default and says so. */
+static void apply_override(struct ff_param *p, const struct ff_param_override *o, const char *preset_id,
+			   size_t layer_idx)
+{
+	bool colour = o->is_color != 0;
+	bool scalar = p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT ||
+		      p->type == GS_SHADER_PARAM_BOOL;
+	if (colour && p->type == GS_SHADER_PARAM_VEC4)
+		memcpy(p->def, o->v, sizeof p->def);
+	else if (!colour && scalar)
+		p->def[0] = o->v[0];
+	else
+		obs_log(LOG_WARNING, "preset '%s' layer %d: param '%s' override has the wrong type; using the shader default",
+			preset_id, (int)layer_idx, p->name);
+}
+
+static void read_param_default(struct ff_param *p, const struct ff_layer_def *def, const char *preset_id,
+			       size_t layer_idx)
 {
 	/* A float4 with no author-supplied alpha reads as fully transparent, which looks like a
 	   broken preset; seed alpha opaque and let an explicit default overwrite all four. */
@@ -190,13 +237,18 @@ static void read_param_default(struct ff_param *p, const struct ff_layer_def *de
 	}
 
 	/* preset overrides replace the shader default */
-	for (size_t k = 0; k < def->nparams; k++)
-		if (!strcmp(def->params[k].name, p->name))
-			memcpy(p->def, def->params[k].v, sizeof p->def);
+	for (size_t k = 0; k < def->nparams; k++) {
+		if (strcmp(def->params[k].name, p->name))
+			continue;
+		apply_override(p, &def->params[k], preset_id, layer_idx);
+		break;
+	}
+	clamp_to_range(p);
 }
 
-static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const struct ff_layer_def *def)
+static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const struct ff_preset *preset, size_t idx)
 {
+	const struct ff_layer_def *def = &preset->layers[idx];
 	struct dstr path = {0};
 	dstr_printf(&path, "%s/%s", pack->dir, def->effect_path);
 	char *err = NULL;
@@ -226,7 +278,7 @@ static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const str
 		if (p->builtin)
 			continue;
 		read_annotations(ep, p);
-		read_param_default(p, def);
+		read_param_default(p, def, preset->id, idx);
 		if (info.type == GS_SHADER_PARAM_TEXTURE)
 			load_texture_param(p, pack->dir);
 	}
@@ -251,6 +303,14 @@ static void unload_layers(struct ff_renderer *r)
 	r->nlayers = 0;
 }
 
+/* Named so a failure is reported once, at create, instead of being hidden forever by the
+   pass-through in ff_renderer_render. */
+static void require(const void *obj, const char *name)
+{
+	if (!obj)
+		obs_log(LOG_ERROR, "renderer: could not create %s (graphics context held?)", name);
+}
+
 struct ff_renderer *ff_renderer_create(void)
 {
 	struct ff_renderer *r = bzalloc(sizeof(struct ff_renderer));
@@ -261,7 +321,15 @@ struct ff_renderer *ff_renderer_create(void)
 	const uint8_t zero[4] = {0, 0, 0, 0};
 	const uint8_t *zero_p = zero;
 	r->blank = gs_texture_create(1, 1, GS_RGBA, 1, &zero_p, 0);
-	r->rand_instance = (float)rand() / (float)RAND_MAX;
+	require(r->ping, "the ping render target");
+	require(r->pong, "the pong render target");
+	require(r->spectrum_tex, "the spectrum texture");
+	require(r->wave_tex, "the waveform texture");
+	require(r->blank, "the blank texture");
+	r->rng = (uint32_t)(os_gettime_ns() & 0xFFFFFFFFu);
+	if (!r->rng)
+		r->rng = 0x9E3779B9u; /* xorshift32 is dead at zero */
+	r->rand_instance = rng_next(&r->rng);
 	return r;
 }
 
@@ -292,14 +360,14 @@ void ff_renderer_load(struct ff_renderer *r, const struct ff_pack *pack, const s
 		return;
 	size_t n = preset->nlayers > FF_MAX_LAYERS ? FF_MAX_LAYERS : preset->nlayers;
 	for (size_t i = 0; i < n; i++)
-		load_layer(&r->layers[i], pack, &preset->layers[i]);
+		load_layer(&r->layers[i], pack, preset, i);
 	r->nlayers = n;
 }
 
 /* ------------------------------------------------------------------ render */
 
 static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct ff_frame *f, gs_texture_t *image,
-			 int idx, float dt)
+			 int idx, float dt, float rand_frame)
 {
 	for (size_t i = 0; i < L->nparams; i++) {
 		struct ff_param *p = &L->params[i];
@@ -336,7 +404,7 @@ static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct
 		} else if (!strcmp(n, "layer_index")) {
 			gs_effect_set_int(p->ep, idx);
 		} else if (!strcmp(n, "rand_frame")) {
-			gs_effect_set_float(p->ep, (float)rand() / (float)RAND_MAX);
+			gs_effect_set_float(p->ep, rand_frame);
 		} else if (!strcmp(n, "rand_instance")) {
 			gs_effect_set_float(p->ep, r->rand_instance);
 		}
@@ -410,6 +478,7 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 
 	/* source mode has no input; the 1x1 transparent texture keeps `image` bound and lets the
 	   sprite draw supply UVs for layer 0 */
+	const float rand_frame = rng_next(&r->rng); /* one draw per frame, shared by every layer */
 	gs_texture_t *prev = input ? input : r->blank;
 	if (!r->ping || !r->pong)
 		return prev; /* graphics subsystem never handed us the targets; pass the input through */
@@ -427,7 +496,7 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 		struct vec4 clear = {0};
 		gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
 		gs_ortho(0.f, (float)w, 0.f, (float)h, -100.f, 100.f);
-		set_builtins(r, L, f, prev, (int)i, dt);
+		set_builtins(r, L, f, prev, (int)i, dt, rand_frame);
 		set_params(r, L);
 		render_layer(L, prev, w, h);
 		gs_texrender_end(dst);
@@ -441,14 +510,20 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 /* -------------------------------------------------------------- properties */
 
 #define FF_MAX_GROUPS 32
+#define FF_MAX_LABELS 128
 #define FF_DEFAULT_GROUP "Preset"
 
-struct group_table {
+struct prop_ctx {
 	struct {
-		char name[64];
+		char key[80]; /* the sanitised group key -- what OBS actually keys the group box on */
 		obs_properties_t *props;
 	} g[FF_MAX_GROUPS];
-	size_t n;
+	size_t ngroups;
+	struct {
+		size_t gi;
+		char label[64];
+	} seen[FF_MAX_LABELS];
+	size_t nseen;
 };
 
 static void sanitise(const char *in, char *out, size_t cap)
@@ -462,24 +537,43 @@ static void sanitise(const char *in, char *out, size_t cap)
 	out[j] = '\0';
 }
 
-static obs_properties_t *group_for(struct group_table *tab, obs_properties_t *props, const char *name)
+/* Deduped on the SANITISED key, not the label: "My Look" and "My/Look" sanitise to the same key,
+   and adding two groups under one key leaks the second sub-properties object. */
+static size_t group_index(struct prop_ctx *c, obs_properties_t *props, const char *name)
 {
 	const char *label = (name && *name) ? name : FF_DEFAULT_GROUP;
-	for (size_t i = 0; i < tab->n; i++)
-		if (!strcmp(tab->g[i].name, label))
-			return tab->g[i].props;
-	if (tab->n == FF_MAX_GROUPS)
-		return tab->g[0].props; /* pathological pack: fold the overflow into the first group */
-
 	char key[80], safe[64];
 	sanitise(label, safe, sizeof safe);
 	snprintf(key, sizeof key, "grp.%s", safe);
+	for (size_t i = 0; i < c->ngroups; i++)
+		if (!strcmp(c->g[i].key, key))
+			return i;
+	if (c->ngroups == FF_MAX_GROUPS)
+		return 0; /* pathological pack: fold the overflow into the first group */
+
 	obs_properties_t *sub = obs_properties_create();
 	obs_properties_add_group(props, key, label, OBS_GROUP_NORMAL, sub);
-	set_field(tab->g[tab->n].name, sizeof tab->g[tab->n].name, label);
-	tab->g[tab->n].props = sub;
-	tab->n++;
-	return sub;
+	set_field(c->g[c->ngroups].key, sizeof c->g[c->ngroups].key, key);
+	c->g[c->ngroups].props = sub;
+	return c->ngroups++;
+}
+
+/* Two layers of the same effect put two identically-labelled knobs in one box; the layer prefix
+   is what tells the user which is which. */
+static void unique_label(struct prop_ctx *c, size_t gi, size_t layer, const char *label, char *out, size_t cap)
+{
+	bool dup = false;
+	for (size_t i = 0; i < c->nseen && !dup; i++)
+		dup = c->seen[i].gi == gi && !strcmp(c->seen[i].label, label);
+	if (dup)
+		snprintf(out, cap, "L%zu %s", layer, label);
+	else
+		set_field(out, cap, label);
+	if (c->nseen < FF_MAX_LABELS) {
+		c->seen[c->nseen].gi = gi;
+		set_field(c->seen[c->nseen].label, sizeof c->seen[c->nseen].label, label);
+		c->nseen++;
+	}
 }
 
 static void param_key(char *out, size_t cap, size_t layer, const char *name)
@@ -505,31 +599,31 @@ static void unpack_color(uint32_t c, float v[4])
 	v[3] = (float)((c >> 24) & 0xFF) / 255.f;
 }
 
-static void add_param_property(obs_properties_t *grp, const struct ff_param *p, const char *key)
+static void add_param_property(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
 {
 	float step = p->step > 0.f ? p->step : 0.01f;
 	switch (p->type) {
 	case GS_SHADER_PARAM_FLOAT:
 		if (p->has_range)
-			obs_properties_add_float_slider(grp, key, p->label, p->min, p->max, step);
+			obs_properties_add_float_slider(grp, key, label, p->min, p->max, step);
 		else
-			obs_properties_add_float(grp, key, p->label, -1e6, 1e6, 0.01);
+			obs_properties_add_float(grp, key, label, -1e6, 1e6, 0.01);
 		break;
 	case GS_SHADER_PARAM_INT: {
 		int istep = (int)step;
 		if (istep < 1)
 			istep = 1;
 		if (p->has_range)
-			obs_properties_add_int_slider(grp, key, p->label, (int)p->min, (int)p->max, istep);
+			obs_properties_add_int_slider(grp, key, label, (int)p->min, (int)p->max, istep);
 		else
-			obs_properties_add_int(grp, key, p->label, -1000000, 1000000, istep);
+			obs_properties_add_int(grp, key, label, -1000000, 1000000, istep);
 		break;
 	}
 	case GS_SHADER_PARAM_BOOL:
-		obs_properties_add_bool(grp, key, p->label);
+		obs_properties_add_bool(grp, key, label);
 		break;
 	case GS_SHADER_PARAM_VEC4:
-		obs_properties_add_color_alpha(grp, key, p->label);
+		obs_properties_add_color_alpha(grp, key, label);
 		break;
 	default:
 		/* TEXTURE, VEC2/VEC3, STRING and the matrix types are not user-editable */
@@ -545,20 +639,44 @@ static bool is_exposed(const struct ff_param *p)
 	       p->type == GS_SHADER_PARAM_BOOL || p->type == GS_SHADER_PARAM_VEC4;
 }
 
+/* The render loop skips a layer whose effect failed to compile; this is what makes the skip
+   visible instead of a black frame with no explanation. */
+static void add_layer_errors(struct ff_renderer *r, obs_properties_t *props)
+{
+	for (size_t i = 0; i < r->nlayers; i++) {
+		if (!r->layers[i].error[0])
+			continue;
+		char key[32], idx[16], msg[201];
+		snprintf(key, sizeof key, "lerr.%zu", i);
+		snprintf(idx, sizeof idx, "%zu", i);
+		snprintf(msg, sizeof msg, "%.200s", r->layers[i].error);
+		struct dstr text = {0};
+		dstr_copy(&text, obs_module_text("Foxfire.Layer.Error"));
+		dstr_replace(&text, "%1", idx);
+		dstr_replace(&text, "%2", msg);
+		obs_property_t *prop = obs_properties_add_text(props, key, text.array, OBS_TEXT_INFO);
+		obs_property_text_set_info_type(prop, OBS_TEXT_INFO_ERROR);
+		dstr_free(&text);
+	}
+}
+
 void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props)
 {
 	if (!r || !props)
 		return;
-	struct group_table tab = {0};
+	add_layer_errors(r, props);
+	struct prop_ctx ctx = {0};
 	for (size_t i = 0; i < r->nlayers; i++) {
 		struct ff_layer *L = &r->layers[i];
 		for (size_t k = 0; k < L->nparams; k++) {
 			struct ff_param *p = &L->params[k];
 			if (!is_exposed(p))
 				continue;
-			char key[96];
+			char key[96], label[96];
 			param_key(key, sizeof key, i, p->name);
-			add_param_property(group_for(&tab, props, p->group), p, key);
+			size_t gi = group_index(&ctx, props, p->group);
+			unique_label(&ctx, gi, i, p->label, label, sizeof label);
+			add_param_property(ctx.g[gi].props, p, key, label);
 		}
 	}
 }
@@ -625,6 +743,7 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 			default:
 				break;
 			}
+			clamp_to_range(p); /* a settings file from an older pack can carry an out-of-range value */
 		}
 	}
 }
