@@ -1,0 +1,28 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d spectrum;
+uniform float2 uv_size;
+uniform float time;
+uniform float level;
+uniform float beat;
+uniform float4 tint <string label="Tint"; > = {1.0, 0.41, 0.30, 1.0};
+uniform float gap <string label="Bar gap"; float minimum=0.0; float maximum=0.6; float step=0.01; string group="Look";> = 0.2;
+
+sampler_state ptSampler { Filter = Point; AddressU = Clamp; AddressV = Clamp; };
+sampler_state linSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+
+struct VertData { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VertData VSDefault(VertData v) { VertData o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj); o.uv = v.uv; return o; }
+
+float4 PSDraw(VertData v) : TARGET
+{
+	float4 below = image.Sample(linSampler, v.uv);
+	float band = floor(v.uv.x * 64.0);
+	float local = frac(v.uv.x * 64.0);
+	float h = spectrum.Sample(ptSampler, float2((band + 0.5) / 64.0, 0.5)).r;
+	float inBar = step(gap * 0.5, local) * step(local, 1.0 - gap * 0.5);
+	float lit = step(1.0 - v.uv.y, h) * inBar;
+	float4 bar = tint * lit * (0.75 + 0.25 * beat);
+	return float4(below.rgb * (1.0 - bar.a) + bar.rgb * bar.a, max(below.a, bar.a));
+}
+technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSDraw(v); } }

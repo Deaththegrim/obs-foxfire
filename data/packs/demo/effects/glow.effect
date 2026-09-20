@@ -1,0 +1,27 @@
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform float2 uv_size;
+uniform float level;
+uniform float amount <string label="Glow amount"; float minimum=0.0; float maximum=2.0; float step=0.01;> = 0.6;
+sampler_state linSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
+struct VertData { float4 pos : POSITION; float2 uv : TEXCOORD0; };
+VertData VSDefault(VertData v) { VertData o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj); o.uv = v.uv; return o; }
+float4 PSDraw(VertData v) : TARGET
+{
+	float2 px = 1.0 / uv_size;
+	float4 c = image.Sample(linSampler, v.uv);
+	float4 acc = float4(0.0, 0.0, 0.0, 0.0);
+	float r = 3.0 + 6.0 * level;
+	acc += image.Sample(linSampler, v.uv + float2(-r, 0.0) * px);
+	acc += image.Sample(linSampler, v.uv + float2( r, 0.0) * px);
+	acc += image.Sample(linSampler, v.uv + float2(0.0, -r) * px);
+	acc += image.Sample(linSampler, v.uv + float2(0.0,  r) * px);
+	acc += image.Sample(linSampler, v.uv + float2(-r, -r) * px * 0.7);
+	acc += image.Sample(linSampler, v.uv + float2( r, -r) * px * 0.7);
+	acc += image.Sample(linSampler, v.uv + float2(-r,  r) * px * 0.7);
+	acc += image.Sample(linSampler, v.uv + float2( r,  r) * px * 0.7);
+	acc /= 8.0;
+	float4 o = c + acc * amount;
+	return float4(min(o.rgb, float3(1.0, 1.0, 1.0)), min(o.a, 1.0));
+}
+technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSDraw(v); } }

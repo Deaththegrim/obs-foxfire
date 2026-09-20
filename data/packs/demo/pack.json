@@ -1,0 +1,8 @@
+{ "format": 1, "id": "demo", "name": "Foxfire Demo", "version": "0.1.0", "author": "KitsuneStudio",
+  "min_engine": "0.1.0", "licensed": false, "kinds": ["visualizer", "effects"],
+  "presets": [
+    { "id": "bars", "name": "Demo Bars", "kind": "visualizer", "thumb": "", "heavy": false,
+      "layers": [ { "effect": "effects/bars.effect", "params": { "tint": {"r":1.0,"g":0.41,"b":0.30,"a":1.0}, "gap": 0.2 } },
+                  { "effect": "effects/glow.effect", "params": { "amount": 0.6 } } ] },
+    { "id": "glow-only", "name": "Demo Glow (filter)", "kind": "effects", "thumb": "", "heavy": false,
+      "layers": [ { "effect": "effects/glow.effect", "params": { "amount": 0.8 } } ] } ] }

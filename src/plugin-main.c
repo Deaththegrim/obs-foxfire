@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 #include <plugin-support.h>
+#include <time.h>
+#include "ff-pack.h"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
@@ -25,6 +27,8 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
+	/* startup scan: logs pack counts; the source keeps its own list (Task 8) */
+	{ struct ff_pack_list l; ff_packs_scan(&l, (int64_t)time(NULL)); ff_packs_free(&l); }
 	return true;
 }
 
