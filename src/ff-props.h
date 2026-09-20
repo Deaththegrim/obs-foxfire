@@ -35,6 +35,7 @@ struct ff_instance {
 	struct ff_pack_list packs;
 	char pack_id[64], preset_id[64];
 	uint32_t width, height;
+	float dt;                /* video thread only -- see the threading contract in ff-props.c */
 	char status[256];        /* last refusal sentence for the current pack/preset, empty when fine */
 	char install_msg[256];   /* last "Install pack" result; update() must not clear it, see below */
 	gs_texrender_t *capture; /* filter only */
@@ -50,5 +51,6 @@ void ff_instance_update(struct ff_instance *in, obs_data_t *settings);
 obs_properties_t *ff_instance_properties(struct ff_instance *in);
 void ff_instance_defaults(obs_data_t *settings, bool is_filter);
 /* per-frame: read audio, render stack; returns final texture (NULL when nothing to draw).
-   Graphics context required -- call it from video_render only. */
-gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, uint32_t w, uint32_t h, float dt);
+   Uses in->dt, written by the caller's video_tick. Graphics context required -- call it from
+   video_render only. */
+gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, uint32_t w, uint32_t h);

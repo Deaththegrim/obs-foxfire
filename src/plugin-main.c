@@ -25,6 +25,7 @@ OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 extern struct obs_source_info ff_source_info;
+extern struct obs_source_info ff_filter_info;
 
 const char *obs_module_name(void)
 {
@@ -54,6 +55,7 @@ bool obs_module_load(void)
 		ff_packs_free(&l);
 	}
 	obs_register_source(&ff_source_info);
+	obs_register_source(&ff_filter_info);
 	return true;
 }
 

@@ -60,23 +60,20 @@ static uint32_t src_h(void *d)
 	return ((struct ff_instance *)d)->height;
 }
 
-/* video_render gets no frame time of its own; the tick that precedes it does. One file-scope float
-   is enough for every instance: libobs runs video_tick and video_render for all sources on the one
-   video thread, and hands every source of a frame the same `seconds`, so there is nothing
-   per-instance to keep. A tick that ever moved off that thread would break this. */
-static float g_dt;
-
+/* video_render gets no frame time of its own; the tick that precedes it does, on the same video
+   thread. Stored on the instance (in->dt, see ff-props.h) rather than a file-scope float, because
+   the filter type (ff-filter.c) needs the same per-frame value and a second file-scope copy there
+   would just be this one duplicated. */
 static void src_tick(void *d, float seconds)
 {
-	UNUSED_PARAMETER(d);
-	g_dt = seconds;
+	((struct ff_instance *)d)->dt = seconds;
 }
 
 static void src_render(void *d, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
 	struct ff_instance *in = d;
-	gs_texture_t *tex = ff_instance_render(in, NULL, in->width, in->height, g_dt);
+	gs_texture_t *tex = ff_instance_render(in, NULL, in->width, in->height);
 	if (!tex)
 		return;
 	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);

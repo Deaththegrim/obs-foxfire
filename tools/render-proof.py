@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""First-render proof and gate for the Foxfire Visualizer source.
+"""First-render proof and gate for the Foxfire Visualizer source and Effects filter.
 
 Drives a sandboxed OBS over obs-websocket: builds a scene, adds a Foxfire Visualizer, screenshots
 it against silence and again against a generated tone, exercises the layer-parameter, Restore
 Defaults and pack-install paths, then hammers the properties thread while the video thread renders
-and updates. Every invariant is asserted and every measured number is printed with its unit; the
-script exits non-zero on any failed check.
+and updates. It then adds a Foxfire Effects filter on a flat-colour source and proves the filter
+actually reads its target, changes its own settings, and leaves the target untouched once removed.
+Every invariant is asserted and every measured number is printed with its unit; the script exits
+non-zero on any failed check.
 
 Nothing here may block forever. The defect this gate exists to catch is a deadlock between the
 video thread and the UI/RPC thread, and obs-websocket answers keepalives from a thread of its own,
@@ -33,6 +35,10 @@ OUT_TONE = "/tmp/ff-first-render-tone.png"
 OUT_GAP = "/tmp/ff-first-render-gap.png"
 OUT_RESTORE = "/tmp/ff-first-render-restore.png"
 OUT_STRESS = "/tmp/ff-first-render-stress.png"
+OUT_FLT_UNFILTERED = "/tmp/ff-filter-unfiltered.png"
+OUT_FLT_FILTERED = "/tmp/ff-filter-filtered.png"
+OUT_FLT_DIMMER = "/tmp/ff-filter-dimmer.png"
+OUT_FLT_REMOVED = "/tmp/ff-filter-removed.png"
 WAV = "/tmp/ff-tone.wav"
 ZIP = "/tmp/ff-demo2.zip"
 W, H = 640, 360
@@ -150,6 +156,43 @@ async def screenshot(c, path):
     r = await c.request("GetSourceScreenshot", {
         "sourceName": "ff", "imageFormat": "png", "imageWidth": W, "imageHeight": H})
     return Shot(r["imageData"], path)
+
+
+class FilterShot:
+    """One screenshot for the filter proof, in mean-luminance terms rather than Shot's alpha
+    histogram: the filter proof is about whether glow BRIGHTENS a flat colour, not about how much
+    area got lit, so the unit that matters here is mean(R,G,B) over every pixel, 0..255.
+
+    mean:     average of (R+G+B)/3 across every pixel -- what "brighter" is measured in
+    variance: population variance of that per-pixel luminance -- near 0 for a flat colour source
+    min/max_alpha: opacity range -- a filter that punches a hole in the target would show here
+    """
+
+    def __init__(self, b64, path):
+        with open(path, "wb") as f:
+            f.write(base64.b64decode(b64.split(",", 1)[1]))
+        img = Image.open(path).convert("RGBA")
+        pixels = img.getdata()
+        n = len(pixels)
+        lumas = [(r + g + b) / 3.0 for r, g, b, _ in pixels]
+        alphas = [a for _, _, _, a in pixels]
+        self.path = path
+        self.size = img.size
+        self.mean = sum(lumas) / n
+        self.variance = sum((v - self.mean) ** 2 for v in lumas) / n
+        self.min_alpha = min(alphas)
+        self.max_alpha = max(alphas)
+
+    def __str__(self):
+        return (f"mean_luma={self.mean:.2f}/255, variance={self.variance:.2f}, "
+                f"alpha=[{self.min_alpha}..{self.max_alpha}], size={self.size[0]}x{self.size[1]} px "
+                f"-> {self.path}")
+
+
+async def screenshot_named(c, source_name, path):
+    r = await c.request("GetSourceScreenshot", {
+        "sourceName": source_name, "imageFormat": "png", "imageWidth": W, "imageHeight": H})
+    return FilterShot(r["imageData"], path)
 
 
 async def stress(name):
@@ -281,6 +324,73 @@ async def run(c):
           f"inputs={inputs}, scene items={scene}, obsVersion={after.get('obsVersion')!r}")
 
 
+async def run_filter(c):
+    """Foxfire Effects: a filter on 'fxbase' (a flat grey color_source, still in the 'ffproof'
+    scene) proves it actually samples its target -- glow-only's one layer is `c + blur(c)*amount`
+    (see data/packs/demo/effects/glow.effect), so on a FLAT colour blur(c) == c and the frame must
+    get brighter by exactly (1+amount), not merely change. The 'tone' input from run() is reused as
+    the audio tap so audio_mode=1 exercises the same path a real effects filter runs under."""
+    print("\n--- filter proof: Foxfire Effects ---")
+    # "color_source_v3" not "color_source": libobs registers three versions of the same id and
+    # obs-websocket's GetInputKindList (checked against a live sandbox) exposes the versioned name
+    await c.request("CreateInput", {
+        "sceneName": "ffproof", "inputName": "fxbase", "inputKind": "color_source_v3",
+        "inputSettings": {"color": 0xFF404040, "width": W, "height": H},
+        "sceneItemEnabled": True})
+    await asyncio.sleep(1.0)
+
+    unfiltered = await screenshot_named(c, "fxbase", OUT_FLT_UNFILTERED)
+    print(f"fxbase, no filter: {unfiltered}")
+    check("unfiltered fxbase is fully opaque", unfiltered.min_alpha == 255 and unfiltered.max_alpha == 255,
+          f"alpha=[{unfiltered.min_alpha}..{unfiltered.max_alpha}]")
+    check("unfiltered fxbase is flat (low variance)", unfiltered.variance < 4.0,
+          f"variance={unfiltered.variance:.3f} luma^2, threshold <4.0")
+
+    await c.request("CreateSourceFilter", {
+        "sourceName": "fxbase", "filterName": "fx", "filterKind": "foxfire_effects",
+        "filterSettings": {"pack": "demo", "preset": "glow-only", "audio_mode": 1,
+                           "audio_source": "tone"}})
+    await asyncio.sleep(1.5)
+
+    filtered = await screenshot_named(c, "fxbase", OUT_FLT_FILTERED)
+    print(f"fxbase + 'fx' (glow-only, l0.amount=0.8, tone playing): {filtered}")
+    check("filter does not change the target's size", filtered.size == (W, H),
+          f"size={filtered.size[0]}x{filtered.size[1]} px, expected {W}x{H} px")
+    check("filtered frame stays fully opaque", filtered.min_alpha == 255 and filtered.max_alpha == 255,
+          f"alpha=[{filtered.min_alpha}..{filtered.max_alpha}]")
+    up = filtered.mean / unfiltered.mean if unfiltered.mean else 0.0
+    check("glow brightens the frame", up > 1.02,
+          f"luminance ratio={up:.4f} (={filtered.mean:.2f}/{unfiltered.mean:.2f} luma), "
+          f"threshold >1.02, shader predicts (1+0.8)=1.8")
+
+    # the renderer's own knob, reached only through ff_instance_update -> ff_renderer_apply_settings,
+    # same path SetInputSettings exercises for the source in run() above -- proves it for the filter
+    await c.request("SetSourceFilterSettings", {
+        "sourceName": "fxbase", "filterName": "fx", "filterSettings": {"l0.amount": 0.2}})
+    await asyncio.sleep(1.5)
+    dimmer = await screenshot_named(c, "fxbase", OUT_FLT_DIMMER)
+    down = dimmer.mean / filtered.mean if filtered.mean else 0.0
+    print(f"fxbase, l0.amount 0.8 -> 0.2: {dimmer}")
+    check("SetSourceFilterSettings reaches the filter (luminance drops)", down < 0.99,
+          f"luminance ratio={down:.4f} (={dimmer.mean:.2f}/{filtered.mean:.2f} luma), "
+          f"threshold <0.99, shader predicts (1+0.2)/(1+0.8)=0.667")
+
+    flist = await c.request("GetSourceFilterList", {"sourceName": "fxbase"})
+    fnames = [f["filterName"] for f in flist["filters"]]
+    check("GetSourceFilterList shows the filter", "fx" in fnames, f"filters={fnames}")
+
+    await c.request("RemoveSourceFilter", {"sourceName": "fxbase", "filterName": "fx"})
+    await asyncio.sleep(1.0)
+    removed = await screenshot_named(c, "fxbase", OUT_FLT_REMOVED)
+    back = removed.mean / unfiltered.mean if unfiltered.mean else 0.0
+    print(f"fxbase, filter removed: {removed}")
+    check("removing the filter restores the original mean (within 1%)", abs(back - 1.0) <= 0.01,
+          f"luminance ratio vs unfiltered={back:.4f} (={removed.mean:.2f}/{unfiltered.mean:.2f} luma), "
+          f"window 0.99..1.01")
+
+    await c.request("RemoveInput", {"inputName": "fxbase"})
+
+
 async def main():
     make_tone(WAV)
     make_pack_zip(ZIP)
@@ -288,6 +398,7 @@ async def main():
     try:
         ws, c = await open_client("driver")
         await run(c)
+        await run_filter(c)
     except FFTimeout as e:
         check(e.what, False, f"timed out after {REQ_TIMEOUT}s — possible deadlock")
     finally:

@@ -49,7 +49,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
    Not covered, deliberately: in->frame is touched only by the video thread, and in->width/height
    are a pair of aligned uint32_t written by update() and read by get_width/get_height -- a lock
-   there would buy nothing a torn read could not already rule out.
+   there would buy nothing a torn read could not already rule out. in->dt is the same story: only
+   video_tick writes it and only video_render (via ff_instance_render) reads it, and libobs always
+   runs a source's tick immediately before its render on that one thread, so the write always
+   happens-before the read with no other thread ever touching it.
 
    Not covered, and NOT ours to fix: the obs_data_t settings object is mutated by both threads --
    the UI clears S_INSTALL in on_install_changed, the video thread walks the item hash in
@@ -445,8 +448,13 @@ void ff_instance_update(struct ff_instance *in, obs_data_t *s)
 		return;
 	const char *pack = obs_data_get_string(s, S_PACK);
 	const char *preset = obs_data_get_string(s, S_PRESET);
-	in->width = (uint32_t)obs_data_get_int(s, S_WIDTH);
-	in->height = (uint32_t)obs_data_get_int(s, S_HEIGHT);
+	/* a filter has no S_WIDTH/S_HEIGHT settings -- its size comes from its target every frame
+	   (flt_render sets in->width/height before calling ff_instance_render), so reading them here
+	   would either read stale zeros or, worse, some other key's leftover value */
+	if (!in->is_filter) {
+		in->width = (uint32_t)obs_data_get_int(s, S_WIDTH);
+		in->height = (uint32_t)obs_data_get_int(s, S_HEIGHT);
+	}
 
 	struct ff_analysis_params ap = {
 		.release_ms = (float)obs_data_get_double(s, S_RELEASE),
@@ -578,7 +586,7 @@ obs_properties_t *ff_instance_properties(struct ff_instance *in)
 	return props;
 }
 
-gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, uint32_t w, uint32_t h, float dt)
+gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, uint32_t w, uint32_t h)
 {
 	if (!in)
 		return NULL;
@@ -587,5 +595,5 @@ gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, ui
 	struct ff_frame f;
 	if (ff_audio_read(in->audio, &f))
 		in->frame = f;
-	return ff_renderer_render(in->renderer, &in->frame, input, w, h, dt);
+	return ff_renderer_render(in->renderer, &in->frame, input, w, h, in->dt);
 }

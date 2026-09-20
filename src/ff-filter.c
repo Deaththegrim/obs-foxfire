@@ -1,0 +1,113 @@
+/*
+Foxfire
+Copyright (C) 2026 KitsuneStudio ninjaflashboy@gmail.com
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along
+with this program. If not, see <https://www.gnu.org/licenses/>
+*/
+
+#include "ff-props.h"
+#include <plugin-support.h>
+
+static const char *flt_name(void *d)
+{
+	UNUSED_PARAMETER(d);
+	return obs_module_text("Foxfire.Effects");
+}
+
+static void *flt_create(obs_data_t *s, obs_source_t *self)
+{
+	return ff_instance_create(s, self, true);
+}
+
+static void flt_destroy(void *d)
+{
+	ff_instance_destroy(d);
+}
+
+static void flt_update(void *d, obs_data_t *s)
+{
+	ff_instance_update(d, s);
+}
+
+static void flt_defaults(obs_data_t *s)
+{
+	ff_instance_defaults(s, true);
+}
+
+static obs_properties_t *flt_props(void *d)
+{
+	return ff_instance_properties(d);
+}
+
+/* see the comment on src_tick in ff-source.c: dt lives on the instance, not a file-scope float */
+static void flt_tick(void *d, float seconds)
+{
+	((struct ff_instance *)d)->dt = seconds;
+}
+
+static void flt_render(void *d, gs_effect_t *effect)
+{
+	UNUSED_PARAMETER(effect);
+	struct ff_instance *in = d;
+	obs_source_t *target = obs_filter_get_target(in->self);
+	uint32_t w = target ? obs_source_get_base_width(target) : 0;
+	uint32_t h = target ? obs_source_get_base_height(target) : 0;
+	if (!target || !w || !h || !in->renderer->nlayers) {
+		obs_source_skip_video_filter(in->self);
+		return;
+	}
+	/* a filter has no S_WIDTH/S_HEIGHT settings -- the target's size drives uv_size every frame,
+	   never the settings (ff_instance_update skips them for a filter, see ff-props.c) */
+	in->width = w;
+	in->height = h;
+
+	/* capture the target into our own texrender */
+	gs_texrender_reset(in->capture);
+	if (!gs_texrender_begin(in->capture, w, h)) {
+		obs_source_skip_video_filter(in->self);
+		return;
+	}
+	struct vec4 clear = {0};
+	gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
+	gs_ortho(0.f, (float)w, 0.f, (float)h, -100.f, 100.f);
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	obs_source_video_render(target);
+	gs_blend_state_pop();
+	gs_texrender_end(in->capture);
+
+	gs_texture_t *tex = ff_instance_render(in, gs_texrender_get_texture(in->capture), w, h);
+	if (!tex) {
+		obs_source_skip_video_filter(in->self);
+		return;
+	}
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_effect_set_texture(gs_effect_get_param_by_name(def, "image"), tex);
+	while (gs_effect_loop(def, "Draw"))
+		gs_draw_sprite(tex, 0, w, h);
+}
+
+struct obs_source_info ff_filter_info = {
+	.id = "foxfire_effects",
+	.type = OBS_SOURCE_TYPE_FILTER,
+	.output_flags = OBS_SOURCE_VIDEO,
+	.get_name = flt_name,
+	.create = flt_create,
+	.destroy = flt_destroy,
+	.update = flt_update,
+	.get_defaults = flt_defaults,
+	.get_properties = flt_props,
+	.video_tick = flt_tick,
+	.video_render = flt_render,
+};
