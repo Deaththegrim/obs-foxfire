@@ -48,4 +48,8 @@ const struct ff_preset *ff_pack_find_preset(const struct ff_pack *p, const char 
 /* validates + extracts a .zip into the config packs dir; returns false with msg */
 bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap);
 
+/* true when a path is safe to join to a pack dir: relative, no "..", no backslash, no colon.
+   Callers must ALSO confirm the file exists inside the pack -- this judges the name, not the inode. */
+bool ff_rel_ok(const char *p);
+
 extern const uint8_t FF_PUBLIC_KEY[32];

@@ -1,4 +1,5 @@
 #include "ff-layers.h"
+#include "ff-pack.h"
 #include <plugin-support.h>
 #include <graphics/image-file.h>
 #include <graphics/vec2.h>
@@ -153,7 +154,11 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 		char rel[512];
 		if (!default_val_str(a, rel, sizeof rel))
 			continue;
-		if (rel[0] == '/' || strstr(rel, "..")) {
+		/* Same rule as a manifest path (ff_rel_ok in ff-pack.c). These two checks used to
+		   disagree: this one refused only a leading '/' and "..", so a backslash escape or a
+		   drive letter passed here while ff-pack.c refused them -- weaker on exactly the
+		   platform where those are how you leave a directory. */
+		if (!ff_rel_ok(rel)) {
 			obs_log(LOG_WARNING, "texture path '%s' refused", rel);
 			continue;
 		}

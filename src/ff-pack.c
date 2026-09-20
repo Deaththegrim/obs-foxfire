@@ -26,7 +26,11 @@ static bool id_ok(const char *s)
 			return false;
 	return true;
 }
-static bool rel_ok(const char *p)
+/* The one place a pack-relative path is judged. Exported because ff-layers.c must apply the SAME
+   rule to a texture path that comes from a shader annotation -- the two used to disagree, and the
+   annotation side was the weaker one, which matters most on Windows where a backslash or a drive
+   letter is how you escape a directory. */
+bool ff_rel_ok(const char *p)
 {
 	return p && *p && p[0] != '/' && !strstr(p, "..") && !strchr(p, '\\') && !strchr(p, ':');
 }
@@ -95,7 +99,7 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 		snprintf(why, cap, "preset '%s': kind must be visualizer, effects or overlay", pr->id);
 		return false;
 	}
-	if (pr->thumb[0] && (!rel_ok(pr->thumb) || !file_in_pack(pk->dir, pr->thumb))) {
+	if (pr->thumb[0] && (!ff_rel_ok(pr->thumb) || !file_in_pack(pk->dir, pr->thumb))) {
 		snprintf(why, cap, "preset '%s': thumb '%.300s' missing or not a relative path", pr->id, pr->thumb);
 		return false;
 	}
@@ -110,7 +114,7 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 		obs_data_t *ld = obs_data_array_item(layers, i);
 		struct ff_layer_def *L = &pr->layers[i];
 		snprintf(L->effect_path, sizeof L->effect_path, "%s", obs_data_get_string(ld, "effect"));
-		if (!rel_ok(L->effect_path) || !file_in_pack(pk->dir, L->effect_path)) {
+		if (!ff_rel_ok(L->effect_path) || !file_in_pack(pk->dir, L->effect_path)) {
 			snprintf(why, cap, "preset '%s' layer %zu: effect '%.300s' missing or not a relative path",
 				 pr->id, i, L->effect_path);
 			obs_data_release(ld);
