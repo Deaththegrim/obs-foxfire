@@ -33,13 +33,13 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.example.plugintemplate-for-obs"
+            "bundleId": "gg.kitsune.obs-foxfire"
         }
     },
-    "name": "plugintemplate-for-obs",
-    "displayName": "Plugin Template for OBS",
-    "version": "1.0.0",
-    "author": "Your Name Here",
-    "website": "https://example.com",
-    "email": "me@example.com"
+    "name": "obs-foxfire",
+    "displayName": "Foxfire",
+    "version": "0.1.0",
+    "author": "KitsuneStudio",
+    "website": "https://kitsune.gg/art/gear.html",
+    "email": "ninjaflashboy@gmail.com"
 }

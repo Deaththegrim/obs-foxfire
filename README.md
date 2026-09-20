@@ -1,8 +1,8 @@
-# OBS Plugin Template
+# Foxfire
 
 ## Introduction
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+Foxfire is a free GPL OBS Studio plugin: an audio-reactive layered shader visualizer with effects, by KitsuneStudio. It is built from the [OBS Plugin Template](https://github.com/obsproject/obs-plugintemplate), which includes:
 
 * Boilerplate plugin source code
 * A CMake project file
