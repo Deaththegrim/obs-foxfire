@@ -82,8 +82,37 @@ static void flt_render(void *d, gs_effect_t *effect)
 	gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
 	gs_ortho(0.f, (float)w, 0.f, (float)h, -100.f, 100.f);
 	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
-	obs_source_video_render(target);
+	/* Colour channels blend SRCALPHA/INVSRCALPHA, alpha blends ONE/INVSRCALPHA -- the same
+	   asymmetric pair libobs's own obs_source_process_filter_begin uses to capture a filter's
+	   target. Onto our zero-cleared destination that computes exactly rgb*=alpha (straight ->
+	   premultiplied) with alpha passed through, which is what the layer stack (bars.effect,
+	   glow.effect, ...) is written to consume -- the same convention its output is drawn with
+	   below (GS_BLEND_ONE/GS_BLEND_INVSRCALPHA), and the one src_render in ff-source.c already
+	   uses. A target that manages its own blend state around its own draw call, as any
+	   well-behaved OBS source does so it composites correctly in an ordinary scene too (verified
+	   against image_source, which pushes GS_BLEND_ONE/GS_BLEND_INVSRCALPHA around its sprite and
+	   already uploads premultiplied pixel data -- gs_premultiply_xyza*_loop runs at image load),
+	   overrides this regardless, so this only matters for a target that does not. Either way the
+	   destination it lands in is premultiplied, never straight. */
+	gs_blend_function_separate(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA, GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	/* obs_source_video_render(target) hands the target's own video_render callback whatever
+	   gs_get_effect() currently reports as the "current" effect -- a source that does its own
+	   thing regardless (OBS_SOURCE_CUSTOM_DRAW, e.g. color_source) ignores it, but a plain one
+	   (image_source, text, browser, most real content) samples ITS "image" param OUT OF that
+	   passed-in effect and draws nothing if it is NULL. Normal scene compositing always has one
+	   bound from further up the render tree; called bare, from here, there may be none (this is
+	   exactly the render_filter_bypass technique-begin/end bracket libobs's own
+	   obs_source_process_filter_begin uses for its bypass path) -- so bind the default effect
+	   ourselves before capturing, or any non-custom-draw target renders as fully transparent. */
+	gs_effect_t *cap_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_technique_t *cap_tech = gs_effect_get_technique(cap_effect, "Draw");
+	size_t cap_passes = gs_technique_begin(cap_tech);
+	for (size_t p = 0; p < cap_passes; p++) {
+		gs_technique_begin_pass(cap_tech, p);
+		obs_source_video_render(target);
+		gs_technique_end_pass(cap_tech);
+	}
+	gs_technique_end(cap_tech);
 	gs_blend_state_pop();
 	gs_texrender_end(in->capture);
 
@@ -94,8 +123,15 @@ static void flt_render(void *d, gs_effect_t *effect)
 	}
 	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_effect_set_texture(gs_effect_get_param_by_name(def, "image"), tex);
+	gs_blend_state_push();
+	/* same convention as src_render in ff-source.c: the layer stack's output is premultiplied
+	   alpha, so drawing it onto whatever is already there needs ONE/INVSRCALPHA, not the default
+	   straight-alpha SRCALPHA/INVSRCALPHA -- premultiplied output through the wrong blend function
+	   double-applies alpha to the colour and darkens every translucent pixel */
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 	while (gs_effect_loop(def, "Draw"))
 		gs_draw_sprite(tex, 0, w, h);
+	gs_blend_state_pop();
 }
 
 struct obs_source_info ff_filter_info = {

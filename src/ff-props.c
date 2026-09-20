@@ -48,11 +48,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
    are taken outside state_lock, never under it.
 
    Not covered, deliberately: in->frame is touched only by the video thread, and in->width/height
-   are a pair of aligned uint32_t written by update() and read by get_width/get_height -- a lock
-   there would buy nothing a torn read could not already rule out. in->dt is the same story: only
-   video_tick writes it and only video_render (via ff_instance_render) reads it, and libobs always
-   runs a source's tick immediately before its render on that one thread, so the write always
-   happens-before the read with no other thread ever touching it.
+   are a pair of aligned uint32_t written on that same thread -- by update() for a source, or by
+   video_render (from the target's own size) for a filter -- and read by get_width/get_height; a
+   lock there would buy nothing a torn read could not already rule out. in->dt is the same story:
+   only video_tick writes it and only video_render (via ff_instance_render) reads it. The guarantee
+   is weaker than "tick then render for this instance back to back" -- libobs runs every source's
+   video_tick for a frame before it runs any source's video_render for that frame, all on the one
+   video thread -- but it is enough: by the time this instance's video_render reads in->dt, this
+   frame's video_tick has already written it, and nothing else touches the field in between.
 
    Not covered, and NOT ours to fix: the obs_data_t settings object is mutated by both threads --
    the UI clears S_INSTALL in on_install_changed, the video thread walks the item hash in
@@ -512,8 +515,14 @@ void ff_instance_defaults(obs_data_t *s, bool is_filter)
 {
 	obs_data_set_default_string(s, S_PACK, "demo");
 	obs_data_set_default_string(s, S_PRESET, is_filter ? "glow-only" : "bars");
-	obs_data_set_default_int(s, S_WIDTH, 1920);
-	obs_data_set_default_int(s, S_HEIGHT, 1080);
+	/* a filter has no S_WIDTH/S_HEIGHT property (ff_instance_properties skips them) and
+	   ff_instance_update ignores the keys for a filter too -- setting defaults nobody ever reads
+	   would just be a landmine for a future reader wondering why a filter's saved settings carry
+	   a width/height it never respects */
+	if (!is_filter) {
+		obs_data_set_default_int(s, S_WIDTH, 1920);
+		obs_data_set_default_int(s, S_HEIGHT, 1080);
+	}
 	obs_data_set_default_int(s, S_AUDIO_MODE, FF_AUDIO_MASTER);
 	obs_data_set_default_string(s, S_AUDIO_SOURCE, "");
 	obs_data_set_default_double(s, S_GAIN, 0.0);

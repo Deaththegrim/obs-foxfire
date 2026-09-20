@@ -26,7 +26,7 @@ import zipfile
 from pathlib import Path
 
 import websockets
-from PIL import Image
+from PIL import Image, ImageStat
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 4460
 URL = f"ws://127.0.0.1:{PORT}"
@@ -39,18 +39,30 @@ OUT_FLT_UNFILTERED = "/tmp/ff-filter-unfiltered.png"
 OUT_FLT_FILTERED = "/tmp/ff-filter-filtered.png"
 OUT_FLT_DIMMER = "/tmp/ff-filter-dimmer.png"
 OUT_FLT_REMOVED = "/tmp/ff-filter-removed.png"
+OUT_QUAD_UNFILTERED = "/tmp/ff-filter-quad-unfiltered.png"
+OUT_QUAD_FILTERED = "/tmp/ff-filter-quad-filtered.png"
+OUT_ALPHA_UNFILTERED = "/tmp/ff-filter-alphahole-unfiltered.png"
+OUT_ALPHA_FILTERED = "/tmp/ff-filter-alphahole-filtered.png"
 WAV = "/tmp/ff-tone.wav"
 ZIP = "/tmp/ff-demo2.zip"
+QUAD_PNG = "/tmp/ff-quadrant.png"
+ALPHAHOLE_PNG = "/tmp/ff-alphahole.png"
 W, H = 640, 360
 STRESS_ROUNDS = 30
 REQ_TIMEOUT = 20  # seconds; generous for a local socket, short next to a hang
 
 FAILURES = []
+CHECKS = []  # every check that ran, pass or fail -- "armed" count: see check() below
 
 
 def check(name, ok, detail):
-    """Records one gate. Nothing here prints a verdict it has not measured."""
+    """Records one gate. Nothing here prints a verdict it has not measured.
+
+    Every call -- pass or fail -- is counted in CHECKS. A green run that never prints how many
+    checks COULD have failed is not evidence of anything: the final summary reports passed/total
+    together for exactly that reason (see the bottom of this file)."""
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
+    CHECKS.append(name)
     if not ok:
         FAILURES.append(name)
     return ok
@@ -82,6 +94,79 @@ def make_tone(path, hz=110.0, seconds=2.0, rate=48000, amp=0.5):
             v = int(amp * 32767 * math.sin(2 * math.pi * hz * i / rate))
             frames += struct.pack("<h", v)
         w.writeframes(bytes(frames))
+
+
+def make_quadrant_png(path, w=W, h=H):
+    """Hard-edged, asymmetric-in-both-axes test image: opaque white in the top-left quadrant,
+    opaque black everywhere else. Unlike a flat colour, this can catch a flipped or transposed
+    capture (whichever quadrant ends up brightest names the bug) and, via band_counts/band_width
+    below, whether glow's blur has any spatial extent at all -- see run_spatial()."""
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    white = Image.new("RGBA", (w // 2, h // 2), (255, 255, 255, 255))
+    img.paste(white, (0, 0))  # paste overwrites -- no alpha blending to muddy the hard edge
+    img.save(path)
+
+
+def make_alphahole_png(path, w=W, h=H):
+    """Opaque white left half, fully TRANSPARENT right half -- a real alpha discontinuity (not a
+    flat-alpha source like color_source_v3), so filtering it exercises whatever alpha convention
+    the capture and the layer stack actually use, and gives run_transparency() a genuinely
+    transparent region to assert glow does not paint into. The background is stored red (not
+    black) to mirror how PNG exporters and some overlay sources can leave the original colour
+    behind under alpha=0."""
+    img = Image.new("RGBA", (w, h), (255, 0, 0, 0))
+    white = Image.new("RGBA", (w // 2, h), (255, 255, 255, 255))
+    img.paste(white, (0, 0))
+    img.save(path)
+
+
+def load_rgba(path):
+    return Image.open(path).convert("RGBA")
+
+
+def quadrant_means(img):
+    """Mean luma (0..255) of each screen quadrant. Ordering must survive filtering unchanged --
+    top-left brightest before AND after -- or the capture/render flipped or transposed the frame:
+    a vertical flip moves the bright quadrant to bottom-left, a horizontal flip to top-right, a
+    180-degree rotation to bottom-right."""
+    w, h = img.size
+    hw, hh = w // 2, h // 2
+    boxes = {"tl": (0, 0, hw, hh), "tr": (hw, 0, w, hh), "bl": (0, hh, hw, h), "br": (hw, hh, w, h)}
+    return {k: sum(ImageStat.Stat(img.crop(box)).mean[:3]) / 3.0 for k, box in boxes.items()}
+
+
+def luma_bytes(img):
+    """Flat row-major luma bytes, one per pixel. The quadrant image is achromatic (R=G=B
+    everywhere a filter hasn't tinted it, and glow-only doesn't tint), so convert("L") is
+    numerically the same as (R+G+B)/3 for it, and gives fast C-level indexing for the row/column
+    scans below instead of a Python-level loop over getdata()."""
+    return img.convert("L").tobytes()
+
+
+def band_counts(img):
+    """(rows, cols) that contain at least one INTERMEDIATE pixel -- strictly between the black and
+    white plateaus. 0/0 on the hard-edged source; >0/>0 once glow's blur has spread the edge a few
+    px in each direction. This is the check a filter that renders nothing (or a pure pass-through)
+    cannot pass, unlike a brightness-ratio check on a flat colour."""
+    L = luma_bytes(img)
+    w, h = img.size
+    rows = sum(1 for y in range(h) if any(8 < v < 247 for v in L[y * w:(y + 1) * w]))
+    cols = sum(1 for x in range(w) if any(8 < L[y * w + x] < 247 for y in range(h)))
+    return rows, cols
+
+
+def band_width(img, y=None, x=None):
+    """Width in px of the intermediate-luma run crossing one boundary along a single scan line --
+    row `y` for the vertical (x=w/2) edge, column `x` for the horizontal (y=h/2) edge. This is the
+    number that would collapse to 0 px if uv_size were wrong by orders of magnitude too large (the
+    shader's per-texel offset shrinks to sub-pixel) or balloon to nearly the whole frame if uv_size
+    were wrong too small (the offset becomes huge) -- exactly Ruling 1's subject, the target's size
+    driving the renderer instead of a filter's (nonexistent) width/height settings."""
+    L = luma_bytes(img)
+    w, _ = img.size
+    if y is not None:
+        return sum(1 for v in L[y * w:(y + 1) * w] if 8 < v < 247)
+    return sum(1 for v in L[x::w] if 8 < v < 247)
 
 
 def make_pack_zip(path):
@@ -172,16 +257,20 @@ class FilterShot:
         with open(path, "wb") as f:
             f.write(base64.b64decode(b64.split(",", 1)[1]))
         img = Image.open(path).convert("RGBA")
-        pixels = img.getdata()
-        n = len(pixels)
-        lumas = [(r + g + b) / 3.0 for r, g, b, _ in pixels]
-        alphas = [a for _, _, _, a in pixels]
+        # getchannel(...).tobytes(), same idiom Shot above uses for alpha -- not the deprecated
+        # getdata() -- one flat bytes object per channel, indexed together below
+        r = img.getchannel("R").tobytes()
+        g = img.getchannel("G").tobytes()
+        b = img.getchannel("B").tobytes()
+        a = img.getchannel("A").tobytes()
+        n = len(a)
+        lumas = [(r[i] + g[i] + b[i]) / 3.0 for i in range(n)]
         self.path = path
         self.size = img.size
         self.mean = sum(lumas) / n
         self.variance = sum((v - self.mean) ** 2 for v in lumas) / n
-        self.min_alpha = min(alphas)
-        self.max_alpha = max(alphas)
+        self.min_alpha = min(a)
+        self.max_alpha = max(a)
 
     def __str__(self):
         return (f"mean_luma={self.mean:.2f}/255, variance={self.variance:.2f}, "
@@ -387,18 +476,153 @@ async def run_filter(c):
     check("removing the filter restores the original mean (within 1%)", abs(back - 1.0) <= 0.01,
           f"luminance ratio vs unfiltered={back:.4f} (={removed.mean:.2f}/{unfiltered.mean:.2f} luma), "
           f"window 0.99..1.01")
+    # a filter that never actually rendered would trivially leave the mean unchanged from
+    # unfiltered -- the check above alone can't tell "removed correctly" from "was a no-op all
+    # along". Comparing against the last FILTERED (amount=0.8) frame it must move AWAY from closes
+    # that gap: removed/filtered = 1/1.8 = 0.5556.
+    away = removed.mean / filtered.mean if filtered.mean else 0.0
+    check("removing the filter also moves the mean away from the last filtered frame",
+          0.52 <= away <= 0.60,
+          f"luminance ratio vs the amount=0.8 frame={away:.4f} (={removed.mean:.2f}/{filtered.mean:.2f} "
+          f"luma), window 0.52..0.60, shader predicts 1/(1+0.8)=0.5556")
 
     await c.request("RemoveInput", {"inputName": "fxbase"})
+
+
+async def run_spatial(c):
+    """glow-only's own maths (c + blur(c)*amount, see glow.effect) is IDENTICAL for any blur
+    radius, any uv_size and any sampling orientation on a perfectly FLAT source -- blurring a
+    uniform colour returns that colour regardless. That is why the flat-colour proof in run_filter
+    above cannot distinguish a correctly-oriented, correctly-sized capture from a flipped one, a
+    uv_size wrong by orders of magnitude, or a filter that captured no spatial content at all: a
+    filter forced to unconditionally skip (see the report's ARMED run) still passes 6 of that
+    function's 8 checks, because "brighter" and "still opaque and the right size" are also true of
+    the untouched original frame passed straight through. This uses a hard-edged, asymmetric image
+    instead and checks the SHAPE of the result."""
+    print("\n--- spatial proof: orientation and blur extent ---")
+    await c.request("CreateInput", {
+        "sceneName": "ffproof", "inputName": "quad", "inputKind": "image_source",
+        "inputSettings": {"file": QUAD_PNG}, "sceneItemEnabled": True})
+    await asyncio.sleep(1.0)
+
+    r = await c.request("GetSourceScreenshot", {
+        "sourceName": "quad", "imageFormat": "png", "imageWidth": W, "imageHeight": H})
+    with open(OUT_QUAD_UNFILTERED, "wb") as f:
+        f.write(base64.b64decode(r["imageData"].split(",", 1)[1]))
+    img0 = load_rgba(OUT_QUAD_UNFILTERED)
+    qm0 = quadrant_means(img0)
+    rows0, cols0 = band_counts(img0)
+    st0 = ImageStat.Stat(img0.convert("L"))
+    print(f"quad, no filter: quadrant means tl={qm0['tl']:.1f} tr={qm0['tr']:.1f} bl={qm0['bl']:.1f} "
+          f"br={qm0['br']:.1f} luma, band rows={rows0} cols={cols0}, frame mean={st0.mean[0]:.2f} "
+          f"var={st0.var[0]:.1f} luma^2 -> {OUT_QUAD_UNFILTERED}")
+    check("(a) unfiltered: top-left is the brightest quadrant", qm0["tl"] > max(qm0["tr"], qm0["bl"], qm0["br"]) + 50,
+          f"tl={qm0['tl']:.1f}, tr={qm0['tr']:.1f}, bl={qm0['bl']:.1f}, br={qm0['br']:.1f} luma")
+    check("(b) unfiltered: no blur band -- edges are hard", rows0 == 0 and cols0 == 0,
+          f"band rows={rows0} (of {H}), band cols={cols0} (of {W}), expected 0/0")
+
+    # audio_mode=0 (master, nothing playing): silence keeps `level` at a fixed, reproducible value
+    # (0), so the blur radius (3 + 6*level, see glow.effect) and every measurement below is
+    # deterministic run to run, not dependent on which instant of the tone's envelope a screenshot
+    # happens to land on -- this section only needs a stable spatial signature, not a loudness one.
+    await c.request("CreateSourceFilter", {
+        "sourceName": "quad", "filterName": "fx", "filterKind": "foxfire_effects",
+        "filterSettings": {"pack": "demo", "preset": "glow-only", "audio_mode": 0}})
+    await asyncio.sleep(1.5)
+
+    r = await c.request("GetSourceScreenshot", {
+        "sourceName": "quad", "imageFormat": "png", "imageWidth": W, "imageHeight": H})
+    with open(OUT_QUAD_FILTERED, "wb") as f:
+        f.write(base64.b64decode(r["imageData"].split(",", 1)[1]))
+    img1 = load_rgba(OUT_QUAD_FILTERED)
+    qm1 = quadrant_means(img1)
+    rows1, cols1 = band_counts(img1)
+    bw_row = band_width(img1, y=H // 4)
+    bw_col = band_width(img1, x=W // 4)
+    st1 = ImageStat.Stat(img1.convert("L"))
+    print(f"quad + glow-only (silent): quadrant means tl={qm1['tl']:.1f} tr={qm1['tr']:.1f} "
+          f"bl={qm1['bl']:.1f} br={qm1['br']:.1f} luma, band rows={rows1} cols={cols1}, "
+          f"band width row{H//4}={bw_row} px col{W//4}={bw_col} px, frame mean={st1.mean[0]:.2f} "
+          f"var={st1.var[0]:.1f} luma^2 -> {OUT_QUAD_FILTERED}")
+    check("(a) filtered: top-left is still the brightest quadrant (no flip/transpose)",
+          qm1["tl"] > max(qm1["tr"], qm1["bl"], qm1["br"]) + 50,
+          f"tl={qm1['tl']:.1f}, tr={qm1['tr']:.1f}, bl={qm1['bl']:.1f}, br={qm1['br']:.1f} luma")
+    check("(b) filtered: glow spreads a measurable blur band across both edges", rows1 > 0 and cols1 > 0,
+          f"band rows={rows1} (of {H}), band cols={cols1} (of {W}), expected >0/>0")
+    check("(b) band width is plausible -- collapses to 0 or balloons if uv_size is wrong by orders "
+          "of magnitude", 0 < bw_row < 100 and 0 < bw_col < 100,
+          f"row{H//4} band={bw_row} px, col{W//4} band={bw_col} px, window (0, 100) px each")
+    check("(c) filtering raises the frame mean (glow adds light, doesn't just redistribute it)",
+          st1.mean[0] > st0.mean[0], f"frame mean {st0.mean[0]:.2f} -> {st1.mean[0]:.2f} luma")
+    check("(c) filtering lowers the frame variance (blur pulls the two plateaus together)",
+          st1.var[0] < st0.var[0], f"frame variance {st0.var[0]:.1f} -> {st1.var[0]:.1f} luma^2")
+
+    await c.request("RemoveSourceFilter", {"sourceName": "quad", "filterName": "fx"})
+    await c.request("RemoveInput", {"inputName": "quad"})
+
+
+async def run_transparency(c):
+    """I2: the capture blend and the final draw blend must agree on ONE alpha convention (see the
+    comments in ff-filter.c) or a translucent edge either bleeds colour it shouldn't (capture side)
+    or gets darkened by double-applying alpha (draw side). 'alphahole.png' has a genuine alpha
+    discontinuity -- opaque white left half, fully transparent right half, stored with the
+    background colour (red) left in the pixel data under alpha=0, mirroring what some PNG
+    exporters and overlay sources actually do -- so a region deep inside the transparent half, far
+    (>100 px) from the only edge in the image, must stay transparent and colourless after
+    filtering: any colour reaching it can only have leaked in through a wrong alpha convention, not
+    from the glow halo (glow-only's blur radius here is a handful of px, nowhere near 100)."""
+    print("\n--- transparency proof: alpha convention ---")
+    await c.request("CreateInput", {
+        "sceneName": "ffproof", "inputName": "hole", "inputKind": "image_source",
+        "inputSettings": {"file": ALPHAHOLE_PNG}, "sceneItemEnabled": True})
+    await asyncio.sleep(1.0)
+
+    r = await c.request("GetSourceScreenshot", {
+        "sourceName": "hole", "imageFormat": "png", "imageWidth": W, "imageHeight": H})
+    with open(OUT_ALPHA_UNFILTERED, "wb") as f:
+        f.write(base64.b64decode(r["imageData"].split(",", 1)[1]))
+    img0 = load_rgba(OUT_ALPHA_UNFILTERED)
+    region0 = ImageStat.Stat(img0.crop((450, 20, 620, 340)))
+    print(f"hole, no filter: far-interior region mean RGBA={[round(v, 2) for v in region0.mean]} "
+          f"-> {OUT_ALPHA_UNFILTERED}")
+    check("sanity: the test region really is transparent before filtering", region0.mean[3] < 1,
+          f"mean alpha={region0.mean[3]:.2f}")
+
+    await c.request("CreateSourceFilter", {
+        "sourceName": "hole", "filterName": "fx", "filterKind": "foxfire_effects",
+        "filterSettings": {"pack": "demo", "preset": "glow-only", "audio_mode": 0, "l0.amount": 0.8}})
+    await asyncio.sleep(1.5)
+
+    r = await c.request("GetSourceScreenshot", {
+        "sourceName": "hole", "imageFormat": "png", "imageWidth": W, "imageHeight": H})
+    with open(OUT_ALPHA_FILTERED, "wb") as f:
+        f.write(base64.b64decode(r["imageData"].split(",", 1)[1]))
+    img1 = load_rgba(OUT_ALPHA_FILTERED)
+    region1 = ImageStat.Stat(img1.crop((450, 20, 620, 340)))
+    print(f"hole + glow-only: far-interior region mean RGBA={[round(v, 2) for v in region1.mean]} "
+          f"-> {OUT_ALPHA_FILTERED}")
+    check("far-transparent input stays transparent after filtering", region1.mean[3] < 8,
+          f"mean alpha={region1.mean[3]:.2f}, threshold <8")
+    check("no colour bleeds into the transparent region", max(region1.mean[:3]) < 8,
+          f"mean RGB=({region1.mean[0]:.2f}, {region1.mean[1]:.2f}, {region1.mean[2]:.2f}), "
+          f"threshold <8 each")
+
+    await c.request("RemoveSourceFilter", {"sourceName": "hole", "filterName": "fx"})
+    await c.request("RemoveInput", {"inputName": "hole"})
 
 
 async def main():
     make_tone(WAV)
     make_pack_zip(ZIP)
+    make_quadrant_png(QUAD_PNG)
+    make_alphahole_png(ALPHAHOLE_PNG)
     ws = None
     try:
         ws, c = await open_client("driver")
         await run(c)
         await run_filter(c)
+        await run_spatial(c)
+        await run_transparency(c)
     except FFTimeout as e:
         check(e.what, False, f"timed out after {REQ_TIMEOUT}s — possible deadlock")
     finally:
@@ -410,5 +634,8 @@ async def main():
 
 
 asyncio.run(main())
-print(f"\n{len(FAILURES)} failed check(s)" + (f": {FAILURES}" if FAILURES else ""))
+passed = len(CHECKS) - len(FAILURES)
+print(f"\n{passed}/{len(CHECKS)} checks passed ({len(CHECKS)} armed)")
+if FAILURES:
+    print(f"{len(FAILURES)} failed check(s): {FAILURES}")
 sys.exit(1 if FAILURES else 0)
