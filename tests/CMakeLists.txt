@@ -22,3 +22,6 @@ foreach(t analysis handoff licence)
   add_test(NAME ${t} COMMAND test_${t})
 endforeach()
 target_link_libraries(test_handoff PRIVATE pthread)
+
+add_executable(verify_cli verify_cli.c)
+target_link_libraries(verify_cli PRIVATE ff-core)
