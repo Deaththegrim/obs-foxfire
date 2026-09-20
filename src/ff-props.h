@@ -1,6 +1,7 @@
 #pragma once
 #include <obs-module.h>
 #include <graphics/graphics.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "ff-audio.h"
@@ -23,7 +24,10 @@
 #define S_BEAT "beat_sensitivity" /* float 0.1..3, default 1 */
 #define S_INSTALL "install_zip"   /* path */
 
+/* See the threading contract at the top of ff-props.c: state_lock is what lets the UI thread read
+   this while the video thread rewrites it. */
 struct ff_instance {
+	pthread_mutex_t state_lock;
 	obs_source_t *self;
 	bool is_filter;
 	struct ff_audio *audio;

@@ -245,6 +245,9 @@ static void read_param_default(struct ff_param *p, const struct ff_layer_def *de
 		break;
 	}
 	clamp_to_range(p);
+	/* everything above is the preset speaking; from here on p->def may be overwritten by a user
+	   setting, so the pristine value is kept beside it rather than recomputed later */
+	memcpy(p->preset_def, p->def, sizeof p->preset_def);
 }
 
 static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const struct ff_preset *preset, size_t idx)
@@ -694,18 +697,20 @@ void ff_renderer_set_defaults(struct ff_renderer *r, obs_data_t *settings)
 				continue;
 			char key[96];
 			param_key(key, sizeof key, i, p->name);
+			/* preset_def, never def: def may already carry a user setting, and recording
+			   that as the default is what would make "Restore Defaults" a no-op */
 			switch (p->type) {
 			case GS_SHADER_PARAM_FLOAT:
-				obs_data_set_default_double(settings, key, (double)p->def[0]);
+				obs_data_set_default_double(settings, key, (double)p->preset_def[0]);
 				break;
 			case GS_SHADER_PARAM_INT:
-				obs_data_set_default_int(settings, key, (long long)p->def[0]);
+				obs_data_set_default_int(settings, key, (long long)p->preset_def[0]);
 				break;
 			case GS_SHADER_PARAM_BOOL:
-				obs_data_set_default_bool(settings, key, p->def[0] != 0.f);
+				obs_data_set_default_bool(settings, key, p->preset_def[0] != 0.f);
 				break;
 			case GS_SHADER_PARAM_VEC4:
-				obs_data_set_default_int(settings, key, (long long)pack_color(p->def));
+				obs_data_set_default_int(settings, key, (long long)pack_color(p->preset_def));
 				break;
 			default:
 				break;
@@ -726,8 +731,12 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 				continue;
 			char key[96];
 			param_key(key, sizeof key, i, p->name);
-			if (!obs_data_has_user_value(settings, key))
-				continue; /* untouched: the preset's own value stands */
+			if (!obs_data_has_user_value(settings, key)) {
+				/* untouched, or cleared by Restore Defaults: put the preset's own value
+				   back. Skipping would leave the last user value in p->def forever. */
+				memcpy(p->def, p->preset_def, sizeof p->def);
+				continue;
+			}
 			switch (p->type) {
 			case GS_SHADER_PARAM_FLOAT:
 				p->def[0] = (float)obs_data_get_double(settings, key);

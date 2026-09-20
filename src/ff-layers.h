@@ -29,7 +29,8 @@ struct ff_param {
 	char label[64], group[64];
 	float min, max, step;
 	bool has_range;
-	float def[4];
+	float def[4];         /* live value: preset default, then the user's setting if there is one */
+	float preset_def[4];  /* the pristine preset value; what "Restore Defaults" must come back to */
 	gs_image_file_t *tex; /* TEXTURE params only, from a <string path="..."> annotation */
 	bool builtin;
 };

@@ -60,7 +60,10 @@ static uint32_t src_h(void *d)
 	return ((struct ff_instance *)d)->height;
 }
 
-/* video_render gets no frame time of its own; the tick that precedes it on the same thread does. */
+/* video_render gets no frame time of its own; the tick that precedes it does. One file-scope float
+   is enough for every instance: libobs runs video_tick and video_render for all sources on the one
+   video thread, and hands every source of a frame the same `seconds`, so there is nothing
+   per-instance to keep. A tick that ever moved off that thread would break this. */
 static float g_dt;
 
 static void src_tick(void *d, float seconds)
