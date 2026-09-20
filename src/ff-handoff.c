@@ -13,7 +13,7 @@ void ff_handoff_publish(struct ff_handoff *h, const struct ff_frame *f)
 
 bool ff_handoff_read(struct ff_handoff *h, struct ff_frame *out)
 {
-	for (int tries = 0; tries < 1024; tries++) {
+	for (int tries = 0; tries < FF_HANDOFF_MAX_TRIES; tries++) {
 		unsigned s = atomic_load_explicit(&h->seq, memory_order_acquire);
 		if (s == 0) return false;
 		if (s & 1u) continue;                     /* writer mid-flight */
@@ -22,5 +22,5 @@ bool ff_handoff_read(struct ff_handoff *h, struct ff_frame *out)
 		unsigned s2 = atomic_load_explicit(&h->seq, memory_order_relaxed);
 		if (s2 - s < 3u) return true;   /* our slot untouched since the copy */
 	}
-	return false; /* reader lost the race 256 times; caller keeps previous frame */
+	return false; /* reader lost the race FF_HANDOFF_MAX_TRIES times; caller keeps previous frame */
 }
