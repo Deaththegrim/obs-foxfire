@@ -70,9 +70,13 @@ static void analyse(struct ff_analysis *a)
 	kiss_fftr(a->cfg, a->td, a->fd);
 	const float release = expf(-a->hop_seconds / (a->p.release_ms / 1000.f + 1e-3f));
 	for (int b = 0; b < FF_BANDS; b++) {
-		float e = 0.f; int n = 0;
-		for (int k = a->band_lo[b]; k < a->band_hi[b]; k++, n++) e += a->fd[k].r * a->fd[k].r + a->fd[k].i * a->fd[k].i;
-		float amp = n ? sqrtf(e / (float)n) * (2.f / (float)FF_FFT) * 4.f : 0.f; /* window + scale compensation */
+		float maxpow = 0.f;
+		for (int k = a->band_lo[b]; k < a->band_hi[b]; k++) {
+			float pw = a->fd[k].r * a->fd[k].r + a->fd[k].i * a->fd[k].i;
+			if (pw > maxpow) maxpow = pw;
+		}
+		/* peak bin, not band-mean: a sine at 0 dBFS lights its band to ~1.0 regardless of band width */
+		float amp = sqrtf(maxpow) * (4.f / (float)FF_FFT); /* Hann coherent-gain compensation */
 		float u = db_to_unit(amp);
 		a->band_raw[b] = u;
 		a->f.bands[b] = u > a->f.bands[b] ? u : a->f.bands[b] * release;
@@ -115,7 +119,7 @@ static void analyse(struct ff_analysis *a)
 	if (a->refractory_hops > 0) a->refractory_hops--;
 	const float beat_decay = expf(-a->hop_seconds / 0.2886f); /* 200 ms half-life */
 	if (onset) { a->f.beat = 1.f; a->f.beat_count++; a->refractory_hops = 5; /* ~107 ms */ }
-	else { a->f.beat *= beat_decay; if (a->f.beat < 1e-3f) a->f.beat = 0.f; }
+	else { a->f.beat *= beat_decay; if (a->f.beat < 0.02f) a->f.beat = 0.f; } /* snap an imperceptible envelope tail to exactly 0 */
 	/* waveform: last 1024 samples decimated by 2 */
 	for (int i = 0; i < FF_WAVE; i++) {
 		float s = a->ring[(a->ring_pos + FF_FFT - FF_HOP + 2 * i) % FF_FFT] * gain;
