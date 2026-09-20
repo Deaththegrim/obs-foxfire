@@ -21,14 +21,24 @@ for _ in $(seq 1 40); do
 	python3 -c "import socket,sys; s=socket.socket(); sys.exit(s.connect_ex(('127.0.0.1',$port)))" && break
 done
 
+# a second clock around the driver: the driver times out each request, but if it hangs anywhere
+# else (a connect that never resolves, an OBS that wedged before the socket opened) this is what
+# turns the hang into a failure. FF_PROOF_TIMEOUT exists so this branch can be armed.
+drv_timeout=${FF_PROOF_TIMEOUT:-300}
 rc=0
-python3 "$here/tools/render-proof.py" "$port" || rc=$?
+timeout "$drv_timeout" python3 "$here/tools/render-proof.py" "$port" || rc=$?
+if [ "$rc" -eq 124 ]; then
+	echo "  [FAIL] the render proof returns: driver killed after ${drv_timeout}s -- a step never came back, which is what a deadlock looks like"
+fi
 
 pkill -TERM -P "$obspid" 2>/dev/null || true
 kill -TERM "$obspid" 2>/dev/null || true
 # a source whose destroy deadlocks would hang here: give it room, then say so
 for _ in $(seq 1 20); do kill -0 "$obspid" 2>/dev/null || break; sleep 1; done
-kill -0 "$obspid" 2>/dev/null && echo "WARNING: obs did not exit within 20s of SIGTERM"
+if kill -0 "$obspid" 2>/dev/null; then
+	echo "  [FAIL] obs exits on SIGTERM: still alive 20s after the signal -- a destroy-path deadlock looks like this"
+	if [ "$rc" -eq 0 ]; then rc=1; fi
+fi
 kill -KILL "$obspid" 2>/dev/null || true
 wait "$obspid" 2>/dev/null || true
 cp "$sb"/obs-studio/logs/*.txt /tmp/ff-obs.log 2>/dev/null || cp "$sb/obs-stdout.txt" /tmp/ff-obs.log

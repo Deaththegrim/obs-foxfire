@@ -49,7 +49,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
    Not covered, deliberately: in->frame is touched only by the video thread, and in->width/height
    are a pair of aligned uint32_t written by update() and read by get_width/get_height -- a lock
-   there would buy nothing a torn read could not already rule out. */
+   there would buy nothing a torn read could not already rule out.
+
+   Not covered, and NOT ours to fix: the obs_data_t settings object is mutated by both threads --
+   the UI clears S_INSTALL in on_install_changed, the video thread walks the item hash in
+   erase_layer_keys and inserts defaults in ff_renderer_set_defaults. state_lock does not guard it,
+   because the same object is written concurrently by libobs itself (obs_source_update applies into
+   source->context.settings from whichever thread calls it) and by every other plugin that clears a
+   setting from a modified callback. It is pre-existing and endemic; taking our lock around our own
+   accesses would not make it safe, only look safe. Flagged here so the sentence above is read as
+   "every field of this struct", not "every byte the two threads touch". */
 
 #include "ff-props.h"
 #include <plugin-support.h>
