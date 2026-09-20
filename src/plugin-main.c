@@ -27,6 +27,14 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
+	/* diagnostic hook: set FOXFIRE_INSTALL_ZIP=<path to a pack .zip> to exercise
+	   ff_packs_install_zip() at startup, before the scan below runs */
+	const char *install_zip = getenv("FOXFIRE_INSTALL_ZIP");
+	if (install_zip) {
+		char msg[512] = {0};
+		bool ok = ff_packs_install_zip(install_zip, msg, sizeof msg);
+		obs_log(LOG_INFO, "install: %s: %s", ok ? "ok" : "refused", msg);
+	}
 	/* startup scan: logs pack counts; the source keeps its own list (Task 8) */
 	{ struct ff_pack_list l; ff_packs_scan(&l, (int64_t)time(NULL)); ff_packs_free(&l); }
 	return true;

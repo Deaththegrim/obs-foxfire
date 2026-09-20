@@ -17,7 +17,9 @@ struct ff_pack {
 	struct ff_licence licence;   /* state NONE when unlicensed pack */
 	char licensee_name[128];     /* from licensee.json display_name, may be empty */
 };
-struct ff_pack_list { struct ff_pack *packs; size_t n; char errors[8][256]; size_t nerrors; };
+/* errors[] entries are 512 bytes (not 256): a refusal reason plus the pack directory's basename
+   must fit without a second truncation on top of the (already-capped) reason text -- see add_error() */
+struct ff_pack_list { struct ff_pack *packs; size_t n; char errors[8][512]; size_t nerrors; };
 
 /* scans data/packs/* (bundled) then obs_module_config_path("packs")/*; bad packs are skipped and named in errors */
 void ff_packs_scan(struct ff_pack_list *out, int64_t now);
