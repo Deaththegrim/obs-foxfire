@@ -36,4 +36,22 @@ endif()
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c)
 
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+  src/ff-analysis.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c src/ff-props.c src/ff-source.c src/ff-filter.c
+  vendor/kissfft/kiss_fft.c vendor/kissfft/kiss_fftr.c vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c)
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src vendor/kissfft vendor/monocypher)
+target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE kiss_fft_scalar=float)
+# Vendored third-party sources trip -Wsign-compare under this project's -Werror;
+# scoped to the vendor files only, never to our own sources.
+set_source_files_properties(
+  vendor/kissfft/kiss_fft.c vendor/kissfft/kiss_fftr.c
+  vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c
+  PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare"
+)
+option(FOXFIRE_BUILD_TESTS "Build ff unit tests" OFF)
+if(FOXFIRE_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
