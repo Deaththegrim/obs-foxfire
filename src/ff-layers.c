@@ -411,6 +411,8 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 	/* source mode has no input; the 1x1 transparent texture keeps `image` bound and lets the
 	   sprite draw supply UVs for layer 0 */
 	gs_texture_t *prev = input ? input : r->blank;
+	if (!r->ping || !r->pong)
+		return prev; /* graphics subsystem never handed us the targets; pass the input through */
 	gs_texrender_t *dst = r->ping;
 
 	gs_blend_state_push();
