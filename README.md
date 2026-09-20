@@ -34,6 +34,35 @@ Suggested reading to get up and running:
 * [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
 * [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
 
+## Render proof
+
+`tools/ff_proof.py` is a headless, armed proof of the Foxfire Visualizer source and Effects filter:
+it boots OBS on Xvfb in a throwaway config, installs the built plugin, and drives it over
+obs-websocket through silence/tone/gap/Restore Defaults/pack-install, a properties-vs-render stress
+race, source/filter destroy, and dedicated spatial (orientation + blur extent) and transparency
+(alpha convention) checks -- 29 named checks, printed as an armed/expected count so a run that gets
+cut short (e.g. a timeout) is visible as such, not silently reported green.
+
+Run it locally with `tools/render-proof.sh`, which also owns the sandbox lifecycle (fresh config
+dir, `xvfb-run`, port polling, and teardown that survives a wedged destroy path):
+
+```
+tools/render-proof.sh
+```
+
+`tools/proof.py` is the packforge-facing entry point -- a thin CLI that boots its own sandbox, runs
+the same `ff_proof.py` harness unchanged, and (with `--pack`) additionally installs a pack and
+screenshots every preset it declares, gating each on non-blank render:
+
+```
+python3 tools/proof.py --plugin-build . --pack data/packs/demo --out build_x86_64/proof
+```
+
+Writes `<out>/report.json` (`obs`, `inspected`, `presets`, `warnings`, `checks`), one
+`<out>/<pack>-<preset>.png` per inspected preset, and `<out>/obs.log`. Exit 0 all good; 1 any check
+failed, any preset blank, or any `[obs-foxfire]` warning/failure line in the log; 2 nothing was
+inspected (OBS never came up). Add `--keep` to keep the temp sandbox and print its path.
+
 ## GitHub Actions & CI
 
 Default GitHub Actions workflows are available for the following repository actions:
@@ -43,6 +72,9 @@ Default GitHub Actions workflows are available for the following repository acti
 * `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
 * `build-project`: Builds the actual project and is triggered by other workflows.
 * `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
+* `proof`: Builds on Ubuntu, runs the unit tests, then runs `tools/proof.py` against the demo pack
+  under software GL (`LIBGL_ALWAYS_SOFTWARE=1`) and uploads `proof-out/` (screenshots, `report.json`,
+  `obs.log`) as a build artifact on every run, pass or fail.
 
 The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
 

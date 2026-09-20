@@ -1,0 +1,28 @@
+name: Linux render proof
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OBS (PPA) and tools
+        run: |
+          sudo add-apt-repository -y ppa:obsproject/obs-studio
+          sudo apt-get update
+          sudo apt-get install -y obs-studio xvfb cmake ninja-build pkg-config build-essential \
+            python3-websockets python3-pil python3-numpy mesa-utils libsimde-dev
+      - name: Build
+        run: |
+          cmake --preset ubuntu-x86_64 -DFOXFIRE_BUILD_TESTS=ON
+          cmake --build --preset ubuntu-x86_64
+      - name: Unit tests
+        run: ctest --test-dir build_x86_64 --output-on-failure
+      - name: Render proof (software GL)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/proof.py --plugin-build . --pack data/packs/demo --out proof-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: proof-${{ github.sha }}
+          path: proof-out

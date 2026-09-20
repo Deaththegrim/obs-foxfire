@@ -14,6 +14,13 @@ video thread and the UI/RPC thread, and obs-websocket answers keepalives from a 
 so a hung request would leave an await pending until the heat death of the universe rather than
 failing. Every request and every connect therefore runs under a wall clock, and a timeout becomes
 a named FAIL, not a traceback. tools/render-proof.sh puts a second clock around the whole driver.
+
+This module is both a CLI (`python3 tools/ff_proof.py [port]`, used by tools/render-proof.sh) and an
+importable driver: tools/proof.py imports it to run this exact 29-check harness as the first phase of
+its packforge-facing proof, then reuses its Client/check()/CHECKS bookkeeping to add pack-driven
+preset checks on the same OBS instance. Nothing here is weakened or duplicated for that reuse --
+only main() gained a `port` parameter and the old module-level `asyncio.run(main())` + exit call
+moved under `if __name__ == "__main__":` so importing this file has no side effects.
 """
 import asyncio
 import base64
@@ -28,7 +35,7 @@ from pathlib import Path
 import websockets
 from PIL import Image, ImageStat
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 4460
+PORT = 4460
 URL = f"ws://127.0.0.1:{PORT}"
 OUT_SILENT = "/tmp/ff-first-render.png"
 OUT_TONE = "/tmp/ff-first-render-tone.png"
@@ -632,7 +639,18 @@ async def run_transparency(c):
     await c.request("RemoveInput", {"inputName": "hole"})
 
 
-async def main():
+async def main(port=None):
+    """Runs the full 29-check harness once. `port` overrides the module-level default (4460) so a
+    caller that already knows its sandbox's obs-websocket port -- tools/render-proof.sh via argv,
+    tools/proof.py via its own sandbox setup -- can point this at it. CHECKS/FAILURES are cleared
+    first so a process that calls main() more than once (tools/proof.py does not; this only guards
+    against surprise) still reports an honest armed count for the run it just did."""
+    global PORT, URL
+    if port is not None:
+        PORT = port
+        URL = f"ws://127.0.0.1:{PORT}"
+    CHECKS.clear()
+    FAILURES.clear()
     make_tone(WAV)
     make_pack_zip(ZIP)
     make_quadrant_png(QUAD_PNG)
@@ -654,12 +672,21 @@ async def main():
                 pass
 
 
-asyncio.run(main())
-passed = len(CHECKS) - len(FAILURES)
-print(f"\n{passed}/{len(CHECKS)} checks passed ({len(CHECKS)} armed, {EXPECTED_CHECKS} expected)")
-if len(CHECKS) < EXPECTED_CHECKS:
-    print(f"  note: only {len(CHECKS)} of {EXPECTED_CHECKS} expected checks ran -- the run was cut "
-          f"short (a timeout?) before reaching the rest")
-if FAILURES:
-    print(f"{len(FAILURES)} failed check(s): {FAILURES}")
-sys.exit(1 if FAILURES else 0)
+def summarize():
+    """Prints the same pass/armed/expected summary the old module-level code printed, and returns
+    the exit code that code passed to sys.exit -- split out so a caller (tools/proof.py) can fold
+    this harness's CHECKS/FAILURES into a larger report instead of the process just exiting here."""
+    passed = len(CHECKS) - len(FAILURES)
+    print(f"\n{passed}/{len(CHECKS)} checks passed ({len(CHECKS)} armed, {EXPECTED_CHECKS} expected)")
+    if len(CHECKS) < EXPECTED_CHECKS:
+        print(f"  note: only {len(CHECKS)} of {EXPECTED_CHECKS} expected checks ran -- the run was cut "
+              f"short (a timeout?) before reaching the rest")
+    if FAILURES:
+        print(f"{len(FAILURES)} failed check(s): {FAILURES}")
+    return 1 if FAILURES else 0
+
+
+if __name__ == "__main__":
+    _port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
+    asyncio.run(main(_port))
+    sys.exit(summarize())

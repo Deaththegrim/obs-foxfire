@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs tools/render-proof.py against a throwaway OBS in a fresh sandbox config dir.
+# Runs tools/ff_proof.py against a throwaway OBS in a fresh sandbox config dir.
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 port=4460
@@ -26,7 +26,7 @@ done
 # turns the hang into a failure. FF_PROOF_TIMEOUT exists so this branch can be armed.
 drv_timeout=${FF_PROOF_TIMEOUT:-300}
 rc=0
-timeout "$drv_timeout" python3 "$here/tools/render-proof.py" "$port" || rc=$?
+timeout "$drv_timeout" python3 "$here/tools/ff_proof.py" "$port" || rc=$?
 if [ "$rc" -eq 124 ]; then
 	echo "  [FAIL] the render proof returns: driver killed after ${drv_timeout}s -- a step never came back, which is what a deadlock looks like"
 fi
