@@ -54,14 +54,14 @@ release artefact has shipped. Build from source if you need it.
 1. Open OBS, add a source, pick **Foxfire Visualizer**.
 2. In its properties, set Pack to **Foxfire Demo**, Preset to **Demo Bars** (the dropdowns show each
    pack/preset's display name, not its internal id — "Demo Bars" is also the only preset offered
-   here, since the demo pack's other preset, "Demo Glow", is a filter-kind preset and only shows up
+   here, since the demo pack's other preset, "Demo Glow (filter)", is a filter-kind preset and only shows up
    under the Effects filter below).
 3. Point Audio at whatever you want it to react to (Master mix by default) and it should light up
    with whatever's playing.
 
 For the Effects filter: add any source (e.g. a colour source, a webcam, a game capture), open its
-filters, add **Foxfire Effects**, pick a pack and preset the same way (**Demo Glow** is what shows
-up there for the demo pack).
+filters, add **Foxfire Effects**, pick a pack and preset the same way (**Demo Glow (filter)** is
+what shows up there for the demo pack).
 
 ## Supported Build Environments
 

@@ -74,23 +74,25 @@ for override values; a param override is read as either an object (colour, all f
 mapped in, `a` optional and defaulting to `1.0` if omitted), a number, or a boolean.
 
 **What actually happens if you get this wrong depends on the uniform's own type, and it is not
-always silent.** The engine separately checks, at apply time, that an override's shape matches the
-uniform it's being applied to (`apply_override()` in `src/ff-layers.c`):
+always silent.** The engine checks, at apply time, that an override's shape matches the uniform
+it's being applied to (`apply_override()` in `src/ff-layers.c`): a colour object only applies
+cleanly against a **vector** (`float4`) uniform, and a number/boolean only applies cleanly against
+a **scalar** (float/int/bool) uniform. Every other combination — an object against a scalar or a
+texture, a number against a vector or a texture — is caught and logged:
+`preset '<id>' layer <n>: param '<name>' override has the wrong type; using the shader default` —
+named to the preset, the layer index, and the parameter. **This warning is not allowlisted in the
+render proof, so it fails a CI/local proof run outright, not just a visual glance.** The shader's
+own compiled-in default is kept; nothing is zeroed.
 
-- Write a colour as a bare array against a **vector** uniform (a `float4` tint, exactly the mistake
-  this section warns about) and the override doesn't parse into r/g/b/a at all, so it's read as a
-  non-colour, wrong-shape value against a vector target. The engine catches that mismatch and logs
-  `preset '<id>' layer <n>: param '<name>' override has the wrong type; using the shader default` —
-  named to the preset, the layer index, and the parameter. **This warning is not allowlisted in the
-  render proof, so it fails a CI/local proof run outright, not just a visual glance.** The shader's
-  own compiled-in default is kept; nothing is zeroed.
-- The same wrong-type warning fires for any other shape mismatch against a **non-scalar** uniform
-  (texture, vector) — an object where a scalar was expected, a number against a texture, and so on.
-- The one case that genuinely is silent: a malformed override (such as a bare array, which parses to
-  nothing) against a **scalar** uniform (float/int/bool). There the apply path doesn't distinguish
-  "a real zero the author wrote" from "nothing was parsed", so it silently writes `0` with no
-  warning at all. This is the one case worth checking by eye — everything else, the log tells you
-  exactly what and where.
+That covers the exact mistake this section warns about: write a colour as a bare array (`"tint":
+[1.0, 0.41, 0.3, 1.0]`) against a `float4` uniform and, because there's no array-parsing branch (see
+above), it's read as an empty, non-colour override — which lands on a vector target and hits that
+mismatch branch, loudly.
+
+The one case that genuinely is silent: that same kind of empty, non-colour override landing on a
+**scalar** uniform instead. The apply path doesn't distinguish "a real zero the author wrote" from
+"nothing was parsed", so it silently writes `0` with no warning at all. This is the one case worth
+checking by eye — everything else, the log tells you exactly what and where.
 
 ## Texture parameters: the `path` annotation
 
@@ -147,13 +149,20 @@ annotation is refused if it:
 - contains `:` (colon — rules out `C:\...` and similar)
 - does not exist as a real file inside the pack directory once resolved
 
-A pack that fails any single check above is refused as a whole (see "How a bad manifest fails"
-above), with the specific reason logged and also recorded for the properties panel. The recorded
-reason text is truncated to 400 characters, and the properties panel only ever shows the first 8
-refusal reasons from a scan — that cap is shared across the *entire* scan (both the pack directory
-bundled with the plugin and your OBS user config's pack directory, added together), not 8 per pack;
-if more than 8 packs across both locations fail, only the first 8 reasons make it to the panel (the
-rest are still logged in full).
+These two path kinds fail differently, and the difference matters:
+
+- A **manifest path** (an effect path, a preset thumb) failing any single check above refuses the
+  whole pack (see "How a bad manifest fails" above), with the specific reason logged and also
+  recorded for the properties panel. The recorded reason text is truncated to 400 characters, and
+  the properties panel only ever shows the first 8 refusal reasons from a scan — that cap is shared
+  across the *entire* scan (both the pack directory bundled with the plugin and your OBS user
+  config's pack directory, added together), not 8 per pack; if more than 8 packs across both
+  locations fail, only the first 8 reasons make it to the panel (the rest are still logged in full).
+- A **texture `path` annotation** failing the same checks does not propagate anywhere: the engine
+  logs `texture path '<path>' refused` and moves on to the next annotation. Nothing is added to the
+  pack's error list, and nothing about the layer, the preset, or the pack fails — only that one
+  texture parameter stays unbound (sampling a 1x1 transparent placeholder), exactly like a texture
+  file that's missing or fails to load (see Texture parameters, above).
 
 ## Presets and OBS types
 
