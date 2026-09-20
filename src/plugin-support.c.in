@@ -17,17 +17,31 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include <plugin-support.h>
+#include <util/base.h> /* LOG_WARNING / LOG_ERROR -- for the severity tag below */
 
 const char *PLUGIN_NAME = "@CMAKE_PROJECT_NAME@";
 const char *PLUGIN_VERSION = "@CMAKE_PROJECT_VERSION@";
 
 void obs_log(int log_level, const char *format, ...)
 {
-	size_t length = 4 + strlen(PLUGIN_NAME) + strlen(format);
+	/* OBS's log file carries no severity marker of its own -- a LOG_INFO line and a LOG_WARNING
+	   line are byte-identical in shape ("HH:MM:SS.mmm: [obs-foxfire] <message>"), so a log
+	   scanner that guesses severity from the message TEXT (a "warning"/"failed" keyword search)
+	   misses most real warnings and errors, whose wordings were never written to contain those
+	   words. Stamp the severity into the line itself so a scanner can match a stable tag instead
+	   of guessing. tools/proof.py's log scanner is keyed on exactly these two tags -- do not
+	   change them without updating it there too. */
+	const char *tag = "";
+	if (log_level == LOG_WARNING)
+		tag = "warn: ";
+	else if (log_level == LOG_ERROR)
+		tag = "error: ";
+
+	size_t length = 4 + strlen(PLUGIN_NAME) + strlen(tag) + strlen(format);
 
 	char *template = malloc(length + 1);
 
-	snprintf(template, length, "[%s] %s", PLUGIN_NAME, format);
+	snprintf(template, length, "[%s] %s%s", PLUGIN_NAME, tag, format);
 
 	va_list(args);
 

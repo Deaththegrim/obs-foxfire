@@ -43,6 +43,15 @@ race, source/filter destroy, and dedicated spatial (orientation + blur extent) a
 (alpha convention) checks -- 29 named checks, printed as an armed/expected count so a run that gets
 cut short (e.g. a timeout) is visible as such, not silently reported green.
 
+A local run needs three Python packages CI already installs as system packages (see
+`.github/workflows/proof.yaml`): `websockets`, `Pillow` (`PIL`), and `numpy`. On Debian/Ubuntu:
+
+```
+sudo apt-get install python3-websockets python3-pil python3-numpy
+```
+
+(or `pip install websockets pillow numpy` in a virtualenv.)
+
 Run it locally with `tools/render-proof.sh`, which also owns the sandbox lifecycle (fresh config
 dir, `xvfb-run`, port polling, and teardown that survives a wedged destroy path):
 
@@ -58,10 +67,17 @@ screenshots every preset it declares, gating each on non-blank render:
 python3 tools/proof.py --plugin-build . --pack data/packs/demo --out build_x86_64/proof
 ```
 
-Writes `<out>/report.json` (`obs`, `inspected`, `presets`, `warnings`, `checks`), one
-`<out>/<pack>-<preset>.png` per inspected preset, and `<out>/obs.log`. Exit 0 all good; 1 any check
-failed, any preset blank, or any `[obs-foxfire]` warning/failure line in the log; 2 nothing was
-inspected (OBS never came up). Add `--keep` to keep the temp sandbox and print its path.
+With `--pack`, it also generates a throwaway copy of that pack with its id rewritten and installs
+it too, to prove the install path itself (not just the bundled copy `install-local.sh` ships)
+actually gets used -- see `install_probe_pack` in the report below.
+
+Writes `<out>/report.json` (`obs`, `checks_armed`, `presets_inspected`, `presets`,
+`install_probe_pack`, `warnings`, `checks`), one `<out>/<pack>-<preset>.png` per inspected preset,
+and `<out>/obs.log`. Exit 0 all good; 1 any check failed, any preset blank, a `pack.json` with no
+presets or an out-of-range preset count, an armed/expected check-count mismatch, or any
+`[obs-foxfire]` warn:/error: line in the log (one exact, licence-public-key-is-zero warning is
+allowed while `FF_PUBLIC_KEY` is unset -- see `ALLOWED_WARNING_TEXT` in `tools/proof.py`); 2 nothing
+was armed (OBS never came up). Add `--keep` to keep the temp sandbox and print its path.
 
 ## GitHub Actions & CI
 

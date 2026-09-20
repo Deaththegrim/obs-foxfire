@@ -16,6 +16,13 @@ add_library(${CMAKE_PROJECT_NAME} MODULE)
 find_package(libobs REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 
+# plugin-support.c.in (added by cmake/common/helpers_common.cmake, before find_package(libobs)
+# above ran) now stamps LOG_WARNING/LOG_ERROR severity into every obs_log() line -- give it the
+# libobs include dirs it needs for util/base.h's LOG_* constants.
+if(TARGET plugin-support)
+  target_link_libraries(plugin-support PUBLIC OBS::libobs)
+endif()
+
 if(ENABLE_FRONTEND_API)
   find_package(obs-frontend-api REQUIRED)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
