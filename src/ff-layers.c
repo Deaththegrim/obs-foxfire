@@ -266,6 +266,21 @@ static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const str
 	}
 	bfree(err); /* a successful compile can still leave warnings behind */
 
+	if (!gs_effect_get_technique(L->effect, "Draw")) {
+		/* Compiles cleanly but has nothing render_layer can run every frame. Caught here, once,
+		   at load -- not in render_layer, which would otherwise re-log this on every single
+		   frame. Treated exactly like a compile failure (error recorded, effect torn down, layer
+		   left with L->effect == NULL) so the render loop's existing `if (!L->effect) continue`
+		   skips it and add_layer_errors() surfaces it in the properties panel, instead of the
+		   layer silently clearing its stage of the chain to blank every frame. */
+		snprintf(L->error, sizeof L->error, "no 'Draw' technique");
+		obs_log(LOG_WARNING, "layer '%s' failed to load: no 'Draw' technique", path.array);
+		gs_effect_destroy(L->effect);
+		L->effect = NULL;
+		dstr_free(&path);
+		return;
+	}
+
 	size_t n = gs_effect_get_num_params(L->effect);
 	L->params = bzalloc(sizeof(struct ff_param) * (n ? n : 1));
 	for (size_t i = 0; i < n; i++) {
@@ -643,8 +658,9 @@ static bool is_exposed(const struct ff_param *p)
 	       p->type == GS_SHADER_PARAM_VEC4;
 }
 
-/* The render loop skips a layer whose effect failed to compile; this is what makes the skip
-   visible instead of a black frame with no explanation. */
+/* The render loop skips a layer that failed to load -- compile failure, or a compiled effect
+   with no "Draw" technique -- which is what makes the skip visible instead of a black frame with
+   no explanation. */
 static void add_layer_errors(struct ff_renderer *r, obs_properties_t *props)
 {
 	for (size_t i = 0; i < r->nlayers; i++) {

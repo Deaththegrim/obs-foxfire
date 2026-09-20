@@ -8,6 +8,57 @@ Foxfire is a free GPL OBS Studio plugin: an audio-reactive layered shader visual
 * A CMake project file
 * GitHub Actions workflows and repository actions
 
+## What it is
+
+Foxfire adds two OBS object types:
+
+* **Foxfire Visualizer** (a source) — an audio-reactive layered shader visualizer. Add it to a
+  scene, pick a pack, pick a preset, and it reacts to whatever audio you point it at (the master
+  mix, or a specific source).
+* **Foxfire Effects** (a filter) — the same layered shader engine, attached to any other source, so
+  its output gets the reactive treatment instead of drawing on its own.
+
+Both are driven by **packs**: directories of `.effect` shaders plus a `pack.json` manifest
+declaring presets (named combinations of layers with default parameter values). The plugin ships
+one free demo pack (`data/packs/demo`, two presets: Bars, Glow). Everything a pack can declare, and
+exactly what the engine checks before it'll load one, is in
+[`docs/PACK-FORMAT.md`](docs/PACK-FORMAT.md).
+
+## Install
+
+### Windows
+
+The Windows installer package installs Foxfire to
+`C:\ProgramData\obs-studio\plugins\obs-foxfire\`. Download the release zip, extract, run the
+installer (or copy the extracted tree into that folder yourself), then start OBS.
+
+### Linux
+
+Two ways to install:
+
+* **`.deb` package** — download it from a release, `sudo apt install ./obs-foxfire-<version>.deb`
+  (or `sudo dpkg -i` + `sudo apt-get install -f` to pull in any missing dependency).
+* **`install-local.sh`** — build from source (see Supported Build Environments below), then run
+  `./install-local.sh` from the repo root. With no argument it installs into your real OBS user
+  config (`~/.config/obs-studio/plugins/obs-foxfire`); pass a directory to install into a sandbox
+  config instead (this is what `tools/render-proof.sh` and `tools/proof.py` do to test a build
+  without touching your real OBS setup).
+
+### macOS
+
+Not yet released; the template's build system supports it (see Supported Build Environments) but no
+release artefact has shipped. Build from source if you need it.
+
+## Quick start
+
+1. Open OBS, add a source, pick **Foxfire Visualizer**.
+2. In its properties, set Pack to **Demo**, Preset to **Bars**.
+3. Point Audio at whatever you want it to react to (Master mix by default) and it should light up
+   with whatever's playing.
+
+For the Effects filter: add any source (e.g. a colour source, a webcam, a game capture), open its
+filters, add **Foxfire Effects**, pick a pack and preset the same way.
+
 ## Supported Build Environments
 
 | Platform  | Tool   |
@@ -20,9 +71,13 @@ Foxfire is a free GPL OBS Studio plugin: an audio-reactive layered shader visual
 | Ubuntu 24.04 | `pkg-config`
 | Ubuntu 24.04 | `build-essential` |
 
-## Quick Start
+## About licences and copying
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+Foxfire is GPL and its source is right here, so nothing in it can stop a rebuilt copy from loading
+any pack. Paid packs carry a licence file signed by KitsuneStudio that the engine checks offline (no
+network, ever); it exists to show who a pack was sold to and to expire quietly if a licence is not
+renewed. If you rebuild Foxfire without that check, you can; the packs are still licensed to the
+person who bought them.
 
 ## Documentation
 
@@ -101,6 +156,10 @@ Successful builds on GitHub Actions will produce build artifacts that can be dow
 ### Building a Release
 
 To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
+
+Don't tag from memory: follow [`docs/RELEASE.md`](docs/RELEASE.md), which covers what has to be
+green first, the Windows smoke test the draft release waits on, and the public-key precondition for
+any release that ships a paid pack.
 
 ## Signing and Notarizing on macOS
 
