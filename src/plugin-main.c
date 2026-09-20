@@ -24,6 +24,18 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
+extern struct obs_source_info ff_source_info;
+
+const char *obs_module_name(void)
+{
+	return "Foxfire";
+}
+
+const char *obs_module_description(void)
+{
+	return "Audio-reactive layered shader visualizer and effects";
+}
+
 bool obs_module_load(void)
 {
 	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
@@ -41,6 +53,7 @@ bool obs_module_load(void)
 		ff_packs_scan(&l, (int64_t)time(NULL));
 		ff_packs_free(&l);
 	}
+	obs_register_source(&ff_source_info);
 	return true;
 }
 
