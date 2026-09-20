@@ -10,8 +10,8 @@
 
 /* Uniform names the engine feeds every frame. They are never exposed as properties, and a pack
    that declares one gets the engine's value, not an author-editable knob. */
-static const char *BUILTINS[] = {"ViewProj", "image",  "uv_size",     "time",      "frame_dt",   "level",
-				 "peak",     "bass",   "mid",         "treble",    "beat",       "beat_count",
+static const char *BUILTINS[] = {"ViewProj", "image",    "uv_size",     "time",       "frame_dt",      "level",
+				 "peak",     "bass",     "mid",         "treble",     "beat",          "beat_count",
 				 "spectrum", "waveform", "layer_index", "rand_frame", "rand_instance", NULL};
 
 static bool is_builtin(const char *n)
@@ -187,7 +187,8 @@ static void apply_override(struct ff_param *p, const struct ff_param_override *o
 	else if (!colour && scalar)
 		p->def[0] = o->v[0];
 	else
-		obs_log(LOG_WARNING, "preset '%s' layer %d: param '%s' override has the wrong type; using the shader default",
+		obs_log(LOG_WARNING,
+			"preset '%s' layer %d: param '%s' override has the wrong type; using the shader default",
 			preset_id, (int)layer_idx, p->name);
 }
 
@@ -635,8 +636,8 @@ static bool is_exposed(const struct ff_param *p)
 {
 	if (p->builtin)
 		return false;
-	return p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT ||
-	       p->type == GS_SHADER_PARAM_BOOL || p->type == GS_SHADER_PARAM_VEC4;
+	return p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT || p->type == GS_SHADER_PARAM_BOOL ||
+	       p->type == GS_SHADER_PARAM_VEC4;
 }
 
 /* The render loop skips a layer whose effect failed to compile; this is what makes the skip

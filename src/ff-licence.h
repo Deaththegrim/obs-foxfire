@@ -9,5 +9,7 @@ struct ff_licence {
 	int64_t issued, expires;
 	char reason[160];
 };
-void ff_licence_verify(const char *json, size_t json_len, const uint8_t pubkey[32], int64_t now, struct ff_licence *out);
-size_t ff_licence_canonical(const char *discord_id, const char *pack_id, const char *licence_id, int64_t issued, int64_t expires, char *buf, size_t cap);
+void ff_licence_verify(const char *json, size_t json_len, const uint8_t pubkey[32], int64_t now,
+		       struct ff_licence *out);
+size_t ff_licence_canonical(const char *discord_id, const char *pack_id, const char *licence_id, int64_t issued,
+			    int64_t expires, char *buf, size_t cap);

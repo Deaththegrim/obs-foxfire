@@ -36,7 +36,11 @@ bool obs_module_load(void)
 		obs_log(LOG_INFO, "install: %s: %s", ok ? "ok" : "refused", msg);
 	}
 	/* startup scan: logs pack counts; the source keeps its own list (Task 8) */
-	{ struct ff_pack_list l; ff_packs_scan(&l, (int64_t)time(NULL)); ff_packs_free(&l); }
+	{
+		struct ff_pack_list l;
+		ff_packs_scan(&l, (int64_t)time(NULL));
+		ff_packs_free(&l);
+	}
 	return true;
 }
 
