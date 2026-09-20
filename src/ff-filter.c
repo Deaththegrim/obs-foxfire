@@ -101,12 +101,28 @@ static void flt_render(void *d, gs_effect_t *effect)
 	   (image_source, text, browser, most real content) samples ITS "image" param OUT OF that
 	   passed-in effect and draws nothing if it is NULL. Normal scene compositing always has one
 	   bound from further up the render tree; called bare, from here, there may be none (this is
-	   exactly the render_filter_bypass technique-begin/end bracket libobs's own
-	   obs_source_process_filter_begin uses for its bypass path) -- so bind the default effect
-	   ourselves before capturing, or any non-custom-draw target renders as fully transparent. */
-	gs_effect_t *cap_effect = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-	gs_technique_t *cap_tech = gs_effect_get_technique(cap_effect, "Draw");
+	   the same technique-begin/end bracket obs_source_default_render opens -- obs-source.c:2883-
+	   2898, itself called from the filter capture path in
+	   obs_source_process_filter_begin_with_color_space, obs-source.c:4456 -- not the bypass path's
+	   render_filter_bypass, which runs from the DRAW side, obs_source_process_filter_tech_end)
+	   -- so bind the default effect ourselves before capturing, or any non-custom-draw target
+	   renders as fully transparent. */
+	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+	gs_technique_t *cap_tech = gs_effect_get_technique(def, "Draw");
 	size_t cap_passes = gs_technique_begin(cap_tech);
+	if (!cap_passes) {
+		/* a technique with no passes would leave the texrender holding only the clear colour --
+		   no different from a capture that never ran, so treat it exactly like one. gs_technique_end
+		   still has to run: gs_technique_begin already set cur_technique/cur_effect regardless of
+		   the pass count, and only _end clears them back. */
+		obs_log(LOG_ERROR, "filter: the default effect's Draw technique has no passes -- "
+				   "graphics subsystem in a bad state?");
+		gs_technique_end(cap_tech);
+		gs_blend_state_pop();
+		gs_texrender_end(in->capture);
+		obs_source_skip_video_filter(in->self);
+		return;
+	}
 	for (size_t p = 0; p < cap_passes; p++) {
 		gs_technique_begin_pass(cap_tech, p);
 		obs_source_video_render(target);
@@ -121,7 +137,6 @@ static void flt_render(void *d, gs_effect_t *effect)
 		obs_source_skip_video_filter(in->self);
 		return;
 	}
-	gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 	gs_effect_set_texture(gs_effect_get_param_by_name(def, "image"), tex);
 	gs_blend_state_push();
 	/* same convention as src_render in ff-source.c: the layer stack's output is premultiplied

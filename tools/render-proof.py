@@ -50,6 +50,13 @@ ALPHAHOLE_PNG = "/tmp/ff-alphahole.png"
 W, H = 640, 360
 STRESS_ROUNDS = 30
 REQ_TIMEOUT = 20  # seconds; generous for a local socket, short next to a hang
+# the number of check() calls a full, uninterrupted run makes (run() + run_filter() + run_spatial()
+# + run_transparency(); NOT counting the FFTimeout handler's own check(), which is a different,
+# additional code path that only runs instead of some of the above). Keep this in sync by hand when
+# a check is added or removed -- it exists so a run that times out partway through prints a visibly
+# SHRUNKEN armed count next to this constant, instead of silently reporting "N/N (N armed)" for
+# whatever smaller N it actually reached.
+EXPECTED_CHECKS = 29
 
 FAILURES = []
 CHECKS = []  # every check that ran, pass or fail -- "armed" count: see check() below
@@ -99,7 +106,7 @@ def make_tone(path, hz=110.0, seconds=2.0, rate=48000, amp=0.5):
 def make_quadrant_png(path, w=W, h=H):
     """Hard-edged, asymmetric-in-both-axes test image: opaque white in the top-left quadrant,
     opaque black everywhere else. Unlike a flat colour, this can catch a flipped or transposed
-    capture (whichever quadrant ends up brightest names the bug) and, via band_counts/band_width
+    capture (whichever quadrant ends up brightest names the bug) and, via band_counts/band_pixels
     below, whether glow's blur has any spatial extent at all -- see run_spatial()."""
     img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
     white = Image.new("RGBA", (w // 2, h // 2), (255, 255, 255, 255))
@@ -155,13 +162,15 @@ def band_counts(img):
     return rows, cols
 
 
-def band_width(img, y=None, x=None):
-    """Width in px of the intermediate-luma run crossing one boundary along a single scan line --
-    row `y` for the vertical (x=w/2) edge, column `x` for the horizontal (y=h/2) edge. This is the
-    number that would collapse to 0 px if uv_size were wrong by orders of magnitude too large (the
-    shader's per-texel offset shrinks to sub-pixel) or balloon to nearly the whole frame if uv_size
-    were wrong too small (the offset becomes huge) -- exactly Ruling 1's subject, the target's size
-    driving the renderer instead of a filter's (nonexistent) width/height settings."""
+def band_pixels(img, y=None, x=None):
+    """COUNT of intermediate-luma pixels on one scan line -- row `y` for the vertical (x=w/2) edge,
+    column `x` for the horizontal (y=h/2) edge. Not the width of the contiguous run (the scan line
+    only crosses one boundary in this test image, so in practice the two are close, but this
+    counts every intermediate pixel on the line, it does not find the run and measure it). This is
+    the number that would collapse towards 0 px if uv_size were wrong by orders of magnitude too
+    large (the shader's per-texel offset shrinks to sub-pixel) or balloon to nearly the whole frame
+    if uv_size were wrong too small (the offset becomes huge) -- exactly Ruling 1's subject, the
+    target's size driving the renderer instead of a filter's (nonexistent) width/height settings."""
     L = luma_bytes(img)
     w, _ = img.size
     if y is not None:
@@ -521,10 +530,13 @@ async def run_spatial(c):
     check("(b) unfiltered: no blur band -- edges are hard", rows0 == 0 and cols0 == 0,
           f"band rows={rows0} (of {H}), band cols={cols0} (of {W}), expected 0/0")
 
-    # audio_mode=0 (master, nothing playing): silence keeps `level` at a fixed, reproducible value
-    # (0), so the blur radius (3 + 6*level, see glow.effect) and every measurement below is
-    # deterministic run to run, not dependent on which instant of the tone's envelope a screenshot
-    # happens to land on -- this section only needs a stable spatial signature, not a loudness one.
+    # audio_mode=0 is FF_AUDIO_MASTER, not "off" -- the master mix may still carry 'tone' looping
+    # from run()/run_filter() above (it does: this section's own printed tr/bl means are nonzero,
+    # not the 0.0 a truly silent frame would show), so `level` and therefore glow's blur radius
+    # (3..9 px, see glow.effect) vary run to run depending on where in the tone's envelope a
+    # screenshot happens to land. Every check below is written with a window wide enough to hold
+    # across that whole range -- in particular the band-width window is (2, 100) px, not a tight
+    # band around one predicted radius, for exactly this reason.
     await c.request("CreateSourceFilter", {
         "sourceName": "quad", "filterName": "fx", "filterKind": "foxfire_effects",
         "filterSettings": {"pack": "demo", "preset": "glow-only", "audio_mode": 0}})
@@ -537,25 +549,34 @@ async def run_spatial(c):
     img1 = load_rgba(OUT_QUAD_FILTERED)
     qm1 = quadrant_means(img1)
     rows1, cols1 = band_counts(img1)
-    bw_row = band_width(img1, y=H // 4)
-    bw_col = band_width(img1, x=W // 4)
+    bp_row = band_pixels(img1, y=H // 4)
+    bp_col = band_pixels(img1, x=W // 4)
     st1 = ImageStat.Stat(img1.convert("L"))
     print(f"quad + glow-only (silent): quadrant means tl={qm1['tl']:.1f} tr={qm1['tr']:.1f} "
           f"bl={qm1['bl']:.1f} br={qm1['br']:.1f} luma, band rows={rows1} cols={cols1}, "
-          f"band width row{H//4}={bw_row} px col{W//4}={bw_col} px, frame mean={st1.mean[0]:.2f} "
+          f"band pixels row{H//4}={bp_row} px col{W//4}={bp_col} px, frame mean={st1.mean[0]:.2f} "
           f"var={st1.var[0]:.1f} luma^2 -> {OUT_QUAD_FILTERED}")
     check("(a) filtered: top-left is still the brightest quadrant (no flip/transpose)",
           qm1["tl"] > max(qm1["tr"], qm1["bl"], qm1["br"]) + 50,
           f"tl={qm1['tl']:.1f}, tr={qm1['tr']:.1f}, bl={qm1['bl']:.1f}, br={qm1['br']:.1f} luma")
-    check("(b) filtered: glow spreads a measurable blur band across both edges", rows1 > 0 and cols1 > 0,
-          f"band rows={rows1} (of {H}), band cols={cols1} (of {W}), expected >0/>0")
-    check("(b) band width is plausible -- collapses to 0 or balloons if uv_size is wrong by orders "
-          "of magnitude", 0 < bw_row < 100 and 0 < bw_col < 100,
-          f"row{H//4} band={bw_row} px, col{W//4} band={bw_col} px, window (0, 100) px each")
-    check("(c) filtering raises the frame mean (glow adds light, doesn't just redistribute it)",
-          st1.mean[0] > st0.mean[0], f"frame mean {st0.mean[0]:.2f} -> {st1.mean[0]:.2f} luma")
-    check("(c) filtering lowers the frame variance (blur pulls the two plateaus together)",
-          st1.var[0] < st0.var[0], f"frame variance {st0.var[0]:.1f} -> {st1.var[0]:.1f} luma^2")
+    # >= 2, not > 0: a single stray pixel (an antialiasing or PNG-decode artifact, say) must not
+    # be enough to pass this on its own
+    check("(b) filtered: glow spreads a measurable blur band across both edges", rows1 >= 2 and cols1 >= 2,
+          f"band rows={rows1} (of {H}), band cols={cols1} (of {W}), expected >=2/>=2")
+    check("(b) band pixel count is plausible -- collapses towards 0 or balloons if uv_size is wrong "
+          "by orders of magnitude", 2 <= bp_row < 100 and 2 <= bp_col < 100,
+          f"row{H//4} band={bp_row} px, col{W//4} band={bp_col} px, window [2, 100) px each")
+    # explicit epsilons, not a bare `>`/`<`: makes the claimed DIRECTION visible in the threshold
+    # itself rather than implied by "not equal", and rules out a same-to-the-last-bit no-op passing
+    # on floating-point noise
+    check("(c) filtering raises the frame mean by a measurable amount (glow adds light, doesn't "
+          "just redistribute it)", st1.mean[0] > st0.mean[0] * 1.001,
+          f"frame mean {st0.mean[0]:.2f} -> {st1.mean[0]:.2f} luma, "
+          f"needs > {st0.mean[0] * 1.001:.2f} (+0.1%)")
+    check("(c) filtering lowers the frame variance by a measurable amount (blur pulls the two "
+          "plateaus together)", st1.var[0] < st0.var[0] * 0.999,
+          f"frame variance {st0.var[0]:.1f} -> {st1.var[0]:.1f} luma^2, "
+          f"needs < {st0.var[0] * 0.999:.1f} (-0.1%)")
 
     await c.request("RemoveSourceFilter", {"sourceName": "quad", "filterName": "fx"})
     await c.request("RemoveInput", {"inputName": "quad"})
@@ -635,7 +656,10 @@ async def main():
 
 asyncio.run(main())
 passed = len(CHECKS) - len(FAILURES)
-print(f"\n{passed}/{len(CHECKS)} checks passed ({len(CHECKS)} armed)")
+print(f"\n{passed}/{len(CHECKS)} checks passed ({len(CHECKS)} armed, {EXPECTED_CHECKS} expected)")
+if len(CHECKS) < EXPECTED_CHECKS:
+    print(f"  note: only {len(CHECKS)} of {EXPECTED_CHECKS} expected checks ran -- the run was cut "
+          f"short (a timeout?) before reaching the rest")
 if FAILURES:
     print(f"{len(FAILURES)} failed check(s): {FAILURES}")
 sys.exit(1 if FAILURES else 0)
