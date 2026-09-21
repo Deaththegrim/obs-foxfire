@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <errno.h>
 #ifdef _WIN32
 #include <process.h>
 #include <windows.h>
@@ -282,6 +283,28 @@ static bool pubkey_is_zero(void)
 	return true;
 }
 
+static void log_stale_temp_dirs(const char *packs_root)
+{
+	/* Scan for leftover .tmp-<pid> directories from prior crashed installs. We cannot safely
+	   reclaim them: on Unix, kill(pid, 0) can return ESRCH when the process is gone, but pids can
+	   be reused after wraparound, so a stale leftover whose pid now belongs to a different process
+	   would be deleted catastrophically. On Windows, Process32First has no equivalent fast check.
+	   Document the leak instead of silently leaking: an operator seeing "leftover temp" in the logs
+	   knows to investigate. */
+	os_dir_t *d = os_opendir(packs_root);
+	if (!d)
+		return;
+	struct os_dirent *e;
+	while ((e = os_readdir(d))) {
+		if (e->directory && strncmp(e->d_name, ".tmp-", 5) == 0) {
+			obs_log(LOG_WARNING, "packs: leftover temp directory not auto-reclaimed (cannot safely "
+				 "check if its process is still alive; manual cleanup safe if pid %s is no longer running): %s",
+				 e->d_name + 5, e->d_name);
+		}
+	}
+	os_closedir(d);
+}
+
 void ff_packs_scan(struct ff_pack_list *out, int64_t now)
 {
 	memset(out, 0, sizeof *out);
@@ -299,6 +322,7 @@ void ff_packs_scan(struct ff_pack_list *out, int64_t now)
 	if (user) {
 		os_mkdirs(user);
 		scan_dir(out, user, now);
+		log_stale_temp_dirs(user);
 		bfree(user);
 	}
 	obs_log(LOG_INFO, "packs: %zu loaded, %zu refused", out->n, out->nerrors);
@@ -337,29 +361,45 @@ const struct ff_preset *ff_pack_find_preset(const struct ff_pack *p, const char 
 
 /* path_is_symlink: the ONLY question that matters before recursing or opening a directory during
    cleanup. os_readdir()'s e->directory comes from stat(), which follows a symlink -- so a symlinked
-   directory reads as a directory and remove_recursive() would descend into (and delete the contents
+   directory reads as a directory and ff_remove_recursive() would descend into (and delete the contents
    of) whatever it points at, which can be outside the packs tree entirely. lstat()/the reparse-point
-   attribute never follow the link, so this is the one place that decision is actually safe to make. */
+   attribute never follow the link, so this is the one place that decision is actually safe to make.
+   On any error (EACCES, ENAMETOOLONG, ELOOP, or Windows conversion/GetFileAttributes failure), this
+   logs a warning and returns true (fail-closed: treat unknowns as symlinks so remove_recursive does
+   not descend into them). */
 #ifdef _WIN32
 static bool path_is_symlink(const char *path)
 {
 	wchar_t *w = NULL;
-	os_utf8_to_wcs_ptr(path, 0, &w);
-	if (!w)
-		return false;
+	if (!os_utf8_to_wcs_ptr(path, 0, &w) || !w) {
+		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (path conversion failed)",
+			 path);
+		return true;
+	}
 	DWORD attrs = GetFileAttributesW(w);
 	bfree(w);
-	return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+	if (attrs == INVALID_FILE_ATTRIBUTES) {
+		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (GetFileAttributesW failed)",
+			 path);
+		return true;
+	}
+	return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 #else
 static bool path_is_symlink(const char *path)
 {
 	struct stat st;
-	return lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+	if (lstat(path, &st) != 0) {
+		int err = errno;
+		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (lstat failed: %s)",
+			 path, strerror(err));
+		return true;
+	}
+	return S_ISLNK(st.st_mode);
 }
 #endif
 
-static bool remove_recursive(const char *path)
+bool ff_remove_recursive(const char *path)
 {
 	/* path itself may be a symlink (e.g. a symlinked pack directory renamed straight into the
 	   backup slot on reinstall, see ff_packs_install_zip): unlink it and stop, never opendir()
@@ -380,7 +420,7 @@ static bool remove_recursive(const char *path)
 			if (os_unlink(p.array) != 0)
 				ok = false;
 		} else if (e->directory) {
-			if (!remove_recursive(p.array))
+			if (!ff_remove_recursive(p.array))
 				ok = false;
 		} else if (os_unlink(p.array) != 0)
 			ok = false;
@@ -478,7 +518,7 @@ static bool check_zip_entries(const struct dstr *listing, struct dstr *top, char
 /* listing_has_symlink: check_zip_entries above judges entry NAMES only -- a symlink entry with an
    in-tree name (e.g. "ember/link") passes every one of those checks and would be restored by the
    extractor as an actual symlink inside the extraction directory, which is exactly what lets
-   remove_recursive() (or anything else that later walks the pack) be steered outside packs/<id>/.
+   ff_remove_recursive() (or anything else that later walks the pack) be steered outside packs/<id>/.
    The type character libobs never gives us via os_readdir()/os_dirent (that struct doesn't carry
    it) is the first column of a VERBOSE zip/tar listing -- 'l' for a symlink, the same convention as
    `ls -l` -- so this reads a second, verbose listing of the same static file purely to check that
@@ -486,6 +526,8 @@ static bool check_zip_entries(const struct dstr *listing, struct dstr *top, char
    would corrupt a field-split, but the type character is always column zero regardless). */
 static bool listing_has_symlink(const struct dstr *verbose_listing)
 {
+	if (!verbose_listing || !verbose_listing->array || verbose_listing->len == 0)
+		return false;
 	const char *p = verbose_listing->array, *end = p + verbose_listing->len;
 	while (p < end) {
 		if (*p == 'l')
@@ -623,10 +665,10 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	os_process_args_add_arg(type_args, zip_path);
 #endif
 	struct dstr type_listing = {0};
-	bool type_listed = run_args_capture(type_args, &type_listing);
+	bool type_listed = run_args_capture(type_args, &type_listing) && type_listing.len > 0;
 	os_process_args_destroy(type_args);
 	if (!type_listed) {
-		snprintf(msg, cap, "could not read the zip's contents");
+		snprintf(msg, cap, "could not check the zip for invalid entries (symlinks)");
 		obs_log(LOG_WARNING, "pack install: could not read verbose zip listing: %s", zip_path);
 		dstr_free(&type_listing);
 		dstr_free(&topdir);
@@ -637,7 +679,7 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	bool has_symlink = listing_has_symlink(&type_listing);
 	dstr_free(&type_listing);
 	if (has_symlink) {
-		snprintf(msg, cap, "zip must not contain symlinks");
+		snprintf(msg, cap, "zip must not contain symlinks. Re-download from kitsune.gg if this is an official pack.");
 		obs_log(LOG_WARNING, "pack install: zip contains a symlink entry, refused: %s", zip_path);
 		dstr_free(&topdir);
 		dstr_free(&tool);
@@ -647,7 +689,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 
 	struct dstr tmp = {0};
 	dstr_printf(&tmp, "%s/.tmp-%d", packs_dir, (int)ff_getpid());
-	remove_recursive(tmp.array); /* clear any stale leftover from a crashed prior install */
+	if (!ff_remove_recursive(tmp.array)) /* clear any stale leftover from a crashed prior install */
+		obs_log(LOG_WARNING, "pack install: failed to clean up leftover temp directory: %s", tmp.array);
 	os_mkdirs(tmp.array);
 
 #ifdef _WIN32
@@ -672,7 +715,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	if (!extracted) {
 		snprintf(msg, cap, "failed to extract the zip");
 		obs_log(LOG_WARNING, "pack install: failed to extract %s", zip_path);
-		remove_recursive(tmp.array);
+		if (!ff_remove_recursive(tmp.array))
+			obs_log(LOG_WARNING, "pack install: failed to clean up extraction temp dir: %s", tmp.array);
 		dstr_free(&tmp);
 		dstr_free(&topdir);
 		bfree(packs_dir);
@@ -689,7 +733,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	if (!ok) {
 		snprintf(msg, cap, "%s", check.nerrors ? check.errors[0] : "pack failed validation");
 		ff_packs_free(&check);
-		remove_recursive(tmp.array);
+		if (!ff_remove_recursive(tmp.array))
+			obs_log(LOG_WARNING, "pack install: failed to clean up extraction temp dir after validation failure: %s", tmp.array);
 		dstr_free(&tmp);
 		dstr_free(&pack_src);
 		bfree(packs_dir);
@@ -709,10 +754,11 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	if (os_file_exists(dest.array)) {
 		struct dstr backup = {0};
 		dstr_printf(&backup, "%s/.bak-%s-%d", packs_dir, id, (int)ff_getpid());
-		remove_recursive(backup.array); /* clear any stale leftover backup from a crashed prior install */
+		if (!ff_remove_recursive(backup.array)) /* clear any stale leftover backup from a crashed prior install */
+			obs_log(LOG_WARNING, "pack install: failed to clean up old backup dir: %s", backup.array);
 		moved = os_safe_replace(dest.array, pack_src.array, backup.array) == 0;
 		if (moved)
-			remove_recursive(
+			ff_remove_recursive(
 				backup.array); /* on failure os_safe_replace has restored dest; leave backup for inspection */
 		dstr_free(&backup);
 	} else {
@@ -721,7 +767,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	dstr_free(&dest);
 
 	if (moved) {
-		remove_recursive(tmp.array); /* pack_src was moved out of tmp; the wrapper dir is safe to clear now */
+		if (!ff_remove_recursive(tmp.array)) /* pack_src was moved out of tmp; the wrapper dir is safe to clear now */
+			obs_log(LOG_WARNING, "pack install: failed to clean up wrapper temp dir after move: %s", tmp.array);
 		dstr_free(&tmp);
 		dstr_free(&pack_src);
 		bfree(packs_dir);

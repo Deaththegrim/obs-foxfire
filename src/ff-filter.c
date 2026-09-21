@@ -78,6 +78,10 @@ static void flt_render(void *d, gs_effect_t *effect)
 	/* capture the target into our own texrender */
 	gs_texrender_reset(in->capture);
 	if (!gs_texrender_begin(in->capture, w, h)) {
+		if (!in->begin_failed_logged) {
+			obs_log(LOG_WARNING, "filter: gs_texrender_begin failed (graphics context held?)");
+			in->begin_failed_logged = true;
+		}
 		obs_source_skip_video_filter(in->self);
 		return;
 	}

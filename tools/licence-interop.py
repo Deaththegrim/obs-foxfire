@@ -72,7 +72,7 @@ def main():
     failures = []
     tmp = Path(tempfile.mkdtemp()) / "licence.json"
 
-    def check(label, text, when, expected, expected_pack_id="ember"):
+    def check(label, text, when, expected, expected_pack_id="ember", expected_reason=None):
         tmp.write_text(text)
         out = subprocess.run(
             [str(CLI), pub_hex, str(tmp), expected_pack_id, str(when)],
@@ -82,9 +82,14 @@ def main():
         ).stdout.strip()
         got = out.split(" ", 1)[0] if out else "<no output>"
         ok = got == expected
+        if ok and expected_reason is not None:
+            ok = expected_reason in out
         print(f"{'PASS' if ok else 'FAIL'} {label}: {out}")
         if not ok:
-            failures.append(f"{label}: expected {expected}, got {got}")
+            if expected_reason and expected_reason not in out:
+                failures.append(f"{label}: expected {expected} with reason containing {expected_reason!r}, got {out}")
+            else:
+                failures.append(f"{label}: expected {expected}, got {got}")
 
     compact = json.dumps(doc, sort_keys=True, separators=(",", ":"))
 

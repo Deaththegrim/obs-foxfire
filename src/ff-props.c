@@ -429,6 +429,9 @@ struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self,
 		   follows (see ff-layers.c), and flt_render's own guard is what actually keeps a failed
 		   create from being a null dereference on the video thread. */
 		ff_require(in->capture, "the filter's capture render target");
+		if (!in->capture) {
+			snprintf(in->status, sizeof in->status, "%s", obs_module_text("Foxfire.Status.GraphicsUnavailable"));
+		}
 	}
 	obs_leave_graphics();
 	ff_instance_update(in, settings);

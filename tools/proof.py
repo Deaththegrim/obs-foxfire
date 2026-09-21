@@ -413,11 +413,30 @@ async def run(args) -> int:
         logs = sorted(obs_cfg.glob("logs/*.txt"))
         if logs:
             latest = logs[-1]
-            for line in latest.read_text(errors="replace").splitlines():
-                if WARN_TAG in line and any(t in line for t in ALLOWED_WARNING_TEXTS):
-                    continue  # expected -- see ALLOWED_WARNING_TEXTS
-                if WARN_TAG in line or ERROR_TAG in line:
+            log_text = latest.read_text(errors="replace")
+
+            # Track which expected warnings actually appeared in the log
+            found_expected = {text: False for text in ALLOWED_WARNING_TEXTS if text != "licence: public key not set; paid packs will not verify"}
+
+            for line in log_text.splitlines():
+                if WARN_TAG in line:
+                    # Check if this is an expected warning
+                    if any(t in line for t in ALLOWED_WARNING_TEXTS):
+                        # Track which expected warnings we found (except pubkey which is conditional)
+                        for text in found_expected:
+                            if text in line:
+                                found_expected[text] = True
+                        continue  # expected -- see ALLOWED_WARNING_TEXTS
+                    # Unexpected warning
                     report["warnings"].append(line.strip())
+                elif ERROR_TAG in line:
+                    report["warnings"].append(line.strip())
+
+            # Check that all non-conditional expected warnings actually fired
+            for text, found in found_expected.items():
+                if not found:
+                    report["warnings"].append(f"expected warning did not fire: {text!r}")
+
             shutil.copy(latest, out / "obs.log")
         if args.keep:
             print(f"proof: sandbox kept at {cfg_root}")

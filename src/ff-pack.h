@@ -52,4 +52,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap);
    Callers must ALSO confirm the file exists inside the pack -- this judges the name, not the inode. */
 bool ff_rel_ok(const char *p);
 
+/* recursively remove a directory, including symlinks and their targets (does not follow links).
+   Exported for unit testing; returns false on any failure, and logs warnings for each failure. */
+bool ff_remove_recursive(const char *path);
+
 extern const uint8_t FF_PUBLIC_KEY[32];

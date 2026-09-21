@@ -47,6 +47,7 @@ struct ff_instance {
 	bool install_failed;     /* colours the install line: a refusal must not read as a success */
 	bool reload_pending;     /* the Reload button asks for a re-read without a preset switch */
 	bool initialised;        /* false until the first update(): there is no previous preset yet */
+	bool begin_failed_logged; /* latch: gs_texrender_begin failures are logged only once per instance */
 };
 
 struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self, bool is_filter);

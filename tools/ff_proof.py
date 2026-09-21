@@ -57,6 +57,7 @@ OUT_ALPHA_FILTERED = "/tmp/ff-filter-alphahole-filtered.png"
 WAV = "/tmp/ff-tone.wav"
 ZIP = "/tmp/ff-demo2.zip"
 ZIP_SYMLINK = "/tmp/ff-symlink-attack.zip"
+ZIP_SYMLINK_CLEANUP = "/tmp/ff-symlink-cleanup-test.zip"
 SYMLINK_VICTIM_DIR = "/tmp/ff-symlink-victim"
 SYMLINK_CANARY = f"{SYMLINK_VICTIM_DIR}/canary.txt"
 QUAD_PNG = "/tmp/ff-quadrant.png"
@@ -70,7 +71,7 @@ REQ_TIMEOUT = 20  # seconds; generous for a local socket, short next to a hang
 # a check is added or removed -- it exists so a run that times out partway through prints a visibly
 # SHRUNKEN armed count next to this constant, instead of silently reporting "N/N (N armed)" for
 # whatever smaller N it actually reached.
-EXPECTED_CHECKS = 31
+EXPECTED_CHECKS = 33
 
 FAILURES = []
 CHECKS = []  # every check that ran, pass or fail -- "armed" count: see check() below
@@ -408,21 +409,43 @@ async def run(c):
     # the isolated entry-check logic (see tools/build_symlink_pack_zip.py + the before/after repro
     # in the fix report). victim_dir stands in for anything outside packs/ a malicious/careless
     # pack author's symlink could point at; canary.txt proves it, not just the install's own report.
+    # Two zips are tested: one with valid manifest (exercises the symlink listing defence directly),
+    # and one with invalid min_engine (exercises the cleanup path that must handle symlinks post-extraction).
     victim_dir = Path(SYMLINK_VICTIM_DIR)
     if victim_dir.exists():
-        shutil.rmtree(victim_dir)
+        if victim_dir.is_symlink():
+            victim_dir.unlink()
+        else:
+            shutil.rmtree(victim_dir)
     victim_dir.mkdir(parents=True)
     canary = Path(SYMLINK_CANARY)
     canary.write_text("canary-do-not-delete")
-    build_symlink_zip(ZIP_SYMLINK, str(victim_dir), "evilpack")
 
+    # First test: symlink with valid manifest -- the listing-step refusal must catch it
+    build_symlink_zip(ZIP_SYMLINK, str(victim_dir), "evilpack", "0.0.0")
     await c.request("SetInputSettings", {"inputName": "ff", "inputSettings": {"install_zip": ZIP_SYMLINK}})
     packs_after_attack = await c.request("GetInputPropertiesListPropertyItems",
                                          {"inputName": "ff", "propertyName": "pack"})
     ids_after_attack = [i["itemValue"] for i in packs_after_attack["propertyItems"]]
+    # Check both that pack was refused AND that the reason was symlinks (not min_engine)
     check("symlink-zip install refused: pack not added", "evilpack" not in ids_after_attack,
           f"{len(ids_after_attack)} pack(s): {ids_after_attack}")
+    settings = (await c.request("GetInputSettings", {"inputName": "ff"}))["inputSettings"]
+    install_msg = settings.get("install_msg", "")
+    check("symlink-zip refused for symlink (not min_engine)", "symlink" in install_msg.lower(),
+          f"install_msg={install_msg!r}, must mention symlinks")
     check("symlink-zip install: victim directory outside packs/ survives", canary.exists(),
+          f"{canary} exists={canary.exists()}")
+
+    # Second test: symlink with invalid min_engine -- exercises the cleanup path (remove_recursive with symlinks)
+    build_symlink_zip(ZIP_SYMLINK_CLEANUP, str(victim_dir), "evilpack2", "99.0.0")
+    await c.request("SetInputSettings", {"inputName": "ff", "inputSettings": {"install_zip": ZIP_SYMLINK_CLEANUP}})
+    packs_after_cleanup_test = await c.request("GetInputPropertiesListPropertyItems",
+                                               {"inputName": "ff", "propertyName": "pack"})
+    ids_after_cleanup_test = [i["itemValue"] for i in packs_after_cleanup_test["propertyItems"]]
+    check("bad-min_engine zip install refused: pack not added", "evilpack2" not in ids_after_cleanup_test,
+          f"{len(ids_after_cleanup_test)} pack(s): {ids_after_cleanup_test}")
+    check("cleanup test: victim directory still survives", canary.exists(),
           f"{canary} exists={canary.exists()}")
 
     # C1: properties (pack rescan + a walk of the renderer's layer array) on the RPC thread

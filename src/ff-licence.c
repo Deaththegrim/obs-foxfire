@@ -171,9 +171,13 @@ void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], con
 		snprintf(L->reason, sizeof L->reason, "licence signature does not verify");
 		return;
 	}
-	/* pack_id is signed (covered by canon above) so this cannot be spoofed by editing the file --
-	   but a genuine licence.json for pack A, copied verbatim into pack B's folder, has a perfectly
-	   valid signature; only comparing against the pack it was actually found in catches that. */
+	/* pack_id is signed (covered by canon above) so this check stops a genuine licence.json for pack A,
+	   copied verbatim into pack B's folder (as shipped) -- the signature verifies, but the pack_id
+	   field inside the signature is A, not B. However, this engine is GPL with public source: a user
+	   who obtains the pack.json file can edit its unsigned "licensed" flag (set at src/ff-pack.c:183)
+	   or "id" field, and edit the unsigned licence.json's pack_id field itself (it carries no
+	   integrity protection of its own), then recompile the plugin to use their modified files. This
+	   check prevents cross-package copying as a zipped pack, not local file modification. */
 	if (expected_pack_id && strcmp(L->pack_id, expected_pack_id) != 0) {
 		snprintf(L->reason, sizeof L->reason, "licence is for pack '%s', not '%s'", L->pack_id,
 			 expected_pack_id);
