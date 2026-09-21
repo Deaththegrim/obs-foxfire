@@ -183,6 +183,82 @@ int main(void)
 		CHECK(mx <= 0.05f);
 	}
 
+	/* Low-band resolution: adjacent bass bands must not be bit-identical.
+	   With a single 2048-point FFT they were: 23.44 Hz bins are wider than the log bands ask for
+	   down low, so bands 0-4 all collapsed onto bin 1, 5-8 onto bin 2 and 9-11 onto bin 3 -- at
+	   most THREE distinct values across bands 0..11, which on screen is three solid blocks.
+	   The long-window FFT resolves them. Driven with five separate low tones so the region has
+	   real structure to resolve rather than one peak and a skirt. */
+	{
+		ff_analysis_destroy(a);
+		a = ff_analysis_create(48000);
+		p.gain_db = 0.f;
+		ff_analysis_set_params(a, &p);
+		size_t lph = 0;
+		for (int i = 0; i < 60; i++) {
+			for (size_t k = 0; k < FF_HOP; k++, lph++) {
+				float t = (float)lph / sr;
+				buf[k] = 0.18f * (sinf(2.f * 3.14159265f * 35.f * t) + sinf(2.f * 3.14159265f * 45.f * t) +
+						  sinf(2.f * 3.14159265f * 60.f * t) + sinf(2.f * 3.14159265f * 80.f * t) +
+						  sinf(2.f * 3.14159265f * 110.f * t));
+			}
+			ff_analysis_push(a, buf, FF_HOP, &f);
+		}
+		int distinct = 0;
+		for (int i = 0; i < 12; i++) {
+			int seen = 0;
+			for (int j = 0; j < i; j++)
+				if (f.bands[j] == f.bands[i])
+					seen = 1;
+			if (!seen)
+				distinct++;
+		}
+		/* three is what the single-FFT build produced; anything at or below it means the long
+		   window is not being consulted. Ten of twelve leaves room for two genuine ties. */
+		CHECK(distinct >= 10);
+
+		/* and the region has to actually be lit -- a silent build would trivially have one
+		   distinct value, but a broken one that zeroed the bands would too */
+		float lowsum = 0.f;
+		for (int i = 0; i < 12; i++)
+			lowsum += f.bands[i];
+		CHECK(lowsum > 1.0f);
+	}
+
+	/* Crossover continuity: the two FFTs use different Hann coherent-gain normalisation (4/N),
+	   so getting N wrong would put a visible step in the spectrum exactly at FF_XOVER_HZ.
+	   A sine either side of it must read comparably.
+
+	   The amplitude here is deliberately NOT full scale. db_to_unit clamps at 1.0, so a
+	   full-scale probe reads ~1.0 on both sides even with the normalisation four times wrong --
+	   the check would pass while blind to the very defect it names. At 0.05 the reading sits
+	   near 0.57, mid-range, where a 4x error moves it to ~0.77 and is caught. */
+	{
+		float below = 0.f, above = 0.f;
+		const float probes[2] = {200.f, 320.f};
+		for (int side = 0; side < 2; side++) {
+			ff_analysis_destroy(a);
+			a = ff_analysis_create(48000);
+			ff_analysis_set_params(a, &p);
+			ph = 0;
+			for (int i = 0; i < 60; i++) {
+				tone(buf, FF_HOP, probes[side], sr, 0.05f, &ph);
+				ff_analysis_push(a, buf, FF_HOP, &f);
+			}
+			float mx = 0.f;
+			for (int bb = 0; bb < FF_BANDS; bb++)
+				if (f.bands[bb] > mx)
+					mx = f.bands[bb];
+			if (side == 0)
+				below = mx;
+			else
+				above = mx;
+		}
+		CHECK(below > 0.4f && below < 0.75f); /* mid-range, so a scaling error has room to show */
+		CHECK(above > 0.4f && above < 0.75f);
+		CHECK(fabsf(below - above) < 0.08f);
+	}
+
 	/* gain: +12 dB on a quiet tone raises level */
 	ff_analysis_destroy(a);
 	a = ff_analysis_create(48000);
