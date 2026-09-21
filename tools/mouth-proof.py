@@ -21,16 +21,25 @@ uniforms, so no render can show whether the panel is wired to the engine or to n
 mouth looks equally correct either way. Each is checked by making it change a shape already
 known from the sweep above.
 
-WHAT THIS DOES NOT COVER, of the five controls: "Silence threshold", "Minimum shape time" and
-"Jaw bias" are here. "Closed-mouth gap" chooses between rest and a closure, and the placeholder strip
-folds rest onto the closed cell, so both land on the same hue and no colour can tell them apart.
-"Mouth close speed" moves `mouth_open`, which changes no cell index. Nor is the `uses_mouth()`
-half covered -- obs-websocket cannot enumerate a source's properties, so whether the group
-APPEARS is unproven here; what is proven is that the settings reach the classifier.
+WHAT THIS DOES NOT COVER, of the five controls: only "Mouth close speed", and it is absent
+because it moves `mouth_open` smoothly over a few hundred milliseconds while every reading here
+is taken after a three-second settle -- so the decay has finished either way. The other four are
+covered. Nor is the `uses_mouth()` half covered: obs-websocket cannot enumerate a source's
+properties, so whether the group APPEARS is unproven here; what is proven is that the settings
+reach the classifier.
 
 ARMED by mutation -- every number below was measured by running it, not predicted:
 
-    control (everything wired up)            13/13 passed
+    control (everything wired up)            16/16 passed
+    the old index ladder is back              15/16  -- a mid-open vowel on a four-cell strip
+                                                        lands on the teeth-together cell
+    missing shapes clamp to the last cell     13/16  -- a pucker drawn wide open
+    closure_ms ignored (a literal 200)        15/16
+    a gap is always rest, never a closure     15/16
+
+ and, measured before the fold and gap checks existed:
+
+    control                                  13/13 passed
     stretch ignores mouth_open                11/13
     stretch scales about its centre           12/13
     stretch scales width as well as height    12/13  -- survived until a width check existed;
