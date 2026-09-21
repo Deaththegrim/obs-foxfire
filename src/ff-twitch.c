@@ -1,5 +1,6 @@
 #include "ff-twitch.h"
 #include "ff-net.h"
+#include "ff-session.h"
 
 #include <obs-module.h>
 #include <plugin-support.h>
@@ -348,28 +349,23 @@ static bool run_once(struct ff_twitch *t)
 		return false;
 	}
 
-	char url[1024];
-	snprintf(url, sizeof url, "%s", FF_TW_URL);
+	/* Every decision from here on is ff-session.c's, and nothing in this function makes one.
+	   That split is the point: four of the defects a review found lived in the version of this
+	   loop that decided inline, and the one that fired on every routine reconnect survived
+	   because there was no way to drive it without a live Twitch session. */
+	struct ff_session sess;
+	ff_session_init(&sess, FF_TW_URL);
 	bool ran_long = false;
-	/* OUTSIDE the session loop. EventSub carries the subscriptions across a session_reconnect,
-	   so asking for them again returns 409 Conflict for every type -- which this code reads as
-	   "Twitch refused every alert type", gives up, and stops retrying. Declared inside the loop
-	   it reset on every reconnect, and the branch written to prevent exactly that was
-	   unreachable. A guard in a branch that cannot run is not a guard. */
-	bool subscribed = false;
 
-	for (;;) { /* one pass per session; a session_reconnect starts another with a new URL */
+	for (;;) { /* one pass per socket; a session_reconnect opens another at a new URL */
 		set_text(t, FF_TWS_CONNECTING, "Foxfire.Twitch.Connecting", login, NULL, NULL);
-		struct ff_net *net = ff_net_ws_open(url, err, sizeof err);
+		struct ff_net *net = ff_net_ws_open(sess.url, err, sizeof err);
 		if (!net) {
 			set_state(t, FF_TWS_RETRYING, "%s", err);
 			return ran_long;
 		}
-
-		struct ff_es es;
-		memset(&es, 0, sizeof es);
-		time_t last = time(NULL);
-		time_t started = last;
+		ff_session_opened(&sess, time(NULL));
+		time_t started = time(NULL);
 		bool reconnecting = false;
 
 		while (reading(t, &t->running) && reading(t, &t->enabled)) {
@@ -379,113 +375,64 @@ static bool run_once(struct ff_twitch *t)
 				set_state(t, FF_TWS_RETRYING, "%s", ff_net_conn(net)->err);
 				break;
 			}
-			if (r == 0) {
-				/* Before the welcome there is no keepalive interval, so the watchdog
-				   below cannot fire -- it returns false for an unknown interval on
-				   purpose. A server that completes the 101 and then says nothing
-				   would leave this cycling forever, stuck on "Connecting", with no
-				   error and no retry. */
-				if (!es.keepalive_secs && time(NULL) - started > 30) {
-					set_text(t, FF_TWS_RETRYING, "Foxfire.Twitch.NoWelcome", NULL,
-						 NULL, NULL);
-					break;
-				}
-				if (ff_twitch_is_stale(last, es.keepalive_secs, time(NULL))) {
-					set_state(t, FF_TWS_RETRYING, "%s",
-						  obs_module_text("Foxfire.Twitch.WentQuiet"));
-					break;
-				}
-				ff_net_wait(net, 200);
-				continue;
-			}
-			last = time(NULL);
-
-			/* the payload is not NUL-terminated: it points into the read buffer */
-			char *json = malloc(m.len + 1);
-			if (!json) {
-				/* the closest thing to an empty catch block: an event arrived, was
-				   thrown away, and the session torn down with no reason recorded */
-				set_state(t, FF_TWS_RETRYING,
-					  "%s", "ran out of memory reading an event from Twitch");
-				break;
-			}
-			memcpy(json, m.payload, m.len);
-			json[m.len] = 0;
 
 			struct ff_alert_event ev;
-			enum ff_es_result res = ff_es_handle(&es, json, &ev);
-			free(json);
+			enum ff_session_step step;
+			if (r == 0) {
+				step = ff_session_idle(&sess, time(NULL));
+				if (step == FF_STEP_NOTHING) {
+					ff_net_wait(net, 200);
+					continue;
+				}
+			} else {
+				/* the payload points into the read buffer and is not terminated */
+				char *json = malloc(m.len + 1);
+				if (!json) {
+					set_state(t, FF_TWS_RETRYING, "%s",
+						  "ran out of memory reading an event from Twitch");
+					break;
+				}
+				memcpy(json, m.payload, m.len);
+				json[m.len] = 0;
+				step = ff_session_message(&sess, json, time(NULL), &ev);
+				free(json);
+			}
 
-			if (res == FF_ES_WELCOME && !subscribed) {
+			if (step == FF_STEP_SUBSCRIBE) {
 				int ok = 0;
 				for (size_t i = 0; i < FF_ES_SUB_COUNT; i++) {
 					long status = 0;
 					if (ff_twitch_subscribe(cid, tok.access, &FF_ES_SUBS[i], uid,
-								es.session_id, &status, err,
+								sess.es.session_id, &status, err,
 								sizeof err))
 						ok++;
 					else
-						/* One refused subscription is not a dead
-						   connection -- a missing scope takes out one alert
-						   type and the rest still work. Named, so the reason
-						   the follows never arrive is findable. */
+						/* Named, so the reason the follows never arrive is
+						   findable: one missing scope takes out one alert
+						   type and the rest still work. */
 						obs_log(LOG_WARNING, "twitch: %s", err);
 				}
-				subscribed = true;
-				if (!ok) {
-					/* RETRYING, not FAILED: the usual cause of every type being
-					   refused is a token or a network that will be fine in a
-					   minute, and FAILED stops the worker retrying for the life of
-					   the process. Only an answer that names a permission problem
-					   deserves that, and this cannot tell. */
-					set_text(t, FF_TWS_RETRYING, "Foxfire.Twitch.NoSubs", NULL,
-						 NULL, NULL);
-					ff_net_close(net);
-					return ran_long;
+				step = ff_session_subscribed(&sess, ok, (int)FF_ES_SUB_COUNT);
+				if (step != FF_STEP_DROP) {
+					char n_ok[16], n_all[16];
+					snprintf(n_ok, sizeof n_ok, "%d", ok);
+					snprintf(n_all, sizeof n_all, "%d", (int)FF_ES_SUB_COUNT);
+					set_text(t, FF_TWS_LIVE, "Foxfire.Twitch.Live", n_ok, n_all,
+						 login);
 				}
-				if (ok < (int)FF_ES_SUB_COUNT)
-					/* Some types work and some do not. Reported as its own state
-					   so the panel can colour it as a warning: a green line
-					   reading "6 of 7" is read as "working". */
-					obs_log(LOG_WARNING,
-						"twitch: only %d of %d alert types subscribed; the "
-						"ones above name what was refused",
-						ok, (int)FF_ES_SUB_COUNT);
-				char n_ok[16], n_all[16];
-				snprintf(n_ok, sizeof n_ok, "%d", ok);
-				snprintf(n_all, sizeof n_all, "%d", (int)FF_ES_SUB_COUNT);
-				set_text(t, FF_TWS_LIVE, "Foxfire.Twitch.Live", n_ok, n_all, login);
-			} else if (res == FF_ES_WELCOME) {
-				/* the welcome on a RECONNECT session: the subscriptions moved with
-				   it, so asking for them again would duplicate every alert */
-				char n_all[16];
-				snprintf(n_all, sizeof n_all, "%d", (int)FF_ES_SUB_COUNT);
-				set_text(t, FF_TWS_LIVE, "Foxfire.Twitch.Live", n_all, n_all, login);
-			} else if (res == FF_ES_EVENT) {
+			}
+
+			if (step == FF_STEP_EMIT) {
 				if (t->cb)
 					t->cb(t->ctx, &ev);
-			} else if (res == FF_ES_RECONNECT) {
-				/* Twitch gives thirty seconds to move. This closes the old
-				   connection and opens the new one, so events arriving in the
-				   changeover are lost -- a narrow window, but a real one.
-				   Overlapping the two (keep reading the old socket until the new one
-				   is welcomed) is what Twitch's own guidance describes and is NOT
-				   what happens here; saying so rather than letting the comment claim
-				   a mechanism the code does not have. */
-				snprintf(url, sizeof url, "%s", es.reconnect_url);
+			} else if (step == FF_STEP_RECONNECT) {
 				reconnecting = true;
 				break;
-			} else if (res == FF_ES_REVOKED) {
-				/* ONE subscription stopped, because one scope was withdrawn. Marking
-				   the whole integration FAILED stopped all seven alert types for a
-				   fault in one -- and contradicted the policy two branches up, where
-				   a refused subscription deliberately does not kill the rest. */
-				obs_log(LOG_WARNING, "twitch: %s", es.note);
-				set_state(t, FF_TWS_LIVE, "%s", es.note);
-			} else if (res == FF_ES_BAD) {
-				obs_log(LOG_WARNING, "twitch: %s", es.err);
-			} else if (es.note[0]) {
-				obs_log(LOG_INFO, "twitch: %s", es.note);
+			} else if (step == FF_STEP_DROP) {
+				set_state(t, FF_TWS_RETRYING, "%s", sess.reason);
+				break;
+			} else if (step == FF_STEP_NOTE && sess.reason[0]) {
+				obs_log(LOG_INFO, "twitch: %s", sess.reason);
 			}
 
 			if (time(NULL) - started > 60)

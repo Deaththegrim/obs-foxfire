@@ -70,11 +70,20 @@ target_link_libraries(test_token PRIVATE ff-core CURL::libcurl)
 add_test(NAME token COMMAND test_token)
 
 add_executable(test_twitch_policy test_twitch_policy.c ${CMAKE_SOURCE_DIR}/src/ff-twitch.c
-  ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-session.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
   ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
   ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c ${CMAKE_SOURCE_DIR}/src/ff-net.c)
 target_link_libraries(test_twitch_policy PRIVATE ff-core CURL::libcurl)
 add_test(NAME twitch_policy COMMAND test_twitch_policy)
+
+# The session state machine: scripted messages and an invented clock, no socket and no OBS.
+add_executable(test_session test_session.c ${CMAKE_SOURCE_DIR}/src/ff-session.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+target_link_libraries(test_session PRIVATE ff-core CURL::libcurl)
+add_test(NAME session COMMAND test_session)
 
 add_executable(twitch_cli twitch_cli.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
   ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
