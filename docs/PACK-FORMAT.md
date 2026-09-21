@@ -397,20 +397,25 @@ uniform float mouth_open; /* how open, 0..1, smoothed */
 | # | Shape | For |
 | --- | --- | --- |
 | 0 | A | closed, slight pressure — P, B, M |
-| 1 | B | slightly open, teeth together — "EE", K, S, T |
+| 1 | B | slightly open, teeth together — "EE", K, S, T, and every fricative |
 | 2 | C | open — "EH", "AE" |
 | 3 | D | wide open — "AA" as in *father* |
 | 4 | E | slightly rounded — "AO", "ER" |
 | 5 | F | puckered — "UW", "OW", W |
-| 6 | G | teeth on lip — F, V *(optional)* |
-| 7 | H | tongue raised — long L *(optional)* |
-| 8 | X | rest, relaxed closed *(optional)* |
+| 6 | G | teeth on lip — F, V — **never returned** |
+| 7 | H | tongue raised — long L — **never returned** |
+| 8 | X | rest, relaxed closed |
 
-**A–F are the ones that matter.** G, H and X are optional — Rhubarb's own documentation says an
-artist may draw all three, some, or none — so a shader must fold the ones that were not drawn
-onto the ones that were. The fallbacks are X→A, G→B, H→C. `packs/mouth/effects/mouth.effect` has
-this as `ff_cell()`; copy it rather than clamping, because clamping sends every rest frame to
-whatever happens to be the last cell in the strip.
+**The engine returns A–F and X, and nothing else.** G and H are in the numbering because the
+Preston Blair set has them and a strip drawn for Rhubarb should still work, but Foxfire will
+never select either: both are articulatory rather than spectral (see `src/ff-viseme.h` for why),
+and getting them means running a phoneme recogniser, which Rhubarb does offline over a finished
+file. **Six cells is the set worth drawing.**
+
+A shader still has to answer for the indices it was not given, because a pack may ship four cells
+or nine. The fallbacks are X→A, G→B, H→C. `packs/mouth/effects/mouth.effect` has this as
+`ff_cell()`; copy it rather than clamping, because clamping sends every rest frame to whatever
+happens to be the last cell in the strip.
 
 The shape is decided in C, not in the shader, because choosing it needs memory of the previous
 frame — how long the current shape has been up. Without that hold the mouth changes on every

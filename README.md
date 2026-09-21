@@ -77,6 +77,55 @@ For the Effects filter: add any source (e.g. a colour source, a webcam, a game c
 filters, add **Foxfire Effects**, pick a pack and preset the same way (**Demo Glow (filter)** is
 what shows up there for the demo pack).
 
+## Lipsync: a mouth on a character
+
+Foxfire can drive a mouth from whatever it is listening to — your mic, a music track, a TTS
+voice — and draw it over a character. It is a visualizer preset like any other, so it moves,
+scales, rotates and fades with the Placement controls rather than needing its own source.
+
+It works on the **shape of the sound, not the loudness**. Loudness alone is what makes a mouth
+flap: every syllable looks identical. Vowel identity lives in the first two formants — how far
+the jaw is open and how far forward the tongue sits — and those two things map straight onto the
+classic mouth-shape set.
+
+**The art.** One image, the shapes side by side, left to right, same cell size, the mouth in the
+same place in every cell, transparent background:
+
+| | Shape | Sounds |
+| --- | --- | --- |
+| 1 | **A** closed | P, B, M |
+| 2 | **B** slightly open, teeth together | "EE", K, S, T, and every hiss |
+| 3 | **C** open | "EH", "AE" |
+| 4 | **D** wide open | "AA" as in *father* |
+| 5 | **E** slightly rounded | "AO", "ER" |
+| 6 | **F** puckered | "OO", "OW", W |
+
+**Six cells is the whole set — do not draw more.** Preston Blair and Rhubarb also define G (teeth
+on the lip, for F and V) and H (tongue up, for a long L), and Foxfire will never ask for either.
+Both are articulatory facts rather than spectral ones: /f/ differs from /s/ mainly by being flat
+and about 15–20 dB quieter, which does not survive a microphone whose gain is a knob on the desk,
+and /l/ is marked by a notch, which nothing here looks for. Rhubarb gets them by running a
+phoneme recogniser over a finished file offline; doing that live would mean shipping an acoustic
+model and spending the CPU on a machine that is already encoding video. A strip drawn for Rhubarb
+still works — the extra cells are simply never selected.
+
+**Tuning it.** A preset that draws a mouth grows a **Mouth** group in the properties panel:
+
+- **Silence threshold** — below this the mouth stops answering. Breath, a fan and a keyboard all
+  have energy. Raise it if the mouth twitches when you are not talking; lower it if you are quiet.
+- **Closed-mouth gap** — a gap shorter than this is a stop consonant (the closure in P, B, M) and
+  the mouth shuts; longer and the speaker has stopped, so it rests.
+- **Minimum shape time** — how long a shape stays up. The number that decides whether this reads
+  as speech or as flapping. Shorten it for fast talkers.
+- **Mouth close speed** — how fast the mouth relaxes. Opening is always immediate; a mouth that
+  lags the start of a word looks dubbed.
+
+These describe your voice and your microphone rather than the art, so they survive a change of
+pack or preset.
+
+**Not yet tuned against a real microphone.** The thresholds were set against synthesised speech.
+If your mouth reads wrong on your own voice, the four controls above are the first thing to move.
+
 ## Connecting to Twitch
 
 The alerts source can draw alerts without Twitch at all — the **Test** button fires one, which is
