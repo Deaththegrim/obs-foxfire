@@ -6,9 +6,15 @@ the band layout, the hold timing. None of that shows that the number reaches the
 the shader picks the cell the number names. A mouth that is always shape A looks perfectly
 plausible in a screenshot and passes every "does it render" check ever written.
 
-So the placeholder strip gives each shape a DIFFERENT HUE, and this plays vowels synthesised at
-published formants and reads the hue back off the frame. The hue says which cell was drawn, which
-is the one thing no other test here can see.
+So this generates a strip of its own -- one flat hue per cell -- binds it over the pack's art,
+plays vowels synthesised at published formants and reads the hue back off the frame. The hue says
+which cell was drawn, which is the one thing no other test here can see.
+
+The strip is generated rather than read from the pack because the pack's art is a PLACEHOLDER
+waiting to be replaced by a drawing, and in a drawing the hue is the same in every cell -- it is
+one mouth in six positions. Keyed to the placeholder, this whole file would have failed the day
+the pack became real. Verified by doing it: with the pack's art swapped for a drawn-style strip
+in one skin tone, where hue identifies nothing, this still scores 9/9.
 
 It also checks the Mouth controls in the properties panel. Those are ENGINE state, not shader
 uniforms, so no render can show whether the panel is wired to the engine or to nothing -- the
@@ -24,15 +30,17 @@ APPEARS is unproven here; what is proven is that the settings reach the classifi
 
 ARMED by mutation -- every number below was measured by running it, not predicted:
 
-    control (everything wired up)             8/8 passed
-    mouth stuck on the first cell             2/8   -- the survivors are "silence draws A" and the
-                                                       gate check, which both want A anyway:
-                                                       exactly the false pass this file is for
-    rest folds to the wrong shape             6/8
-    mouth settings never reach the engine     6/8
-    hold wired to the release field           7/8
-    frication branch removed                  7/8   -- the hiss goes back to drawing an open jaw
-    uses_mouth() forced false                 8/8   -- UNARMED, as stated above
+    control (everything wired up)             9/9 passed
+    mouth stuck on the first cell             3/9   -- the survivors are "silence draws A", the
+                                                       gate check (both want A anyway) and the
+                                                       pixel count: exactly the false pass this
+                                                       file is for
+    rest folds to the wrong shape             7/9
+    mouth settings never reach the engine     7/9
+    hold wired to the release field           8/9
+    frication branch removed                  8/9   -- the hiss goes back to drawing an open jaw
+    uses_mouth() forced false                 9/9   -- UNARMED, as stated above
+    pack art swapped for drawn-style art      9/9   -- the point: it must NOT fail
 
     tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
 """
@@ -65,8 +73,16 @@ SR = 48000
 FAILS: list[str] = []
 CHECKS: list[str] = []
 
-# Hue of each placeholder cell, and the shape it stands for. From the strip generator.
+# The probe strip this file draws for itself: one flat hue per cell, so a screenshot says WHICH
+# cell was selected. It is generated here and bound over the pack's own art through the
+# user-image path, deliberately.
+#
+# Reading the hues off the PACK's art is what this used to do, and it made the gate die exactly
+# when the pack became real: the placeholder is a stand-in for junkie's drawing, and the first
+# thing that happens to it is being replaced. A proof that cannot survive its subject being
+# finished is not a proof of the subject.
 CELL_HUE = {"A": 0, "B": 36, "C": 64, "D": 120, "E": 203, "F": 272}
+STRIP_CELL = 256
 
 
 def check(name, ok, detail):
@@ -107,6 +123,18 @@ def render_vowel(f1: float, f2: float, f3: float, secs: float = 6.0, f0: float =
         out[i] = x
     mx = max(abs(v) for v in out) or 1.0
     return [v / mx * 0.3 for v in out]
+
+
+def make_probe_strip(path: Path):
+    """One flat, saturated cell per shape, in strip order."""
+    order = ["A", "B", "C", "D", "E", "F"]
+    img = Image.new("RGBA", (STRIP_CELL * len(order), STRIP_CELL), (0, 0, 0, 0))
+    for i, name in enumerate(order):
+        r, g, b = colorsys.hsv_to_rgb(CELL_HUE[name] / 360.0, 0.85, 0.95)
+        cell = Image.new("RGBA", (STRIP_CELL, STRIP_CELL),
+                         (int(r * 255), int(g * 255), int(b * 255), 255))
+        img.paste(cell, (i * STRIP_CELL, 0))
+    img.save(path)
 
 
 def render_fricative(hz: float, bw: float, secs: float = 6.0):
@@ -150,8 +178,9 @@ async def shoot(c, name):
 def dominant_hue(img: Image.Image):
     """Hue of the drawn pixels, ignoring anything transparent or near-black.
 
-    The cell's opening is painted near-black on purpose, so it has to be excluded or every shape
-    averages toward the same dark grey and the hue stops identifying anything.
+    The probe strip is flat colour, so the filtering is not for its benefit -- it is what lets
+    the same reading work on drawn art, where the opening of the mouth is near-black and the
+    margins are transparent. Without it those average every shape toward the same dark grey.
     """
     hues, weight = [], 0.0
     for r, g, b, a in img.getdata():
@@ -182,7 +211,7 @@ def nearest_shape(hue):
     return best
 
 
-async def drive(pack_id: str, wavs: dict, scratch: Path):
+async def drive(pack_id: str, wavs: dict, strip: Path):
     ws, c = await ff_proof.open_client("mouth proof")
     seen = {}
     try:
@@ -202,7 +231,10 @@ async def drive(pack_id: str, wavs: dict, scratch: Path):
         await c.request("CreateInput", {
             "sceneName": "mo", "inputName": "mouth", "inputKind": "foxfire_visualizer",
             "inputSettings": {"pack": pack_id, "preset": "mouth-strip", "width": W, "height": H,
-                              "audio_mode": 1, "audio_source": "voice"}})
+                              "audio_mode": 1, "audio_source": "voice",
+                              # the probe strip, over the pack's own art. "l0.mouth" is the
+                              # renderer's key for layer 0's user-supplied image.
+                              "l0.mouth": str(strip)}})
         await asyncio.sleep(2.0)
 
         # Silence first: nothing playing, so the mouth must be at rest -- which folds to A.
@@ -259,6 +291,16 @@ async def drive(pack_id: str, wavs: dict, scratch: Path):
         hue, px = await rest_then(wavs["ee_oo"], settle=4.5)
         seen["ee_oo_held"] = (nearest_shape(hue), hue, px)
         await set_mouth("mouth.hold_ms", 80.0)
+
+        # And the pack's OWN art, once, because nothing else here looks at it any more. Not by
+        # colour -- that is the coupling this file just got rid of -- but it has to draw
+        # something: "" means the pack's own image, and a strip that failed to load draws
+        # nothing at all.
+        await c.request("SetInputSettings",
+                        {"inputName": "mouth", "inputSettings": {"l0.mouth": ""}})
+        await rest_then(wavs["ah"])
+        _, px = dominant_hue(await shoot(c, "mouth"))
+        seen["pack_art"] = (None, None, px)
     finally:
         await ws.close()
     return seen
@@ -299,6 +341,8 @@ def main() -> int:
         wavs["ee_oo"] = scratch / "ee_oo.wav"
         write_wav(wavs["ee_oo"],
                   render_vowel(240, 2400, 2900, secs=3.0) + render_vowel(250, 595, 2400, secs=3.0))
+        strip = scratch / "probe-strip.png"
+        make_probe_strip(strip)
         wavs["silence"] = scratch / "silence.wav"
         with wave.open(str(wavs["silence"]), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
@@ -315,7 +359,7 @@ def main() -> int:
             stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
         try:
             proof.wait_for_port(proof.PORT, proof.BOOT_TIMEOUT)
-            seen = asyncio.run(drive(pack_id, wavs, scratch))
+            seen = asyncio.run(drive(pack_id, wavs, strip))
         finally:
             proof.terminate_process_group(p)
     finally:
@@ -330,7 +374,9 @@ def main() -> int:
 
     # And they are not all the same cell, which a mouth stuck on one shape would also satisfy
     # check by check above if the expectations happened to agree.
-    shapes = {k: v[0] for k, v in seen.items()}
+    # pack_art excluded on purpose: it is a pixel-count check with no shape, and counting its
+    # None as a distinct value would let a mouth stuck on one cell satisfy this.
+    shapes = {k: v[0] for k, v in seen.items() if k != "pack_art"}
     check("the shape actually changes with the audio", len(set(shapes.values())) >= 3,
           f"{shapes} -- a mouth stuck on one shape renders perfectly well and is the failure "
           f"this whole file exists to catch")
@@ -342,6 +388,10 @@ def main() -> int:
     check("raising the silence threshold silences the mouth", got == "A",
           f"a tone at ~0.08 under a gate of 0.3 -> {got} (hue {hue if hue is None else round(hue)}); "
           f"D would mean the setting never reached the engine")
+    check("the pack's own art draws", seen.get("pack_art", (None, None, 0))[2] > 500,
+          f"{seen.get('pack_art', (None, None, 0))[2]} lit pixels with the shipped strip bound "
+          f"-- every other check here uses a strip this file generates, so this is the only one "
+          f"that touches the art the pack ships")
     free = seen.get("ee_oo_free", (None, None, 0))[0]
     held = seen.get("ee_oo_held", (None, None, 0))[0]
     check("the hold time keeps a shape up", free == "F" and held == "B",
