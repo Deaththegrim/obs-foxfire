@@ -311,6 +311,24 @@ render output, and only flip it to `true` once `licence.json` is in place and ve
 built with an empty or placeholder `licence.json` doesn't fail loudly, it just doesn't render
 anything, and it will look exactly like a build that shipped broken.
 
+## Where packs live
+
+Two places, scanned in this order:
+
+1. **Bundled** — `data/packs/` inside the plugin itself. This is where the free pack that ships
+   with the engine lives. The first pack found wins on an id clash, so a bundled pack shadows an
+   installed one with the same id.
+2. **Installed** — `<OBS config>/plugin_config/foxfire/packs/<pack id>/`, which on Linux is
+   `~/.config/obs-studio/plugin_config/foxfire/packs/`.
+
+**Note the `foxfire` in that path, not the plugin's own name.** Foxfire ships as several separate
+plugins so nobody has to install all of it to use one part, and OBS's own
+`obs_module_config_path` is per plugin — which would give each one its own packs directory, and
+make a pack installed through one invisible to the others. The path is rewritten to a fixed
+`foxfire` component so every Foxfire plugin reads and writes the same place. The "Install pack
+(.zip)" button puts packs there too; the two halves have to agree, or the button reports success
+having written somewhere nothing reads.
+
 ## Installing as a `.zip`
 
 Authors and buyers both end up installing a pack from a `.zip` (via the plugin's "Install pack

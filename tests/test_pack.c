@@ -159,6 +159,91 @@ static void check_released_gate(const char *base)
 	}
 }
 
+/* Every Foxfire plugin has to read the SAME packs directory, or a pack installed through one is
+   invisible to the other and the Install button reports success having put it where nothing
+   looks. The rewrite is pure string work, so it is checked here rather than by booting two
+   plugins.
+
+   ARMED by mutation. Each guard in ff_shared_config_path removed in turn:
+
+       control (every guard in place)            59 checks, 0 failed
+       "was the anchor found" removed             59 checks, 1 failed
+       component check after the anchor removed   59 checks, 2 failed
+       component check before the anchor removed  59 checks, 2 failed
+       last occurrence -> first occurrence        59 checks, 1 failed
+       truncation accepted instead of refused     59 checks, 1 failed
+
+   The first round of this left two mutants ALIVE, which is worth recording because the reason
+   was not a missing guard: the refusal cases were being caught by a NEIGHBOURING guard rather
+   than the one they were meant to exercise. Isolating each needed an input the others let
+   through -- a path with no anchor whose 14th character is a separator by coincidence, and
+   "plugin_config" sitting inside "myplugin_config". A mutant that survives is not always a
+   missing test; sometimes it says two guards overlap and neither is pinned on its own. */
+static void check_shared_config_path(void)
+{
+	char out[512];
+	const char *real = "/home/x/.config/obs-studio/plugin_config/obs-foxfire/packs";
+
+	CHECK(ff_shared_config_path(real, "packs", out, sizeof out));
+	CHECK(!strcmp(out, "/home/x/.config/obs-studio/plugin_config/foxfire/packs"));
+
+	/* the whole point: a DIFFERENT plugin lands on the same directory */
+	CHECK(ff_shared_config_path("/home/x/.config/obs-studio/plugin_config/obs-foxfire-alerts/packs",
+				    "packs", out, sizeof out));
+	CHECK(!strcmp(out, "/home/x/.config/obs-studio/plugin_config/foxfire/packs"));
+
+	/* a leaf other than packs still works, for whatever a later plugin needs to share */
+	CHECK(ff_shared_config_path(real, "sounds", out, sizeof out));
+	CHECK(!strcmp(out, "/home/x/.config/obs-studio/plugin_config/foxfire/sounds"));
+
+	/* portable mode, or any other config root: the prefix comes from OBS, we never rebuild it */
+	CHECK(ff_shared_config_path("/opt/obs/portable/plugin_config/obs-foxfire/packs", "packs", out,
+				    sizeof out));
+	CHECK(!strcmp(out, "/opt/obs/portable/plugin_config/foxfire/packs"));
+
+	/* Windows separators */
+	CHECK(ff_shared_config_path("C:\\Users\\x\\AppData\\Roaming\\obs-studio\\plugin_config\\obs-foxfire\\packs",
+				    "packs", out, sizeof out));
+	CHECK(!strcmp(out, "C:\\Users\\x\\AppData\\Roaming\\obs-studio\\plugin_config/foxfire/packs"));
+
+	/* A user whose own directory is called plugin_config must not win over OBS's. */
+	CHECK(ff_shared_config_path("/home/plugin_config/.config/obs-studio/plugin_config/obs-foxfire/packs",
+				    "packs", out, sizeof out));
+	CHECK(!strcmp(out, "/home/plugin_config/.config/obs-studio/plugin_config/foxfire/packs"));
+
+	/* Refusals. Each of these must leave `out` untouched so a caller that ignores the return
+	   value gets an empty string rather than a plausible-looking wrong path. */
+	memset(out, 'Z', sizeof out);
+	CHECK(!ff_shared_config_path("/home/x/.config/obs-studio/obs-foxfire/packs", "packs", out,
+				     sizeof out));
+	CHECK(out[0] == 'Z'); /* not written */
+	/* a prefix of a longer word is not the component */
+	CHECK(!ff_shared_config_path("/home/x/plugin_configuration/obs-foxfire/packs", "packs", out,
+				     sizeof out));
+	CHECK(!ff_shared_config_path("plugin_configx/obs-foxfire/packs", "packs", out, sizeof out));
+	/* ...nor a SUFFIX of a longer component. Without the check on the character BEFORE the
+	   anchor this rewrites to "/home/x/myplugin_config/foxfire/packs" -- a directory that is
+	   not OBS's and that nothing else will ever read. */
+	CHECK(!ff_shared_config_path("/home/x/myplugin_config/obs-foxfire/packs", "packs", out,
+				     sizeof out));
+	CHECK(!ff_shared_config_path("/home/x/.myplugin_config/obs-foxfire/packs", "packs", out,
+				     sizeof out));
+	/* A path with no anchor at all, whose 14th character happens to be a separator. Without
+	   the "was the anchor found" check this is accepted -- the component checks alone read
+	   offset 13 of the whole string and find a '/' there by coincidence -- and it rewrites to
+	   "abcdefghijklm/foxfire/packs", inventing a directory out of an unrelated path. */
+	CHECK(!ff_shared_config_path("abcdefghijklm/obs-foxfire/packs", "packs", out, sizeof out));
+	/* ...but at the very start of a relative path it IS one */
+	CHECK(ff_shared_config_path("plugin_config/obs-foxfire/packs", "packs", out, sizeof out));
+	CHECK(!strcmp(out, "plugin_config/foxfire/packs"));
+
+	CHECK(!ff_shared_config_path(NULL, "packs", out, sizeof out));
+	CHECK(!ff_shared_config_path(real, "packs", out, 0));
+	/* a buffer too small must refuse, not truncate into a path that names a real directory */
+	char tiny[16];
+	CHECK(!ff_shared_config_path(real, "packs", tiny, sizeof tiny));
+}
+
 int main(void)
 {
 	char base[] = "/tmp/ff-test-pack-XXXXXX";
@@ -214,6 +299,7 @@ int main(void)
 	unlink(canary);
 	rmdir(victim);
 	check_released_gate(base);
+	check_shared_config_path();
 	rmdir(base);
 	FF_TEST_MAIN_END();
 }

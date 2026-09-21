@@ -129,8 +129,16 @@ def install_plugin(repo: Path, obs_cfg: Path) -> None:
     subprocess.run([str(repo / "install-local.sh"), str(obs_cfg)], check=True)
 
 
+# Every Foxfire plugin reads ONE shared packs directory -- not its own per-module one -- so that
+# a pack installed through any of them is visible to all of them. See ff_shared_config_path in
+# src/ff-pack.c. This constant and that function are the two halves of the same decision: change
+# one and the harness installs where the plugin does not look, which reads as "the pack does not
+# render" rather than as "the pack is not there".
+PACKS_DIR = ("plugin_config", "foxfire", "packs")
+
+
 def install_pack(pack_dir: Path, obs_cfg: Path) -> None:
-    dst = obs_cfg / "plugin_config" / "obs-foxfire" / "packs" / pack_dir.name
+    dst = obs_cfg.joinpath(*PACKS_DIR) / pack_dir.name
     if dst.exists():
         shutil.rmtree(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)

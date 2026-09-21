@@ -348,6 +348,70 @@ static void log_stale_temp_dirs(const char *packs_root)
 	os_closedir(d);
 }
 
+/* Every Foxfire plugin must read the SAME packs directory.
+ *
+ * obs_module_config_path() is per MODULE -- it resolves to
+ * "<obs config>/plugin_config/<this plugin>/<file>". With the visualizer and the alerts engine
+ * shipping as separate installable plugins (which is the point: nobody should have to install all
+ * of Foxfire to use one part of it), that would give each its own packs directory. A pack a
+ * streamer installed through one would be invisible to the other, and the Install pack button
+ * would put it somewhere the plugin they were actually using never looks.
+ *
+ * So the path is anchored on the "plugin_config/" component -- a constant in OBS's own layout --
+ * and the module's name after it is replaced with a fixed "foxfire". Anchoring on that substring
+ * rather than counting path components is deliberate: it does not care how deep the config root
+ * is or whether OBS is in portable mode, because the prefix comes from OBS's own resolution.
+ *
+ * Returns false, without writing `out`, if the anchor is not there. The caller must then fall
+ * back to the module's own directory AND SAY SO, because a silently wrong packs path is a
+ * plugin that reports "0 packs" with everything installed correctly. */
+bool ff_shared_config_path(const char *module_path, const char *leaf, char *out, size_t cap)
+{
+	static const char ANCHOR[] = "plugin_config";
+	if (!module_path || !out || cap == 0)
+		return false;
+	/* the LAST occurrence: a user whose home directory is itself called plugin_config would
+	   otherwise anchor on that instead of on OBS's */
+	const char *at = NULL;
+	for (const char *p = module_path; (p = strstr(p, ANCHOR)) != NULL; p++)
+		at = p;
+	if (!at)
+		return false;
+	/* it has to be a whole path component, not a prefix of "plugin_configuration" */
+	char after = at[sizeof ANCHOR - 1];
+	if (after != '/' && after != '\\')
+		return false;
+	if (at != module_path && at[-1] != '/' && at[-1] != '\\')
+		return false;
+
+	size_t prefix = (size_t)(at - module_path) + sizeof ANCHOR - 1; /* up to and including it */
+	int n = snprintf(out, cap, "%.*s/foxfire/%s", (int)prefix, module_path, leaf);
+	return n > 0 && (size_t)n < cap;
+}
+
+/* The directory a viewer's installed packs live in, shared by every Foxfire plugin. Caller frees
+   nothing; `out` is theirs. Logs once if it had to fall back. */
+static void packs_user_dir(char *out, size_t cap)
+{
+	out[0] = '\0';
+	char *mine = obs_module_config_path("packs");
+	if (!mine)
+		return;
+	if (!ff_shared_config_path(mine, "packs", out, cap)) {
+		static bool warned = false;
+		if (!warned) {
+			obs_log(LOG_WARNING,
+				"packs: could not find the 'plugin_config' component in '%s', so this "
+				"plugin is reading its OWN packs directory. Packs installed through "
+				"another Foxfire plugin will not be visible here.",
+				mine);
+			warned = true;
+		}
+		snprintf(out, cap, "%s", mine);
+	}
+	bfree(mine);
+}
+
 void ff_packs_scan(struct ff_pack_list *out)
 {
 	memset(out, 0, sizeof *out);
@@ -361,12 +425,12 @@ void ff_packs_scan(struct ff_pack_list *out)
 		scan_dir(out, bundled);
 		bfree(bundled);
 	}
-	char *user = obs_module_config_path("packs");
-	if (user) {
+	char user[1024];
+	packs_user_dir(user, sizeof user);
+	if (user[0]) {
 		os_mkdirs(user);
 		scan_dir(out, user);
 		log_stale_temp_dirs(user);
-		bfree(user);
 	}
 	obs_log(LOG_INFO, "packs: %zu loaded, %zu refused", out->n, out->nerrors);
 }
@@ -653,12 +717,17 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 		return false;
 	}
 
-	char *packs_dir = obs_module_config_path("packs");
-	if (!packs_dir) {
+	/* the SAME directory ff_packs_scan reads -- installing into this plugin's own one would
+	   put the pack where whichever Foxfire plugin the viewer is actually using never looks,
+	   and the button would report success */
+	char packs_buf[1024];
+	packs_user_dir(packs_buf, sizeof packs_buf);
+	if (!packs_buf[0]) {
 		snprintf(msg, cap, "could not resolve the packs directory");
 		obs_log(LOG_WARNING, "pack install: could not resolve the packs directory");
 		return false;
 	}
+	char *packs_dir = bstrdup(packs_buf); /* the rest of this function frees it */
 	os_mkdirs(packs_dir);
 
 #ifdef _WIN32

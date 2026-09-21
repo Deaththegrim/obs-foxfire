@@ -63,6 +63,13 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap);
    Callers must ALSO confirm the file exists inside the pack -- this judges the name, not the inode. */
 bool ff_rel_ok(const char *p);
 
+/* Rewrites a per-module config path into the one every Foxfire plugin shares:
+   ".../plugin_config/<this plugin>/<anything>" becomes ".../plugin_config/foxfire/<leaf>".
+   Returns false WITHOUT writing `out` when the "plugin_config" component is not there, so the
+   caller can fall back to its own directory and say so rather than reading a wrong path
+   silently. Exported for unit testing; the surgery is pure string work and needs no OBS. */
+bool ff_shared_config_path(const char *module_path, const char *leaf, char *out, size_t cap);
+
 /* Loads ONE pack directory (its pack.json, presets and licence) and appends it to `l`, or
    appends a refusal reason to l->errors and returns false. Exported for unit testing: the
    manifest refusals are the gate on shipping a paid pack, and reaching them through
