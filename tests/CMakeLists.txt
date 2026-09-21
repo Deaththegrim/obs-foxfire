@@ -32,6 +32,13 @@ target_include_directories(test_pack PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME pack COMMAND test_pack)
 set_tests_properties(pack PROPERTIES SKIP_RETURN_CODE 77)
 
+# ff-alert.c needs libobs (obs_data, obs_get_source_output_flags) and plugin-support's obs_log,
+# so it cannot join ff-core either. Same treatment as test_pack.
+add_executable(test_alert test_alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert.c)
+target_link_libraries(test_alert PRIVATE ff-core plugin-support OBS::libobs)
+target_include_directories(test_alert PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME alert COMMAND test_alert)
+
 add_executable(verify_cli verify_cli.c)
 target_link_libraries(verify_cli PRIVATE ff-core)
 

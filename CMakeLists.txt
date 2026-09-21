@@ -44,7 +44,7 @@ endif()
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c)
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-  src/ff-analysis.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c src/ff-props.c src/ff-source.c src/ff-filter.c
+  src/ff-analysis.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c src/ff-props.c src/ff-source.c src/ff-filter.c src/ff-alert.c
   vendor/kissfft/kiss_fft.c vendor/kissfft/kiss_fftr.c vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c)
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src vendor/kissfft vendor/monocypher)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE kiss_fft_scalar=float)
