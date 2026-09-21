@@ -10,13 +10,25 @@ Foxfire is a free GPL OBS Studio plugin: an audio-reactive layered shader visual
 
 ## What it is
 
-Foxfire adds two OBS object types:
+Foxfire ships as **two separate plugins**, so you can install one without the other:
+
+`obs-foxfire` — the visualizer, adding two OBS object types:
 
 * **Foxfire Visualizer** (a source) — an audio-reactive layered shader visualizer. Add it to a
   scene, pick a pack, pick a preset, and it reacts to whatever audio you point it at (the master
   mix, or a specific source).
 * **Foxfire Effects** (a filter) — the same layered shader engine, attached to any other source, so
   its output gets the reactive treatment instead of drawing on its own.
+
+`obs-foxfire-alerts` — the alerts engine:
+
+* **Foxfire Alert** (a source) — draws stream alerts (follows, subs, gift subs, resubs, bits,
+  raids, channel point redemptions) using a pack's art, with per-kind messages, art and sounds,
+  and a queue so a raid's alerts play in order instead of overwriting each other. It connects to
+  Twitch itself over EventSub — no browser source, no hosted service, no account with anyone but
+  Twitch. See [Connecting to Twitch](#connecting-to-twitch).
+
+Both plugins share one packs directory, so a pack installed through either is visible to both.
 
 Both are driven by **packs**: directories of `.effect` shaders plus a `pack.json` manifest
 declaring presets (named combinations of layers with default parameter values). The plugin ships
@@ -39,10 +51,12 @@ Two ways to install:
 * **`.deb` package** — download it from a release, `sudo apt install ./obs-foxfire-<version>.deb`
   (or `sudo dpkg -i` + `sudo apt-get install -f` to pull in any missing dependency).
 * **`install-local.sh`** — build from source (see Supported Build Environments below), then run
-  `./install-local.sh` from the repo root. With no argument it installs into your real OBS user
-  config (`~/.config/obs-studio/plugins/obs-foxfire`); pass a directory to install into a sandbox
-  config instead (this is what `tools/render-proof.sh` and `tools/proof.py` do to test a build
-  without touching your real OBS setup).
+  `./install-local.sh` from the repo root. With no argument it installs BOTH plugins into your
+  real OBS user config (`~/.config/obs-studio/plugins/obs-foxfire` and `…/obs-foxfire-alerts`);
+  pass a directory to install into a sandbox config instead (this is what `tools/render-proof.sh`
+  and `tools/proof.py` do to test a build without touching your real OBS setup). Set
+  `FOXFIRE_PLUGINS` to install just one, e.g.
+  `FOXFIRE_PLUGINS=obs-foxfire-alerts ./install-local.sh`.
 
 ### macOS
 
@@ -63,6 +77,51 @@ For the Effects filter: add any source (e.g. a colour source, a webcam, a game c
 filters, add **Foxfire Effects**, pick a pack and preset the same way (**Demo Glow (filter)** is
 what shows up there for the demo pack).
 
+## Connecting to Twitch
+
+The alerts source can draw alerts without Twitch at all — the **Test** button fires one, which is
+how you set up your look. To receive real events you need a Twitch application of your own.
+
+**Why yours and not ours:** this plugin is GPL, so it ships its source. Any client ID or secret
+baked into it would be public the moment it was released. Foxfire uses the **Device Code Grant**,
+which needs no secret, but it still needs an application to identify itself as — and that
+application should be yours.
+
+1. Go to <https://dev.twitch.tv/console/apps> and **Register Your Application**.
+   * *Name*: anything (it is shown to you when you authorise it).
+   * *OAuth Redirect URLs*: `http://localhost` — the device flow does not use it, but the form
+     requires one.
+   * *Category*: Broadcasting Suite. *Client Type*: **Public** (this is the part that matters —
+     a confidential client would need a secret).
+2. Copy the **Client ID**. There is no secret to copy; that is the point.
+3. In OBS, open the Foxfire Alert source's properties, find the **Twitch** section, and paste it
+   into **Twitch application client ID**.
+4. Press **Connect to Twitch…**. The status line will show a code and a URL — go to
+   <https://www.twitch.tv/activate>, enter the code, and approve the permissions.
+5. Tick **Connect to Twitch and show real alerts**.
+
+The status line then tells you what is happening, including how many of the seven alert types were
+accepted. If it says fewer than seven, one of the permissions was not granted — each alert type
+needs its own:
+
+| Alert | Twitch permission |
+| --- | --- |
+| Follow | `moderator:read:followers` |
+| Sub, gift sub, resub | `channel:read:subscriptions` |
+| Bits | `bits:read` |
+| Channel point redemption | `channel:read:redemptions` |
+| **Raid** | **none** |
+
+Raids need no permission at all, which makes them the easiest thing to test with.
+
+**What is stored, and where.** Only a refresh token, in Foxfire's own config directory
+(`plugin_config/foxfire/twitch.json`), with owner-only permissions. The access token is never
+written to disk — it lasts about four hours and is fetched again as needed. Nothing is stored in
+your scene collection, which is a file people share and back up. **Sign out** deletes it.
+
+**Off by default.** The source never connects until you tick the box, because adding a source to a
+scene should not start talking to your Twitch account.
+
 ## Supported Build Environments
 
 | Platform  | Tool   |
@@ -74,6 +133,12 @@ what shows up there for the demo pack).
 | Ubuntu 24.04 | `ninja-build` |
 | Ubuntu 24.04 | `pkg-config`
 | Ubuntu 24.04 | `build-essential` |
+| Ubuntu 24.04 | `libcurl4-openssl-dev` |
+
+`libcurl` carries the alerts plugin's connection to Twitch. Windows and macOS get it from
+obs-deps, which ships curl already; on Linux it is the one package the template's list does not
+already name, so a source build needs `libcurl4-openssl-dev` installed. It is a hard requirement —
+CMake stops with an error rather than quietly building a plugin that cannot connect.
 
 ## About licences and copying
 

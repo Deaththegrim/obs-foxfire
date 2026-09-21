@@ -10,7 +10,8 @@ jobs:
           sudo add-apt-repository -y ppa:obsproject/obs-studio
           sudo apt-get update
           sudo apt-get install -y obs-studio xvfb cmake ninja-build pkg-config build-essential \
-            python3-websockets python3-pil python3-numpy python3-cryptography mesa-utils libsimde-dev
+            python3-websockets python3-pil python3-numpy python3-cryptography mesa-utils libsimde-dev \
+            libcurl4-openssl-dev
       - name: Build
         run: |
           cmake --preset ubuntu-x86_64 -DFOXFIRE_BUILD_TESTS=ON
@@ -52,6 +53,28 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/alert-proof.py --plugin-build .
+      - name: The shared pack control block has not drifted
+        # Static, so it needs no display. OBS's effect language has no #include, so the
+        # Placement/Response block is COPIED into every shader that wants it; this refuses a
+        # control declared two different ways, and a helper that is defined and never called --
+        # both of which compile, render, and pass every pixel gate above.
+        #
+        # Conditional because the packs live in a PRIVATE repo that is not checked out here. A
+        # step that always fails teaches everyone to ignore a red job, and a step that silently
+        # passes on nothing inspected is worse -- so check-placement.py itself exits 2 when it
+        # finds no shaders, and this only runs when the packs are actually present.
+        if: hashFiles('../foxfire/packs/basics/effects/bars.effect') != ''
+        run: tools/check-placement.py ../foxfire/packs
+
+      - name: Pack controls actually move the picture
+        # A control that exists in the properties panel and changes nothing is this project's
+        # most common defect, and no "does it render" check can see it. Skipped when the packs
+        # repo is not checked out beside this one -- it is private.
+        if: hashFiles('../foxfire/packs/basics/pack.json') != ''
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/placement-proof.py --plugin-build . --pack ../foxfire/packs/basics
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
