@@ -479,7 +479,7 @@ The clips must contain at least one wide, unrounded frame, because lip widths ar
 against the widest one present.
 
 `pick-mouth-frames.py --selftest` renders an animation whose right answer is known by
-construction and checks the picks against it; `--mutate` breaks the picker four ways and shows
+construction and checks the picks against it; `--mutate` breaks the picker five ways and shows
 the selftest catching each.
 
 ### Two ways to drive a mouth
