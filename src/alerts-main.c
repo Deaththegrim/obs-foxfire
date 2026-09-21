@@ -33,6 +33,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include "ff-alert.h"
 
+extern struct obs_source_info ff_alert_source_info;
+
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
@@ -52,6 +54,7 @@ bool obs_module_load(void)
 	/* Resolved once, at load, so the answer is in the log BEFORE anyone adds a source and
 	   wonders why their alert has no name on it. */
 	ff_alert_text_kind();
+	obs_register_source(&ff_alert_source_info);
 	return true;
 }
 
