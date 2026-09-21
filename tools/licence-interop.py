@@ -92,6 +92,31 @@ def load_canonical():
 canonical, CANONICAL_SOURCE = load_canonical()
 
 
+def check_shipped_pubkey(failures):
+    """The key COMPILED INTO THE PLUGIN must be the public half of the key packforge signs with.
+
+    These live in two repositories and are wired together by hand, so they can drift with
+    nothing complaining: the build is clean, every test here passes (they use a throwaway key
+    pair), and the only symptom is that every licence we sell is rejected by the plugin the
+    buyer installed, reading as "invalid" -- indistinguishable from piracy. Cheap to check,
+    and it is the one thing no signature test can catch."""
+    root = find_packforge()
+    hdr = Path(__file__).resolve().parents[1] / "src" / "ff-pubkey.h"
+    if root is None or not hdr.is_file():
+        print(f"SKIP shipped public key: packforge={root}, {hdr.name} present={hdr.is_file()} "
+              f"-- NOT checked, so a drift here would go unnoticed")
+        return
+    pub = (root / "keys" / "foxfire-public.key").read_text().strip()
+    body = hdr.read_text().split("{", 1)[1].split("}", 1)[0]
+    from_header = "".join(b.strip()[2:] for b in body.split(","))
+    ok = pub == from_header and len(pub) == 64
+    print(f"{'PASS' if ok else 'FAIL'} the plugin ships packforge's public key: "
+          f"header={from_header} keys/foxfire-public.key={pub}")
+    if not ok:
+        failures.append("the public key compiled into the plugin is not packforge's: every "
+                        "licence minted would be rejected as invalid by the shipped plugin")
+
+
 def main():
     key = Ed25519PrivateKey.generate()
     pub_hex = (
@@ -186,6 +211,8 @@ def main():
         now,
         "OK",
     )
+
+    check_shipped_pubkey(failures)
 
     print()
     print(f"signed with: {CANONICAL_SOURCE}")

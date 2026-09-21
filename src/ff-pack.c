@@ -16,8 +16,13 @@
 #define ff_getpid() getpid()
 #endif
 
-/* placeholder until packforge generates the real key (Task 11 replaces this line; both halves must match) */
-const uint8_t FF_PUBLIC_KEY[32] = {0};
+/* The real signing key's PUBLIC half, generated once by `packforge keygen` and emitted by
+   `packforge pubkey-header`. Safe to commit and safe to read -- it verifies signatures, it
+   cannot make them. The private half lives only in ~/.config/kitsunedesk/foxfire-signing.key
+   and is never in any repository. The header defines the symbol (not `static`: ff-pack.h
+   declares it extern), so it is included exactly here and nowhere else. Replacing this key
+   invalidates every licence already issued, which is why keygen refuses to overwrite one. */
+#include "ff-pubkey.h"
 
 static bool id_ok(const char *s)
 {
