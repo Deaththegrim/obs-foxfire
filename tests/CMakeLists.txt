@@ -5,7 +5,7 @@
 # compile ff-pack.c a second time with different flags, and anything added to the plugin's core
 # was invisible to the tests until somebody noticed. One definition, in the top-level
 # CMakeLists.txt, linked here.
-foreach(t analysis handoff licence pack)
+foreach(t analysis handoff licence pack viseme)
   add_executable(test_${t} test_${t}.c)
   target_link_libraries(test_${t} PRIVATE ff-core)
   add_test(NAME ${t} COMMAND test_${t})

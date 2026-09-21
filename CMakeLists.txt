@@ -56,7 +56,7 @@ endif()
 # packforge signs, and tools/licence-interop.py exists to catch that drifting; a second copy would
 # double the surface that gate has to cover.
 add_library(ff-core STATIC
-  src/ff-analysis.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c
+  src/ff-analysis.c src/ff-viseme.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c
   vendor/kissfft/kiss_fft.c vendor/kissfft/kiss_fftr.c vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c)
 target_include_directories(ff-core PUBLIC src vendor/kissfft vendor/monocypher)
 target_compile_definitions(ff-core PUBLIC kiss_fft_scalar=float)
