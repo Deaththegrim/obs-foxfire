@@ -383,6 +383,45 @@ manifest validation described everywhere else in this document. A zip that passe
 checks but fails manifest validation (a bad `min_engine`, too many layers, whatever) is refused with
 that validation's own reason, exactly as if it had been dropped straight into the packs folder.
 
+## Mouth shapes: `viseme` and `mouth_open`
+
+Two more builtins, for a mouth overlaid on a character:
+
+```c
+uniform float viseme;     /* which shape to draw, 0-8 */
+uniform float mouth_open; /* how open, 0..1, smoothed */
+```
+
+`viseme` numbers the classic Preston Blair set, in the order the art is conventionally drawn:
+
+| # | Shape | For |
+| --- | --- | --- |
+| 0 | A | closed, slight pressure — P, B, M |
+| 1 | B | slightly open, teeth together — "EE", K, S, T |
+| 2 | C | open — "EH", "AE" |
+| 3 | D | wide open — "AA" as in *father* |
+| 4 | E | slightly rounded — "AO", "ER" |
+| 5 | F | puckered — "UW", "OW", W |
+| 6 | G | teeth on lip — F, V *(optional)* |
+| 7 | H | tongue raised — long L *(optional)* |
+| 8 | X | rest, relaxed closed *(optional)* |
+
+**A–F are the ones that matter.** G, H and X are optional — Rhubarb's own documentation says an
+artist may draw all three, some, or none — so a shader must fold the ones that were not drawn
+onto the ones that were. The fallbacks are X→A, G→B, H→C. `packs/mouth/effects/mouth.effect` has
+this as `ff_cell()`; copy it rather than clamping, because clamping sends every rest frame to
+whatever happens to be the last cell in the strip.
+
+The shape is decided in C, not in the shader, because choosing it needs memory of the previous
+frame — how long the current shape has been up. Without that hold the mouth changes on every
+ambiguous frame and reads as flapping rather than speech. A shader has no frame memory, which is
+why this arrives as a number rather than as something a pack works out for itself.
+
+**Art:** one image, the shapes side by side left to right in the order above, same cell size,
+mouth registered in the same place in every cell, transparent background. The engine feeds the
+bound image's pixel dimensions as `mouth_size`, so a shader can work out one cell's aspect and
+avoid squashing every mouth by the number of cells.
+
 ## The shared controls: Placement and Response
 
 Every Foxfire shader that **draws a shape** carries the same block of controls, with the same
