@@ -220,6 +220,24 @@ Suggested reading to get up and running:
 * [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
 * [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
 
+## Tuning the mouth to a voice
+
+`calibrate_cli` measures what the classifier makes of a real recording — the percentiles of each
+feature with the live thresholds marked next to them, the share of frames each shape gets, and
+the frame count beside all of it. Build it with the tests and point it at 16-bit PCM WAVs of the
+voice that will drive the mouth.
+
+It is not part of `ctest`, because there is no recording in this repository and a test that skips
+when its input is missing passes having inspected nothing. What to look for is written at the top
+of `tests/calibrate_cli.c`: a shape stuck at 0.0% is a shape that will never appear on that
+voice, and that has happened before — an early "wide open" threshold sat above where 99% of real
+voiced frames reach, so the wide mouth never once fired while classifying every synthesised vowel
+perfectly.
+
+**The thresholds shipped today are set against synthesised speech only.** The recorded half of
+the original calibration cannot be reproduced — the file it was measured from is gone — which is
+why this tool is in the tree rather than in somebody's scratch directory.
+
 ## Render proof
 
 `tools/ff_proof.py` is a headless, armed proof of the Foxfire Visualizer source and Effects filter:
