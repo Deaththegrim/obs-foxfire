@@ -89,7 +89,7 @@ find_package(CURL REQUIRED)
 # alerts installs this one and nothing else; it still reads the same packs directory (see
 # ff_shared_config_path) so packs are not split across plugins.
 add_library(obs-foxfire-alerts MODULE)
-target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c src/ff-alert-source.c src/ff-alert-queue.c src/ff-ws.c src/ff-ws-conn.c src/ff-net.c)
+target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c src/ff-alert-source.c src/ff-alert-queue.c src/ff-ws.c src/ff-ws-conn.c src/ff-net.c src/ff-eventsub.c)
 target_link_libraries(obs-foxfire-alerts PRIVATE ff-core CURL::libcurl)
 set_target_properties_plugin(obs-foxfire-alerts PROPERTIES OUTPUT_NAME obs-foxfire-alerts)
 option(FOXFIRE_BUILD_TESTS "Build ff unit tests" OFF)

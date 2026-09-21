@@ -50,6 +50,11 @@ endif()
 # A real socket, a real curl connection, and a WebSocket server built out of raw sockets in
 # Python. The unit test proves the state machine; this proves it is wired to a socket. Skips (77)
 # when Python is absent rather than passing having inspected nothing.
+add_executable(test_eventsub test_eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c)
+target_link_libraries(test_eventsub PRIVATE ff-core)
+add_test(NAME eventsub COMMAND test_eventsub)
+
 add_executable(test_url test_url.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
   ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c ${CMAKE_SOURCE_DIR}/src/ff-net.c)
 target_link_libraries(test_url PRIVATE ff-core CURL::libcurl)
