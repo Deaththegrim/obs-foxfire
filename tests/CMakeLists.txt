@@ -23,6 +23,15 @@ foreach(t analysis handoff licence)
 endforeach()
 target_link_libraries(test_handoff PRIVATE pthread)
 
+# ff-pack.c cannot join ff-core: it needs libobs (obs_data, the os_* file helpers) and
+# plugin-support's obs_log. Link those in for this one test rather than leaving the symlink
+# guard with no gate of its own -- see the header comment in test_pack.c.
+add_executable(test_pack test_pack.c ${CMAKE_SOURCE_DIR}/src/ff-pack.c)
+target_link_libraries(test_pack PRIVATE ff-core plugin-support OBS::libobs)
+target_include_directories(test_pack PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME pack COMMAND test_pack)
+set_tests_properties(pack PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(verify_cli verify_cli.c)
 target_link_libraries(verify_cli PRIVATE ff-core)
 
