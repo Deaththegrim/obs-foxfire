@@ -149,7 +149,16 @@ pack or preset.
 
 **Finding the right bias without guessing:** `calibrate_cli --jaw-bias N voice.wav` prints what
 share of frames each shape gets. Run it at 0, and if one shape is taking most of them, re-run
-with a bias until it is not. See below.
+with a bias until it is not. A worked example, on a real recording that needed one:
+
+```
+jaw bias +0.00   B=57.4%  C= 7.5%  D= 6.1%  E=10.6%  F=18.4%
+jaw bias +0.03   B=51.3%  C=11.7%  D=12.8%  E= 9.5%  F=14.8%   <- even, and matches the reference
+jaw bias +0.06   B=44.3%  C=15.0%  D=20.1%  E=10.0%  F=10.6%
+```
+
+What you are looking for is nothing near 0% and nothing over about 40%. A shape at 0% never
+appears on that voice; a shape over 40% is a mouth mostly stuck on one thing. See below.
 
 ## Connecting to Twitch
 

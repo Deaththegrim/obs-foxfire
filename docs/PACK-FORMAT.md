@@ -435,9 +435,16 @@ frames pulled from a video model drift as the head moves. Measure it instead of 
 
 ```
 tools/check-mouth-strip.py art/mouth-strip.png            # reports drift per cell
-tools/check-mouth-strip.py --fix out.png raw.png          # aligns them
+tools/check-mouth-strip.py --fix out.png raw.png          # aligns them; the verdict is on OUT
+tools/check-mouth-strip.py --cells 9 rhubarb-strip.png    # a strip that is not six cells
 tools/check-mouth-strip.py A.png B.png C.png D.png E.png F.png
 ```
+
+It refuses rather than guessing in three cases, all of which used to produce a confident number
+about the wrong pixels: a width that does not divide by the cell count; a strip that divides into
+exactly *square* cells at some other count (a nine-cell strip read as six measures fine and
+reports the mis-cut as drift in your art); and `--cells` given alongside several files, where the
+count is the number of files and the flag was being ignored.
 
 It anchors on the mouth **corners**, which sit on the line where the lips meet and stay put while
 the jaw works — not the bounding box or the centroid, both of which move down as the mouth opens.
@@ -477,6 +484,16 @@ has. The picker measures both axes and says `nothing close` for any shape the cl
 
 The clips must contain at least one wide, unrounded frame, because lip widths are normalised
 against the widest one present.
+
+**It refuses rather than producing a strip it has already told you is wrong.** If two shapes would
+be given the same frame — which happens whenever the clips do not hold all six — it names them and
+writes nothing, because a strip with duplicate cells is a mouth that never makes those shapes, and
+no later check can see it: identical cells register perfectly. Same for any shape it could not
+match closely. The answer is another clip, not the nearest frame.
+
+Frames it cannot read are reported apart from frames that are empty. Art drawn entirely below the
+lip/cavity split — dark lips, a dark-skinned character, a low-key render — is a fact about the
+split and not about your render, and `--dark-below` moves it.
 
 `pick-mouth-frames.py --selftest` renders an animation whose right answer is known by
 construction and checks the picks against it; `--mutate` breaks the picker five ways and shows
