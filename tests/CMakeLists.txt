@@ -33,20 +33,28 @@ target_link_libraries(test_handoff PRIVATE pthread)
 # a privileged account, so it reports 77 (skip) there rather than a pass that inspected nothing.
 set_tests_properties(pack PROPERTIES SKIP_RETURN_CODE 77)
 
+find_package(Python3 COMPONENTS Interpreter)
+
 add_executable(verify_cli verify_cli.c)
 target_link_libraries(verify_cli PRIVATE ff-core)
 
-# Not a test: there is no corpus in the repo to run it against, and a test that skips when its
-# input is missing is a test that passes having inspected nothing. It is built so that pointing
-# it at a voice is one command rather than a scratch program written again each time.
+# There is no corpus in the repo, and a test that skips when its input is missing passes having
+# inspected nothing -- so the proof BUILDS its input instead: a synthesised vowel whose shape is
+# known by construction, wrapped in the file shapes the parser was written for. The one that
+# earns its keep is a LIST chunk before the samples, which anything writing metadata emits and
+# which, read as audio, reports a perfectly plausible distribution over noise.
 add_executable(calibrate_cli calibrate_cli.c)
 target_link_libraries(calibrate_cli PRIVATE ff-core)
+
+if(Python3_Interpreter_FOUND)
+  add_test(NAME calibrate
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/calibrate-proof.py $<TARGET_FILE:calibrate_cli>)
+endif()
 
 # Python signs, C verifies. The unit tests above sign and verify with the same
 # Monocypher code, so only this can catch a divergence from python-cryptography,
 # which is what packforge mints real licences with. Skips (77) when the
 # cryptography module is absent rather than failing the build.
-find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
   add_test(NAME licence_interop
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/licence-interop.py $<TARGET_FILE:verify_cli>)

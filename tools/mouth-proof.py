@@ -254,12 +254,19 @@ async def drive(pack_id: str, wavs: dict, strip: Path, strip4: Path, strip9: Pat
     ws, c = await ff_proof.open_client("mouth proof")
     seen = {}
     try:
+        last = None
         for _ in range(60):
             try:
                 await c.request("GetVersion")
                 break
-            except Exception:
+            except Exception as exc:  # noqa: BLE001 -- re-raised below with its cause
+                last = exc
                 await asyncio.sleep(1)
+        else:
+            # A permanent condition -- auth refused, a protocol mismatch -- was retried in
+            # silence for a minute and then surfaced as whatever the NEXT call happened to
+            # throw, with the real cause discarded.
+            raise RuntimeError(f"OBS never answered GetVersion in 60s; last error: {last!r}")
         await c.request("CreateScene", {"sceneName": "mo"})
         await c.request("SetCurrentProgramScene", {"sceneName": "mo"})
         await c.request("CreateInput", {

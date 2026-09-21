@@ -80,6 +80,7 @@ jobs:
             echo "The foxfire packs repo is private and is not checked out here, so these" >> "$GITHUB_STEP_SUMMARY"
             echo "did not run: check-placement, mouth-strip registration, the picker selftest" >> "$GITHUB_STEP_SUMMARY"
             echo "and its --mutate, every-pack-renders, and the mouth render proof." >> "$GITHUB_STEP_SUMMARY"
+            echo "(ctest, including the calibrate proof, does not need them and did run.)" >> "$GITHUB_STEP_SUMMARY"
             echo "A green tick here does NOT mean they passed." >> "$GITHUB_STEP_SUMMARY"
           fi
 
