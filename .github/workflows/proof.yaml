@@ -26,6 +26,18 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/proof.py --plugin-build . --pack data/packs/demo --out proof-out
+      - name: Viewer-supplied art + named dropdowns
+        # Neither is covered by the render proof above: both are about CONTROLS, and a pack
+        # renders identically whether or not the viewer can reach them.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/user-image-proof.py --plugin-build .
+      - name: Gradients
+        # The one parameter type where "the property appeared" and "the picture changed" can
+        # come apart: the colour pickers can be present and correct while nothing is bound.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/gradient-proof.py --plugin-build .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
