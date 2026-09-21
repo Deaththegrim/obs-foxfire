@@ -15,6 +15,10 @@ endforeach()
 # putting it in core would link a text-source lookup into the visualizer for no reason. So this
 # one test compiles it directly, the same way test_pack used to compile ff-pack.c.
 add_executable(test_alert test_alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c)
+
+add_executable(test_ws test_ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c)
+target_link_libraries(test_ws PRIVATE ff-core)
+add_test(NAME ws COMMAND test_ws)
 target_link_libraries(test_alert PRIVATE ff-core)
 add_test(NAME alert COMMAND test_alert)
 target_link_libraries(test_handoff PRIVATE pthread)
