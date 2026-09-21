@@ -145,6 +145,48 @@ zero.
 Animated GIFs are deliberately not offered by the picker: the engine binds a still frame and
 nothing ticks the animation, so one would appear permanently frozen on frame 0.
 
+## Gradients: the `gradient` annotation
+
+A texture uniform can be a ramp the engine bakes instead of an image the pack ships:
+
+```hlsl
+uniform texture2d ramp <string gradient = "#ff6a4d,#d9a441,#0b0a0d"; string label = "Flame";>;
+...
+float4 c = ramp.Sample(linSampler, float2(t, 0.5));   // t in 0..1
+```
+
+The annotation's colour list IS the stop count — there is no separate count that can disagree
+with it. Colours are `#rrggbb` or `#rrggbbaa`, comma-separated, 2 to 8 of them. The engine bakes
+a 256×1 RGBA ramp and binds it to that uniform, so the shader samples it exactly like any other
+texture.
+
+**A gradient parameter becomes 2N controls in the properties panel**: a colour picker and a
+position slider per stop. The positions are what make it a gradient rather than a palette — a
+viewer can push where the colours land, not just recolour them. Defaults are evenly spaced.
+
+**A preset can supply its own stops**, which is how one gradient shader serves a whole family of
+looks without a texture file per look:
+
+```json
+{ "effect": "effects/bars.effect", "params": { "ramp": "#ffffff,#000000" } }
+```
+
+A string param on a texture is normally a path into the pack (see Texture parameters); a string
+containing `#` on a gradient uniform is read as stops instead.
+
+**A malformed stop refuses the whole gradient**, loudly, rather than substituting black for the
+one it could not read — a half-wrong ramp looks like a design decision. The parameter is then
+left unbound and the effect draws whatever an unbound texture gives it, with the reason in the
+log naming the parameter and which stop.
+
+Two stops at the same position are a hard edge, not an error. A stop positioned behind the one
+before it is clamped forward rather than reordered, so a pack that writes its stops out of order
+sees a flat band it can notice instead of a silently rearranged ramp.
+
+A gradient uniform must not also carry `<string path=...>`: the gradient wins and the path is
+ignored with a warning, because whichever one bound last would otherwise depend on annotation
+order.
+
 ## Named choices for a number: the `list` annotation
 
 `string list = "Kick=60;Snare=200;Voice=1000";` turns a float uniform into a dropdown of named

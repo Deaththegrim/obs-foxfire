@@ -8,6 +8,7 @@
 #include <util/platform.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 /* Uniform names the engine feeds every frame. They are never exposed as properties, and a pack
    that declares one gets the engine's value, not an author-editable knob. */
@@ -161,6 +162,11 @@ static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
    annotation: uniform texture2d ink <string path="textures/ink.png";>; */
 static void free_texture(struct ff_param *p)
 {
+	if (p->grad_tex) {
+		gs_texture_destroy(p->grad_tex);
+		p->grad_tex = NULL;
+		p->grad_dirty = true; /* so a reused param rebakes rather than binding the blank */
+	}
 	if (!p->tex)
 		return;
 	gs_image_file_free(p->tex);
@@ -217,6 +223,71 @@ static void ff_param_bind_texture(struct ff_param *p, const char *pack_dir)
 	dstr_free(&full);
 }
 
+/* "#rrggbb" or "#rrggbbaa", with or without the '#'. Returns false rather than guessing: a typo
+   in a pack's gradient must be named, not silently rendered as black. */
+static bool parse_hex_colour(const char *s, float out[4])
+{
+	while (*s == ' ')
+		s++;
+	if (*s == '#')
+		s++;
+	size_t n = 0;
+	while (s[n] && s[n] != ' ' && s[n] != ',')
+		n++;
+	if (n != 6 && n != 8)
+		return false;
+	unsigned v[4] = {0, 0, 0, 255};
+	for (size_t i = 0; i < n; i += 2) {
+		unsigned hi, lo;
+		const char *d = "0123456789abcdef";
+		const char *ph = strchr(d, (int)tolower((unsigned char)s[i]));
+		const char *pl = strchr(d, (int)tolower((unsigned char)s[i + 1]));
+		if (!ph || !pl)
+			return false;
+		hi = (unsigned)(ph - d);
+		lo = (unsigned)(pl - d);
+		v[i / 2] = hi * 16 + lo;
+	}
+	for (int i = 0; i < 4; i++)
+		out[i] = (float)v[i] / 255.f;
+	return true;
+}
+
+/* Reads a comma-separated colour list into a param's stops, evenly spaced. Returns the number of
+   stops, or 0 if the list is unusable -- in which case the caller must NOT treat the param as a
+   gradient, because a gradient with no stops is a black texture with no explanation. */
+static int parse_gradient(struct ff_param *p, const char *spec, const char *whose)
+{
+	int n = 0;
+	const char *s = spec;
+	while (*s && n < FF_GRAD_MAX) {
+		while (*s == ' ' || *s == ',')
+			s++;
+		if (!*s)
+			break;
+		if (!parse_hex_colour(s, p->grad_col[n])) {
+			obs_log(LOG_WARNING,
+				"%s: gradient stop %d is not a #rrggbb or #rrggbbaa colour; "
+				"the whole gradient is refused rather than drawn wrong",
+				whose, n + 1);
+			return 0;
+		}
+		n++;
+		while (*s && *s != ',')
+			s++;
+	}
+	if (*s && n >= FF_GRAD_MAX)
+		obs_log(LOG_WARNING, "%s: more than %d gradient stops; the rest are ignored", whose,
+			FF_GRAD_MAX);
+	if (n < 2) {
+		obs_log(LOG_WARNING, "%s: a gradient needs at least 2 colour stops, got %d", whose, n);
+		return 0;
+	}
+	for (int i = 0; i < n; i++)
+		p->grad_pos[i] = (float)i / (float)(n - 1);
+	return n;
+}
+
 static void load_texture_param(struct ff_param *p, const char *pack_dir)
 {
 	size_t n = gs_param_get_num_annotations(p->ep);
@@ -242,6 +313,18 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 			}
 			continue;
 		}
+		if (ai.type == GS_SHADER_PARAM_STRING && !strcmp(ai.name, "gradient")) {
+			/* The preset may already have supplied its own stops through an override, and
+			   those win -- that is the whole point of one shader serving many looks. */
+			if (p->grad_stops)
+				continue;
+			char spec[512];
+			char whose[128];
+			snprintf(whose, sizeof whose, "param '%s'", p->name);
+			if (default_val_str(a, spec, sizeof spec))
+				p->grad_stops = parse_gradient(p, spec, whose);
+			continue;
+		}
 		if (ai.type != GS_SHADER_PARAM_STRING || strcmp(ai.name, "path"))
 			continue;
 		char rel[512];
@@ -258,6 +341,18 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 		/* the preset's choice wins: apply_override ran first and may already have set this */
 		if (!p->tex_pack[0])
 			set_field(p->tex_pack, sizeof p->tex_pack, rel);
+	}
+	if (p->grad_stops) {
+		/* A gradient IS the texture. Binding a file here as well would load an image nothing
+		   ever samples and, worse, leave whichever won depending on annotation order. */
+		if (p->tex_pack[0])
+			obs_log(LOG_WARNING,
+				"param '%s' is a gradient, so its <string path=\"%s\"> is ignored",
+				p->name, p->tex_pack);
+		p->grad_dirty = true;
+		memcpy(p->grad_col_preset, p->grad_col, sizeof p->grad_col_preset);
+		memcpy(p->grad_pos_preset, p->grad_pos, sizeof p->grad_pos_preset);
+		return;
 	}
 	ff_param_bind_texture(p, pack_dir);
 }
@@ -281,6 +376,18 @@ static void apply_override(struct ff_param *p, const struct ff_param_override *o
 				"preset '%s' layer %d: param '%s' was given a string, which only means "
 				"something for a texture; using the shader default",
 				preset_id, (int)layer_idx, p->name);
+		else if (strchr(o->str, '#') || p->grad_stops) {
+			/* A colour list, not a path: this is how one gradient shader serves a whole
+			   family of presets. Judged by the '#' rather than by p->grad_stops alone
+			   because overrides are applied BEFORE the shader's own annotations are read,
+			   so grad_stops is still 0 on the first preset to do this. */
+			char whose[160];
+			snprintf(whose, sizeof whose, "preset '%s' layer %d param '%s'", preset_id,
+				 (int)layer_idx, p->name);
+			int n = parse_gradient(p, o->str, whose);
+			if (n)
+				p->grad_stops = n;
+		}
 		else if (!ff_rel_ok(o->str))
 			obs_log(LOG_WARNING, "preset '%s' layer %d: texture path '%s' refused",
 				preset_id, (int)layer_idx, o->str);
@@ -559,6 +666,56 @@ static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct
 	}
 }
 
+/* Bakes the stops into a 1 x FF_GRAD_LUT RGBA8 ramp. Graphics context required -- which is why
+   this happens here, at render time, and not in ff_renderer_apply_settings: that one is called
+   from the properties thread and the header's contract says it touches no graphics state.
+
+   Stops are used in the order the pack wrote them; a stop whose position is behind the one before
+   it is clamped forward rather than reordered, so a pack that writes them out of order gets a
+   flat band it can see instead of a silently rearranged ramp. */
+static void bake_gradient(struct ff_param *p)
+{
+	uint8_t lut[FF_GRAD_LUT * 4];
+	float pos[FF_GRAD_MAX];
+	int n = p->grad_stops;
+	if (n < 2)
+		return;
+	pos[0] = p->grad_pos[0];
+	for (int i = 1; i < n; i++)
+		pos[i] = p->grad_pos[i] < pos[i - 1] ? pos[i - 1] : p->grad_pos[i];
+
+	int s = 0;
+	for (int x = 0; x < FF_GRAD_LUT; x++) {
+		float t = (float)x / (float)(FF_GRAD_LUT - 1);
+		while (s < n - 2 && t > pos[s + 1])
+			s++;
+		float span = pos[s + 1] - pos[s];
+		/* two stops at the same position are a hard edge, not a divide by zero */
+		float f = span > 1e-6f ? (t - pos[s]) / span : (t < pos[s] ? 0.f : 1.f);
+		if (f < 0.f)
+			f = 0.f;
+		if (f > 1.f)
+			f = 1.f;
+		for (int c = 0; c < 4; c++) {
+			float v = p->grad_col[s][c] + (p->grad_col[s + 1][c] - p->grad_col[s][c]) * f;
+			if (v < 0.f)
+				v = 0.f;
+			if (v > 1.f)
+				v = 1.f;
+			lut[x * 4 + c] = (uint8_t)(v * 255.f + 0.5f);
+		}
+	}
+
+	if (!p->grad_tex) {
+		const uint8_t *data = lut;
+		p->grad_tex = gs_texture_create(FF_GRAD_LUT, 1, GS_RGBA, 1, &data, GS_DYNAMIC);
+		ff_require(p->grad_tex, "a gradient ramp texture");
+	} else {
+		gs_texture_set_image(p->grad_tex, lut, FF_GRAD_LUT * 4, false);
+	}
+	p->grad_dirty = false;
+}
+
 static void set_params(struct ff_renderer *r, struct ff_layer *L)
 {
 	for (size_t i = 0; i < L->nparams; i++) {
@@ -581,6 +738,16 @@ static void set_params(struct ff_renderer *r, struct ff_layer *L)
 			break;
 		}
 		case GS_SHADER_PARAM_TEXTURE:
+			if (p->grad_stops) {
+				if (p->grad_dirty)
+					bake_gradient(p);
+				gs_effect_set_texture(p->ep, p->grad_tex ? p->grad_tex : r->blank);
+				if (p->tex_size_ep) {
+					struct vec2 gz = {.x = (float)FF_GRAD_LUT, .y = 1.f};
+					gs_effect_set_vec2(p->tex_size_ep, &gz);
+				}
+				break;
+			}
 			/* an unbound texture2d would sample NULL, which is undefined on both backends */
 			gs_effect_set_texture(p->ep, p->tex ? p->tex->texture : r->blank);
 			if (p->tex_size_ep) {
@@ -837,6 +1004,32 @@ static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, cons
 	return true;
 }
 
+/* "<param key>.c3" / "<param key>.p3" -- one settings key per stop. One key holding all of them
+   (a packed string, say) would make Restore Defaults and the undo stack all-or-nothing, and would
+   silently change meaning the day the stop count changed. */
+static void grad_key(char *out, size_t cap, const char *key, char kind, int stop)
+{
+	snprintf(out, cap, "%s.%c%d", key, kind, stop);
+}
+
+/* A gradient becomes 2N controls: a colour and a position per stop. The position sliders are what
+   make it a gradient rather than a palette -- without them a viewer can recolour the ramp but
+   never move where the colours land, which is most of what tuning a visualizer actually is. */
+static void add_gradient_property(obs_properties_t *grp, const struct ff_param *p, const char *key,
+				  const char *label)
+{
+	for (int s = 0; s < p->grad_stops; s++) {
+		char k[128], l[128];
+		grad_key(k, sizeof k, key, 'c', s);
+		snprintf(l, sizeof l, "%s %d", label, s + 1);
+		obs_properties_add_color_alpha(grp, k, l);
+
+		grad_key(k, sizeof k, key, 'p', s);
+		snprintf(l, sizeof l, "%s %d at", label, s + 1);
+		obs_properties_add_float_slider(grp, k, l, 0.0, 1.0, 0.001);
+	}
+}
+
 static void add_param_property(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
 {
 	float step = p->step > 0.f ? p->step : 0.01f;
@@ -887,7 +1080,7 @@ static bool is_exposed(const struct ff_param *p)
 		return false;
 	return p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT || p->type == GS_SHADER_PARAM_BOOL ||
 	       p->type == GS_SHADER_PARAM_VEC4 ||
-	       (p->type == GS_SHADER_PARAM_TEXTURE && p->tex_user_allowed);
+	       (p->type == GS_SHADER_PARAM_TEXTURE && (p->tex_user_allowed || p->grad_stops > 0));
 }
 
 /* The render loop skips a layer that failed to load -- compile failure, or a compiled effect
@@ -928,7 +1121,10 @@ void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props)
 			param_key(key, sizeof key, i, p->name);
 			size_t gi = group_index(&ctx, props, p->group);
 			unique_label(&ctx, gi, i, p->label, label, sizeof label);
-			add_param_property(ctx.g[gi].props, p, key, label);
+			if (p->grad_stops)
+				add_gradient_property(ctx.g[gi].props, p, key, label);
+			else
+				add_param_property(ctx.g[gi].props, p, key, label);
 		}
 	}
 }
@@ -945,6 +1141,18 @@ void ff_renderer_set_defaults(struct ff_renderer *r, obs_data_t *settings)
 				continue;
 			char key[96];
 			param_key(key, sizeof key, i, p->name);
+			if (p->grad_stops) {
+				for (int s = 0; s < p->grad_stops; s++) {
+					char gk[128];
+					grad_key(gk, sizeof gk, key, 'c', s);
+					obs_data_set_default_int(
+						settings, gk, (long long)pack_color(p->grad_col_preset[s]));
+					grad_key(gk, sizeof gk, key, 'p', s);
+					obs_data_set_default_double(settings, gk,
+								    (double)p->grad_pos_preset[s]);
+				}
+				continue;
+			}
 			/* preset_def, never def: def may already carry a user setting, and recording
 			   that as the default is what would make "Restore Defaults" a no-op */
 			switch (p->type) {
@@ -982,6 +1190,36 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 				continue;
 			char key[96];
 			param_key(key, sizeof key, i, p->name);
+			if (p->grad_stops) {
+				/* Per stop, so a viewer who moved one stop keeps it while Restore
+				   Defaults on another really does restore that one. */
+				for (int s = 0; s < p->grad_stops; s++) {
+					char gk[128];
+					float col[4], pos;
+					grad_key(gk, sizeof gk, key, 'c', s);
+					if (obs_data_has_user_value(settings, gk))
+						unpack_color((uint32_t)obs_data_get_int(settings, gk), col);
+					else
+						memcpy(col, p->grad_col_preset[s], sizeof col);
+					grad_key(gk, sizeof gk, key, 'p', s);
+					pos = obs_data_has_user_value(settings, gk)
+						      ? (float)obs_data_get_double(settings, gk)
+						      : p->grad_pos_preset[s];
+					if (pos < 0.f)
+						pos = 0.f;
+					if (pos > 1.f)
+						pos = 1.f;
+					/* rebake only on a real change: apply_settings runs on every
+					   settings touch, and the bake is 256 stop-searches */
+					if (memcmp(p->grad_col[s], col, sizeof col) != 0 ||
+					    p->grad_pos[s] != pos) {
+						memcpy(p->grad_col[s], col, sizeof col);
+						p->grad_pos[s] = pos;
+						p->grad_dirty = true;
+					}
+				}
+				continue;
+			}
 			if (!obs_data_has_user_value(settings, key)) {
 				/* untouched, or cleared by Restore Defaults: put the preset's own value
 				   back. Skipping would leave the last user value in p->def forever. */

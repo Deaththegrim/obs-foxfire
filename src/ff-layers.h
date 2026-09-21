@@ -7,6 +7,11 @@
 #include "ff-frame.h"
 #include "ff-pack.h"
 
+/* A gradient is a texture2d the SHADER never loads: the engine bakes it from colour stops the
+   viewer sets, so one shader serves a whole family of looks without a file per look. */
+#define FF_GRAD_MAX 8   /* stops; more than this is a palette, not a gradient */
+#define FF_GRAD_LUT 256 /* baked width. 8-bit colour anyway, so finer buys nothing visible. */
+
 /* Graphics-context contract
    ------------------------
    Every function here except ff_renderer_add_properties / ff_renderer_set_defaults /
@@ -41,6 +46,18 @@ struct ff_param {
 	gs_eparam_t *tex_size_ep; /* optional sibling "<name>_size" float2, fed the pixel dimensions:
 	                             a shader cannot ask a texture its size (GetDimensions does not
 	                             compile here), and a viewer-supplied image can be any aspect. */
+
+	/* Gradient: set when the shader declared <string gradient = "#rrggbb,#rrggbb,...">. The
+	   annotation's colour list IS the stop count -- there is no separate count to disagree with
+	   it. Stops carry a position each so a viewer can push the ramp around, not only recolour
+	   it. The LUT is baked at RENDER time, never here: this struct is filled from
+	   ff_renderer_apply_settings, which the contract above says touches no graphics state. */
+	int grad_stops; /* 0 = not a gradient; >= 2 otherwise */
+	float grad_col[FF_GRAD_MAX][4], grad_pos[FF_GRAD_MAX];
+	float grad_col_preset[FF_GRAD_MAX][4], grad_pos_preset[FF_GRAD_MAX];
+	gs_texture_t *grad_tex;
+	bool grad_dirty; /* the stops changed; rebake before the next draw */
+
 	bool builtin;
 };
 
