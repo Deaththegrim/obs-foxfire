@@ -30,7 +30,17 @@ APPEARS is unproven here; what is proven is that the settings reach the classifi
 
 ARMED by mutation -- every number below was measured by running it, not predicted:
 
-    control (everything wired up)            10/10 passed
+    control (everything wired up)            13/13 passed
+    stretch ignores mouth_open                11/13
+    stretch scales about its centre           12/13
+    stretch scales width as well as height    12/13  -- survived until a width check existed;
+                                                        it shortens and pivots correctly while
+                                                        pulling the corners in, which on screen
+                                                        is a mouth receding, not closing
+
+ and, measured earlier at ten checks:
+
+    control                                  10/10 passed
     mouth stuck on the first cell             3/10  -- the survivors are "silence draws A", the
                                                         gate check (both want A anyway) and the
                                                         pixel count: exactly the false pass this
@@ -201,6 +211,12 @@ def dominant_hue(img: Image.Image):
     return (math.degrees(math.atan2(y, x)) + 360.0) % 360.0, int(weight)
 
 
+def drawn_box(img: Image.Image):
+    """Bounding box of the drawn pixels, and its height."""
+    box = img.getchannel("A").point(lambda a: 255 if a > 100 else 0).getbbox()
+    return box, (box[3] - box[1]) if box else 0
+
+
 def nearest_shape(hue):
     if hue is None:
         return None
@@ -301,6 +317,40 @@ async def drive(pack_id: str, wavs: dict, strip: Path):
         seen["oo_biased"] = (nearest_shape(hue), hue, px)
         await set_mouth("mouth.jaw_bias", 0.0)
 
+        # ---- the other preset: ONE image stretched, which reads mouth_open and not viseme ----
+        #
+        # Nothing else in this file or the test suite touches that builtin. It is fed every
+        # frame, documented as the way to drive a single-mouth rig, and until this existed no
+        # shader anywhere read it -- a slot built for somebody else to fill and never filled.
+        # TWO requests, and the order matters: changing preset erases every "l<n>.*" key, because
+        # those belong to whichever preset was loaded when they were written. Sent together, the
+        # size below is wiped by the preset change in the same update and silently does nothing
+        # -- which is how the first version of this check ran at full size without noticing.
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "preset": "mouth-stretch"}})
+        await asyncio.sleep(1.0)
+        # Half size, so the art does not touch the top of the canvas. At full size it does, the
+        # top edge reads 0 whatever the mouth is doing, and "the top edge barely moves" would be
+        # satisfied by the frame clipping it rather than by the shader pivoting there.
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "l0.size": 0.5}})
+        await asyncio.sleep(1.5)
+        for name, wav in (("loud", wavs["ah"]), ("quiet", wavs["silence"])):
+            await c.request("SetInputSettings", {"inputName": "voice", "inputSettings": {
+                "local_file": str(wav)}})
+            await c.request("TriggerMediaInputAction", {
+                "inputName": "voice",
+                "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"})
+            await asyncio.sleep(3.0)
+            box, h = drawn_box(await shoot(c, "mouth"))
+            seen[f"stretch_{name}"] = (None, box, h)
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "preset": "mouth-strip"}})
+        await asyncio.sleep(1.0)
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "l0.mouth": str(strip)}})
+        await asyncio.sleep(1.5)
+
         # And the pack's OWN art, once, because nothing else here looks at it any more. Not by
         # colour -- that is the coupling this file just got rid of -- but it has to draw
         # something: "" means the pack's own image, and a strip that failed to load draws
@@ -383,9 +433,11 @@ def main() -> int:
 
     # And they are not all the same cell, which a mouth stuck on one shape would also satisfy
     # check by check above if the expectations happened to agree.
-    # pack_art excluded on purpose: it is a pixel-count check with no shape, and counting its
-    # None as a distinct value would let a mouth stuck on one cell satisfy this.
-    shapes = {k: v[0] for k, v in seen.items() if k != "pack_art"}
+    # Only the cells picked by hue belong here. pack_art and the two stretch readings carry no
+    # shape at all, and counting their None as a distinct value would let a mouth stuck on one
+    # cell satisfy the very check written to catch that.
+    skip = ("pack_art", "stretch_loud", "stretch_quiet")
+    shapes = {k: v[0] for k, v in seen.items() if k not in skip}
     check("the shape actually changes with the audio", len(set(shapes.values())) >= 3,
           f"{shapes} -- a mouth stuck on one shape renders perfectly well and is the failure "
           f"this whole file exists to catch")
@@ -401,6 +453,26 @@ def main() -> int:
           f"{seen.get('pack_art', (None, None, 0))[2]} lit pixels with the shipped strip bound "
           f"-- every other check here uses a strip this file generates, so this is the only one "
           f"that touches the art the pack ships")
+    lb, lh = seen.get("stretch_loud", (None, None, 0))[1:]
+    qb, qh = seen.get("stretch_quiet", (None, None, 0))[1:]
+    check("the stretched mouth follows the audio", lh > qh * 1.3 and qh > 0,
+          f"drawn height {lh}px on a vowel against {qh}px in silence -- a shader that ignores "
+          f"mouth_open draws the same height either way, and renders perfectly well doing it")
+    # and it stretches DOWNWARD: the upper lip is where a real one is, just under the nose, and
+    # a mouth that grows about its middle climbs into the face every time it shuts
+    check("it opens downward, not about its centre",
+          bool(lb) and bool(qb) and abs(lb[1] - qb[1]) <= 3 and lb[3] > qb[3] + 3,
+          f"top edge {lb[1] if lb else '?'} -> {qb[1] if qb else '?'} (should barely move), "
+          f"bottom edge {lb[3] if lb else '?'} -> {qb[3] if qb else '?'} (should rise a lot)")
+    # and only downward. A uniform scale passed both checks above -- it shortens the mouth
+    # correctly and pivots correctly -- while also pulling the corners in, which on screen is a
+    # mouth receding into the face rather than closing.
+    lw = (lb[2] - lb[0]) if lb else 0
+    qw = (qb[2] - qb[0]) if qb else 0
+    check("it does not narrow as it closes", lw > 0 and abs(lw - qw) <= max(3, lw * 0.04),
+          f"drawn width {lw}px on a vowel against {qw}px in silence -- a jaw closing does not "
+          f"pull the corners of the mouth in")
+
     got, hue, px = seen.get("oo_biased", (None, None, 0))
     check("the jaw bias re-opens the mouth", got == "D",
           f"the same \"oo\" that draws F untrimmed draws {got} at a bias of +0.15 "

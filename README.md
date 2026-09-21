@@ -122,6 +122,11 @@ phoneme recogniser over a finished file offline; doing that live would mean ship
 model and spending the CPU on a machine that is already encoding video. A strip drawn for Rhubarb
 still works — the extra cells are simply never selected.
 
+**If you have not drawn six shapes yet**, use the *Mouth — one image, stretched* preset instead.
+It takes a single drawing of an open mouth and opens and closes it with the audio. It cannot tell
+an "oo" from an "ee" — nothing that only knows how far the jaw is down can — but it is the rig
+most people already have, and it uses every one of the controls below.
+
 **Tuning it.** A preset that draws a mouth grows a **Mouth** group in the properties panel:
 
 - **Silence threshold** — below this the mouth stops answering. Breath, a fan and a keyboard all

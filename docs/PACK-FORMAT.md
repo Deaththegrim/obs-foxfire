@@ -482,6 +482,28 @@ against the widest one present.
 construction and checks the picks against it; `--mutate` breaks the picker four ways and shows
 the selftest catching each.
 
+### Two ways to drive a mouth
+
+`viseme` swaps between drawn shapes; `mouth_open` stretches one drawing. The `mouth` pack ships
+both, because they want different art and suit different rigs:
+
+| Preset | Reads | Art it needs |
+| --- | --- | --- |
+| Mouth — sprite strip | `viseme` | six cells, A–F |
+| Mouth — one image, stretched | `mouth_open` | one drawing of an **open** mouth |
+
+The stretched one cannot tell an "oo" from an "ee" — nothing about how far the jaw is down can —
+but it is the rig most people already have, and the one to start from before six shapes exist.
+
+Two things its shader does that are worth copying. It scales about the **top** of the art, not
+the centre: the upper lip barely moves when a jaw opens, and a mouth that grows about its middle
+climbs toward the nose every time it shuts. And it scales **height only** — a uniform scale looks
+correct in a still and reads as the mouth receding into the face when it moves.
+
+The art should be an **open** mouth, cropped to its own bounds. Open, because this only ever
+scales down from it, and a closed drawing stretched tall is a yawn rather than speech; cropped,
+because the top edge of the image is the pivot, so it has to be the top of the upper lip.
+
 ### The Mouth controls
 
 A preset that declares either builtin also gets a **Mouth** group in the properties panel, added
