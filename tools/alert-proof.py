@@ -475,6 +475,35 @@ async def check_queue(c):
     await reset(c)
 
 
+async def wait_recording_stopped(c, timeout: float = 20.0):
+    """Waits until OBS says the recording output is really off.
+
+    Not a sleep. Stopping a recording finalises a file, and how long that takes depends on the
+    machine and the disk -- a fixed one-second wait passed for weeks and then started failing
+    with `StartRecord failed: 500`, because the second recording was asked for while the first
+    was still shutting down. Asking OBS is the only thing that is actually true.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = await c.request("GetRecordStatus")
+        if not st.get("outputActive", False):
+            return
+        await asyncio.sleep(0.2)
+    raise RuntimeError(f"the recording was still running {timeout}s after StopRecord")
+
+
+async def start_recording(c, timeout: float = 20.0):
+    """Starts it, and waits until OBS says it is running."""
+    await c.request("StartRecord")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        st = await c.request("GetRecordStatus")
+        if st.get("outputActive", False):
+            return
+        await asyncio.sleep(0.2)
+    raise RuntimeError(f"the recording never started within {timeout}s")
+
+
 async def record_alert_audio(rec_dir: Path) -> tuple[Path, Path]:
     """Records OBS twice -- once idle, once with an alert firing -- and returns both files.
 
@@ -494,18 +523,18 @@ async def record_alert_audio(rec_dir: Path) -> tuple[Path, Path]:
         await asyncio.sleep(0.5)
         await c.request("SetRecordDirectory", {"recordDirectory": str(rec_dir)})
 
-        await c.request("StartRecord")
+        await start_recording(c)
         await asyncio.sleep(3.0)                      # idle: nothing fired
         quiet = (await c.request("StopRecord"))["outputPath"]
-        await asyncio.sleep(1.0)
+        await wait_recording_stopped(c)
 
-        await c.request("StartRecord")
+        await start_recording(c)
         await asyncio.sleep(0.5)
         await c.request("PressInputPropertiesButton",
                         {"inputName": "alert", "propertyName": "test"})
         await asyncio.sleep(3.0)
         loud = (await c.request("StopRecord"))["outputPath"]
-        await asyncio.sleep(1.0)
+        await wait_recording_stopped(c)
         return Path(quiet), Path(loud)
     finally:
         await ws.close()
@@ -577,6 +606,16 @@ def main() -> int:
                       fired > 0 and "TestViewer42 followed!" in text,
                       f"{fired} firing line(s), and the drawn text reads 'TestViewer42 followed!'")
     finally:
+        # Keep the OBS log where a human can read it, the way render-proof.sh does. A proof that
+        # deletes its own evidence on the way out is one you cannot diagnose from -- which is
+        # exactly the position this was in the first time the recording step failed.
+        try:
+            logs = sorted(obs_cfg.glob("logs/*.txt"))
+            if logs:
+                shutil.copy(logs[-1], "/tmp/ff-alert-obs.log")
+                print("log: /tmp/ff-alert-obs.log")
+        except Exception:
+            pass
         shutil.rmtree(cfg, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 

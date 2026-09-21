@@ -66,6 +66,7 @@ enum ff_session_step ff_session_message(struct ff_session *s, const char *json, 
 		return FF_STEP_EMIT;
 	case FF_ES_RECONNECT:
 		snprintf(s->url, sizeof s->url, "%s", s->es.reconnect_url);
+		s->handover_started = now;
 		return FF_STEP_RECONNECT;
 	case FF_ES_REVOKED:
 		/* ONE subscription stopped, because one scope was withdrawn. It is not the end of
@@ -106,4 +107,47 @@ enum ff_session_step ff_session_subscribed(struct ff_session *s, int accepted, i
 		return FF_STEP_NOTE;
 	}
 	return FF_STEP_NOTHING;
+}
+
+bool ff_session_in_handover(const struct ff_session *s)
+{
+	return s->handover_started != 0;
+}
+
+bool ff_session_welcomed(const struct ff_session *s)
+{
+	return s->es.session_id[0] != 0;
+}
+
+bool ff_session_handover_expired(const struct ff_session *s, time_t now)
+{
+	if (!s->handover_started)
+		return false;
+	return now - s->handover_started > FF_SESSION_HANDOVER_SECS;
+}
+
+void ff_session_init_replacement(struct ff_session *s, const char *url)
+{
+	ff_session_init(s, url);
+	/* Already subscribed: Twitch moves the subscriptions to the new session, so its welcome
+	   must not ask for them again. This is the same fact the reconnect branch relies on, in
+	   the one place where a fresh session object would otherwise forget it. */
+	s->subscribed = true;
+}
+
+void ff_session_adopt(struct ff_session *s, const struct ff_session *pending, time_t now)
+{
+	/* The replacement's EventSub state -- its session id and the keepalive interval IT
+	   negotiated -- becomes ours. Carrying the old socket's interval across would make a
+	   connection that negotiated a longer one look stale every time. `subscribed` stays true
+	   either way.
+
+	   The URL is NOT copied: ff_session_message already put the reconnect URL in s->url, which
+	   is where the caller got it to open the replacement in the first place. A copy here
+	   changed no result in 65 checks and cannot, so it is not here. */
+	s->es = pending->es;
+	s->opened = now;
+	s->last_message = now;
+	s->handover_started = 0;
+	s->subscribed = true;
 }

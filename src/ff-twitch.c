@@ -367,8 +367,63 @@ static bool run_once(struct ff_twitch *t)
 		ff_session_opened(&sess, time(NULL));
 		time_t started = time(NULL);
 		bool reconnecting = false;
+		/* The replacement socket, brought up alongside this one during a changeover. Twitch
+		   keeps delivering on the OLD socket until the new one is welcomed, so both are
+		   polled and the old one is not closed until the swap. */
+		struct ff_net *pending = NULL;
+		struct ff_session psess;
 
 		while (reading(t, &t->running) && reading(t, &t->enabled)) {
+			/* The replacement first, so the swap happens as soon as it is welcomed and
+			   the old socket stops being read a moment later rather than a poll later. */
+			if (pending) {
+				struct ff_ws_msg pm;
+				struct ff_alert_event pev;
+				int pr = ff_ws_conn_poll(ff_net_conn(pending), &pm);
+				if (pr < 0) {
+					obs_log(LOG_WARNING,
+						"twitch: the replacement connection failed (%s); "
+						"staying on the current one",
+						ff_net_conn(pending)->err);
+					ff_net_close(pending);
+					pending = NULL;
+				} else if (pr == 1) {
+					char *pj = malloc(pm.len + 1);
+					if (pj) {
+						memcpy(pj, pm.payload, pm.len);
+						pj[pm.len] = 0;
+						ff_session_message(&psess, pj, time(NULL), &pev);
+						free(pj);
+					}
+					if (ff_session_welcomed(&psess)) {
+						/* Twitch has moved. Now, and not before, the old
+						   socket can go. */
+						ff_ws_conn_close(ff_net_conn(net), 1000);
+						ff_net_close(net);
+						net = pending;
+						pending = NULL;
+						ff_session_adopt(&sess, &psess, time(NULL));
+						started = time(NULL);
+						obs_log(LOG_INFO,
+							"twitch: moved to the replacement connection "
+							"without dropping the old one");
+						continue;
+					}
+				}
+				if (pending && ff_session_handover_expired(&sess, time(NULL))) {
+					/* The thirty seconds are up. The old socket is going away
+					   whether we are ready or not, so stop straddling and
+					   reconnect the ordinary way. */
+					obs_log(LOG_WARNING,
+						"twitch: the replacement connection never started a "
+						"session; reconnecting");
+					ff_net_close(pending);
+					pending = NULL;
+					reconnecting = true;
+					break;
+				}
+			}
+
 			struct ff_ws_msg m;
 			int r = ff_ws_conn_poll(ff_net_conn(net), &m);
 			if (r < 0) {
@@ -426,8 +481,24 @@ static bool run_once(struct ff_twitch *t)
 				if (t->cb)
 					t->cb(t->ctx, &ev);
 			} else if (step == FF_STEP_RECONNECT) {
-				reconnecting = true;
-				break;
+				/* Open the replacement NEXT TO this one. Twitch gives thirty
+				   seconds precisely so nothing has to be dropped, and this used to
+				   close first and lose whatever arrived in the gap. */
+				if (pending)
+					ff_net_close(pending);
+				pending = ff_net_ws_open(sess.url, err, sizeof err);
+				if (!pending) {
+					/* could not bring one up: fall back to closing and
+					   reopening, which is worse but still works */
+					obs_log(LOG_WARNING,
+						"twitch: could not open the replacement connection "
+						"(%s); reconnecting the slow way",
+						err);
+					reconnecting = true;
+					break;
+				}
+				ff_session_init_replacement(&psess, sess.url);
+				ff_session_opened(&psess, time(NULL));
 			} else if (step == FF_STEP_DROP) {
 				set_state(t, FF_TWS_RETRYING, "%s", sess.reason);
 				break;
@@ -439,6 +510,8 @@ static bool run_once(struct ff_twitch *t)
 				ran_long = true;
 		}
 
+		if (pending)
+			ff_net_close(pending);
 		ff_ws_conn_close(ff_net_conn(net), 1000);
 		ff_net_close(net);
 		if (!reconnecting)

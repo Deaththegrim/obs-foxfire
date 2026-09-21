@@ -55,4 +55,13 @@ kill -KILL "$obspid" 2>/dev/null || true
 wait "$obspid" 2>/dev/null || true
 cp "$sb"/obs-studio/logs/*.txt /tmp/ff-obs.log 2>/dev/null || cp "$sb/obs-stdout.txt" /tmp/ff-obs.log
 echo "log: /tmp/ff-obs.log"
+# The sandbox goes when the run passed: the log is already copied out, and these accumulate. Left
+# in place on a failure, because that is when someone needs to look inside it -- forty-nine of
+# them had piled up in /tmp before this existed, and the disk pressure that caused is what made
+# the recording step start failing.
+if [ "$rc" -eq 0 ]; then
+	rm -rf "$sb"
+else
+	echo "sandbox kept for inspection: $sb"
+fi
 exit $rc

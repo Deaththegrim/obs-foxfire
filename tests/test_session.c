@@ -12,22 +12,30 @@
  *
  * ARMED by mutation -- each decision inverted in turn, recompiled and rerun:
  *
- *     control (every guard in place)                 45 checks,  0 failed
- *     re-subscribes after a reconnect                45 checks,  2 failed
- *     `subscribed` reset when a socket opens         45 checks,  3 failed
- *     reconnect URL not taken                        45 checks,  1 failed
- *     no welcome deadline                            45 checks,  2 failed
- *     keepalive watchdog removed                     45 checks,  3 failed
- *     a message does not reset the clock             45 checks,  1 failed
- *     revocation drops the connection                45 checks,  1 failed
- *     an unreadable message drops it                 45 checks,  1 failed
- *     a partial subscribe drops the connection       45 checks,  2 failed
- *     zero accepted is treated as fine               45 checks,  2 failed
+ *     control (every guard in place)                 65 checks,  0 failed
+ *     re-subscribes after a reconnect                65 checks,  2 failed
+ *     `subscribed` reset when a socket opens         65 checks,  3 failed
+ *     reconnect URL not taken                        65 checks,  1 failed
+ *     no welcome deadline                            65 checks,  2 failed
+ *     keepalive watchdog removed                     65 checks,  3 failed
+ *     a message does not reset the clock             65 checks,  1 failed
+ *     revocation drops the connection                65 checks,  1 failed
+ *     an unreadable message drops it                 65 checks,  1 failed
+ *     a partial subscribe drops the connection       65 checks,  2 failed
+ *     zero accepted is treated as fine               65 checks,  2 failed
+ *     handover never starts                          65 checks,  2 failed
+ *     handover never expires                         65 checks,  1 failed
+ *     replacement is not pre-subscribed              65 checks,  2 failed
+ *     adopt keeps the OLD keepalive interval         65 checks,  2 failed
+ *     adopt does not restart the clock               65 checks,  1 failed
+ *     adopt does not clear the handover              65 checks,  1 failed
  *
- * One further mutation -- ff_session_opened() not resetting `last_message` -- changed no result,
- * and on inspection cannot: the first message always sets it, and before that the welcome
- * deadline is what bounds the connection. Left in as defensive, recorded as equivalent rather
- * than written a test around.
+ * Two further mutations changed no result and, on inspection, cannot:
+ *   - ff_session_opened() not resetting `last_message`. The first message always sets it, and
+ *     before that the welcome deadline is what bounds the connection. Left in as defensive.
+ *   - ff_session_adopt() copying the URL. ff_session_message already put the reconnect URL in
+ *     s->url, which is where the caller got it. That one was DELETED rather than kept: an
+ *     equivalent mutant on a line that does nothing means the line does nothing.
  *
  * This file also failed on its own first run, on a case where the TEST was wrong: it reused a
  * session that was already subscribed and expected a welcome to mean SUBSCRIBE. That is the
@@ -112,6 +120,49 @@ int main(void)
 	/* and the connection keeps working afterwards */
 	now += 1;
 	CHECK(ff_session_message(&s, RAID, now, &ev) == FF_STEP_EMIT);
+
+	/* ---- the changeover, which is why the reconnect does not drop events ----
+	 *
+	 * Twitch keeps delivering on the OLD socket until the new one is welcomed, and gives
+	 * thirty seconds to make the move. The old code closed first and lost whatever arrived in
+	 * the gap -- narrow, but a raid landing there is exactly the moment that matters. */
+	ff_session_init(&s, "wss://x/ws");
+	ff_session_opened(&s, 8000);
+	CHECK(ff_session_message(&s, WELCOME("s1", "10"), 8000, &ev) == FF_STEP_SUBSCRIBE);
+	CHECK(ff_session_subscribed(&s, 7, 7) == FF_STEP_NOTHING);
+	CHECK(!ff_session_in_handover(&s));
+
+	CHECK(ff_session_message(&s, RECONNECT("wss://x/ws?c=2"), 8010, &ev) == FF_STEP_RECONNECT);
+	CHECK(ff_session_in_handover(&s));
+	CHECK(!ff_session_handover_expired(&s, 8010 + FF_SESSION_HANDOVER_SECS - 1));
+	CHECK(ff_session_handover_expired(&s, 8010 + FF_SESSION_HANDOVER_SECS + 1));
+
+	/* the old socket still delivers while the replacement is coming up */
+	CHECK(ff_session_message(&s, RAID, 8012, &ev) == FF_STEP_EMIT);
+	CHECK(ev.amount == 50);
+
+	/* the replacement: already subscribed, so its welcome must NOT ask again */
+	struct ff_session pend;
+	ff_session_init_replacement(&pend, s.url);
+	ff_session_opened(&pend, 8011);
+	CHECK(pend.subscribed);
+	CHECK(!ff_session_welcomed(&pend));
+	CHECK(ff_session_message(&pend, WELCOME("s2", "30"), 8013, &ev) != FF_STEP_SUBSCRIBE);
+	CHECK(ff_session_welcomed(&pend));
+
+	/* adopting it takes its session id AND the keepalive interval IT negotiated -- carrying
+	   the old socket's 10s across would make a 30s connection look stale every time */
+	ff_session_adopt(&s, &pend, 8013);
+	CHECK(strcmp(s.es.session_id, "s2") == 0);
+	CHECK(s.es.keepalive_secs == 30);
+	CHECK(s.subscribed);
+	CHECK(!ff_session_in_handover(&s));
+	/* the URL was taken when the reconnect ARRIVED, which is where the caller got it to open
+	   the replacement; adopt does not need to copy it again */
+	CHECK(strcmp(s.url, "wss://x/ws?c=2") == 0);
+	/* and the staleness clock restarts with the new socket, not the old one's last message */
+	CHECK(ff_session_idle(&s, 8013 + 50) == FF_STEP_NOTHING);
+	CHECK(ff_session_idle(&s, 8013 + 70) == FF_STEP_DROP);
 
 	/* ---- the watchdog ---- */
 	ff_session_init(&s, "wss://x/ws");
