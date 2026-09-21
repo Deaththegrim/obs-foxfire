@@ -105,8 +105,17 @@ void ff_renderer_load(struct ff_renderer *r, const struct ff_pack *pack, const s
 void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings);
 /* renders the layer stack; `input` may be NULL (source mode) or the filter's captured target;
    returns the final texture -- NULL only when `r` is NULL or w/h is 0; with no renderable layer it returns
-   `input`, or the 1x1 transparent texture when `input` is NULL. graphics context required. */
-gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, gs_texture_t *input, uint32_t w,
+   `input`, or the 1x1 transparent texture when `input` is NULL.
+
+   `progress` is fed to shaders as the builtin `progress`: 0..1 through whatever this source is
+   currently DOING, which for an alert is its entrance, hold and exit. It is an explicit argument
+   rather than a field on ff_frame because ff_frame is the audio frame and this is not audio, and
+   because an explicit argument makes the compiler point at every caller that has to decide what
+   it means. The visualizer and the filter pass 0: they are not doing anything with a beginning
+   and an end, and a shader reading `progress` there gets a defined 0 rather than a stale value.
+
+   graphics context required. */
+gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input, uint32_t w,
 				 uint32_t h, float dt);
 /* adds the annotated params of every layer to props (one group per annotation group) */
 void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props);

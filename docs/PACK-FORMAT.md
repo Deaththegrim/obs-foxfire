@@ -257,11 +257,44 @@ These two path kinds fail differently, and the difference matters:
 
 ## Presets and OBS types
 
-`kind` decides which OBS object type can use the preset: `visualizer` and `overlay` presets show up
-for the Foxfire Visualizer *source*; `effects` presets show up for the Foxfire Effects *filter*.
+`kind` decides which OBS object can use the preset:
+
+| `kind` | used by |
+|---|---|
+| `visualizer`, `overlay` | the Foxfire Visualizer **source** (obs-foxfire) |
+| `effects` | the Foxfire Effects **filter** (obs-foxfire) |
+| `alert` | the Foxfire Alert **source** (obs-foxfire-alerts) |
+
 Same manifest, same layer format, `kind` is just the routing — except an invalid `kind` (anything
-other than those three strings) doesn't just fail to route, it refuses the whole pack the same as
-any other manifest error (see "How a bad manifest fails" above).
+other than those four strings, matched exactly and in lower case) doesn't just fail to route, it
+refuses the whole pack the same as any other manifest error (see "How a bad manifest fails"
+above).
+
+**One list, every plugin.** Foxfire ships as separate plugins, but they all load packs through
+the same loader, so a pack carrying `alert` presets stays valid on a machine where only the
+visualizer is installed — it is simply not offered there. Refusing the whole pack would take its
+visualizer presets down with it.
+
+### Alert presets and `progress`
+
+An alert has a beginning and an end, and the engine tells the shader where it is:
+
+```hlsl
+uniform float progress;   /* 0 at the start of the alert, 1 at the end */
+...
+float appear = smoothstep(0.0, 0.14, progress);
+float leave  = 1.0 - smoothstep(0.82, 1.0, progress);
+```
+
+That is the whole entrance-and-exit animation, decided by the pack. There is no list of four
+transitions to choose from, which is what every hosted alert service offers instead.
+
+`progress` is a builtin like `level` or `beat`, so it is never a property. The visualizer and the
+filter feed it **0** — neither is doing something with a beginning and an end — so a shader that
+reads it there gets a defined value rather than a stale one.
+
+An alert source draws the pack's layers first and composites the **name** on top of them, so a
+preset should leave room for text rather than filling the frame with detail.
 
 A preset's `thumb` field is optional — omit it, or leave it `""`, and the engine skips validating it
 entirely. Set it and it's checked exactly like an effect path (see Refused paths, above).

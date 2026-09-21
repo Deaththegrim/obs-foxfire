@@ -35,6 +35,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ff-alert.h"
 #include "ff-alert-queue.h"
+#include "ff-layers.h"
+#include "ff-pack.h"
 #include <obs-module.h>
 #include <pthread.h>
 #include <plugin-support.h>
@@ -53,6 +55,17 @@ struct ff_alert_source {
 	obs_source_t *sound; /* private child, NULL until a sound file is chosen */
 
 	uint32_t width, height;
+
+	/* The pack's art, drawn BEHIND the name. The same renderer the visualizer uses, so an
+	   alert pack is a pack like any other -- same format, same licence gate, same packforge.
+	   Its layers get `progress` (0..1 across the alert) so a pack animates its own entrance
+	   instead of choosing from a fixed list of four transitions, which is what every
+	   competitor offers. */
+	struct ff_renderer *renderer;
+	struct ff_pack_list packs;
+	char pack_id[64], preset_id[64];
+	bool art_dirty; /* the pack or preset changed; reload on the next render, in the graphics context */
+
 	struct ff_alert_text style;
 	char template_[512]; /* the message, with {name} standing in for the sender */
 	char sound_path[512];
@@ -214,6 +227,16 @@ static const char *alert_name(void *d)
 static void alert_update(void *d, obs_data_t *s)
 {
 	struct ff_alert_source *a = d;
+	const char *pk = obs_data_get_string(s, "pack");
+	const char *pr = obs_data_get_string(s, "preset");
+	if (strcmp(pk, a->pack_id) || strcmp(pr, a->preset_id)) {
+		snprintf(a->pack_id, sizeof a->pack_id, "%s", pk);
+		snprintf(a->preset_id, sizeof a->preset_id, "%s", pr);
+		/* Deferred: loading an effect needs the graphics context, and update() is called
+		   from the UI thread. The visualizer enters the context here; this source does not
+		   have to, because it already has a per-frame hook that is inside it. */
+		a->art_dirty = true;
+	}
 	a->width = (uint32_t)obs_data_get_int(s, "width");
 	a->height = (uint32_t)obs_data_get_int(s, "height");
 	snprintf(a->template_, sizeof a->template_, "%s", obs_data_get_string(s, "template"));
@@ -235,6 +258,10 @@ static void *alert_create(obs_data_t *s, obs_source_t *self)
 	a->self = self;
 	pthread_mutex_init(&a->qlock, NULL);
 	ff_alert_queue_init(&a->queue);
+	obs_enter_graphics();
+	a->renderer = ff_renderer_create();
+	obs_leave_graphics();
+	ff_packs_scan(&a->packs);
 	alert_update(a, s);
 	return a;
 }
@@ -251,6 +278,10 @@ static void alert_destroy(void *d)
 		obs_source_release(a->sound);
 	}
 	pthread_mutex_destroy(&a->qlock);
+	obs_enter_graphics();
+	ff_renderer_destroy(a->renderer);
+	obs_leave_graphics();
+	ff_packs_free(&a->packs);
 	bfree(a);
 }
 
@@ -307,7 +338,35 @@ static bool on_clear(obs_properties_t *props, obs_property_t *p, void *data)
 static obs_properties_t *alert_props(void *d)
 {
 	UNUSED_PARAMETER(d);
+	struct ff_alert_source *a = d;
 	obs_properties_t *p = obs_properties_create();
+
+	obs_property_t *packs = obs_properties_add_list(p, "pack", obs_module_text("Foxfire.Pack"),
+							OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(packs, obs_module_text("Foxfire.Alert.NoArt"), "");
+	obs_property_t *presets = obs_properties_add_list(p, "preset", obs_module_text("Foxfire.Preset"),
+							 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(presets, obs_module_text("Foxfire.Alert.NoArt"), "");
+	if (a) {
+		for (size_t i = 0; i < a->packs.n; i++) {
+			const struct ff_pack *pack = &a->packs.packs[i];
+			/* only packs that actually contain an alert preset: offering one that has
+			   none gives a viewer a choice that can only disappoint */
+			bool any = false;
+			for (size_t j = 0; j < pack->npresets; j++)
+				if (!strcmp(pack->presets[j].kind, "alert"))
+					any = true;
+			if (any)
+				obs_property_list_add_string(packs, pack->name, pack->id);
+		}
+		const struct ff_pack *chosen = ff_packs_find(&a->packs, a->pack_id);
+		if (chosen)
+			for (size_t j = 0; j < chosen->npresets; j++)
+				if (!strcmp(chosen->presets[j].kind, "alert"))
+					obs_property_list_add_string(presets, chosen->presets[j].name,
+								     chosen->presets[j].id);
+	}
+
 	obs_properties_add_int(p, "width", obs_module_text("Foxfire.Width"), 16, 8192, 1);
 	obs_properties_add_int(p, "height", obs_module_text("Foxfire.Height"), 16, 8192, 1);
 	obs_properties_add_text(p, "template", obs_module_text("Foxfire.Alert.Template"), OBS_TEXT_DEFAULT);
@@ -384,9 +443,42 @@ static void alert_render(void *d, gs_effect_t *effect)
 {
 	UNUSED_PARAMETER(effect);
 	struct ff_alert_source *a = d;
-	if (!a->playing || !a->text)
+	if (a->art_dirty) {
+		/* here, not in update(): this callback already runs inside the graphics context,
+		   and ff_renderer_load requires it */
+		const struct ff_pack *pack = ff_packs_find(&a->packs, a->pack_id);
+		const struct ff_preset *preset = ff_pack_find_preset(pack, a->preset_id);
+		if (preset && strcmp(preset->kind, "alert")) {
+			obs_log(LOG_WARNING,
+				"alerts: preset '%s' of pack '%s' is kind '%s', not 'alert'; not loading it",
+				a->preset_id, a->pack_id, preset->kind);
+			preset = NULL;
+		}
+		ff_renderer_load(a->renderer, pack, preset);
+		a->art_dirty = false;
+	}
+	if (!a->playing)
 		return; /* idle draws NOTHING: an alert overlay is idle almost all of the time */
 
+	float progress = a->duration > 0.f ? a->elapsed / a->duration : 0.f;
+	if (progress > 1.f)
+		progress = 1.f;
+
+	/* the pack's art first, underneath */
+	if (a->renderer) {
+		gs_texture_t *art = ff_renderer_render(a->renderer, NULL, progress, NULL, a->width,
+						       a->height, 1.f / 60.f);
+		if (art) {
+			gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+			gs_eparam_t *img = gs_effect_get_param_by_name(def, "image");
+			gs_effect_set_texture(img, art);
+			while (gs_effect_loop(def, "Draw"))
+				gs_draw_sprite(art, 0, a->width, a->height);
+		}
+	}
+
+	if (!a->text)
+		return;
 	uint32_t tw = obs_source_get_width(a->text), th = obs_source_get_height(a->text);
 	if (!tw || !th)
 		return;

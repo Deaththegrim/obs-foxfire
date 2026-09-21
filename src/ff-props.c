@@ -616,5 +616,7 @@ gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, ui
 	struct ff_frame f;
 	if (ff_audio_read(in->audio, &f))
 		in->frame = f;
-	return ff_renderer_render(in->renderer, &in->frame, input, w, h, in->dt);
+	/* 0: a visualizer and a filter are not "doing" something with a beginning and an end --
+	   that is the alert source's business. */
+	return ff_renderer_render(in->renderer, &in->frame, 0.f, input, w, h, in->dt);
 }

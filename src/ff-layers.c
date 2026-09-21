@@ -14,7 +14,8 @@
    that declares one gets the engine's value, not an author-editable knob. */
 static const char *BUILTINS[] = {"ViewProj", "image",    "uv_size",     "time",       "frame_dt",      "level",
 				 "peak",     "bass",     "mid",         "treble",     "beat",          "beat_count",
-				 "spectrum", "waveform", "layer_index", "rand_frame", "rand_instance", NULL};
+				 "spectrum", "waveform", "layer_index", "rand_frame", "rand_instance",
+				 "progress",  NULL};
 
 static bool is_builtin(const char *n)
 {
@@ -621,7 +622,7 @@ void ff_renderer_load(struct ff_renderer *r, const struct ff_pack *pack, const s
 /* ------------------------------------------------------------------ render */
 
 static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct ff_frame *f, gs_texture_t *image,
-			 int idx, float dt, float rand_frame)
+			 int idx, float dt, float rand_frame, float progress)
 {
 	for (size_t i = 0; i < L->nparams; i++) {
 		struct ff_param *p = &L->params[i];
@@ -659,6 +660,11 @@ static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct
 			gs_effect_set_int(p->ep, idx);
 		} else if (!strcmp(n, "rand_frame")) {
 			gs_effect_set_float(p->ep, rand_frame);
+		} else if (!strcmp(n, "progress")) {
+			/* 0..1 through whatever the source is doing. For a visualizer and a filter
+			   this is 0 -- neither has a beginning and an end -- so a shader that reads
+			   it there gets a defined value rather than a stale one. */
+			gs_effect_set_float(p->ep, progress);
 		} else if (!strcmp(n, "rand_instance")) {
 			gs_effect_set_float(p->ep, r->rand_instance);
 		}
@@ -779,8 +785,8 @@ static void render_layer(struct ff_layer *L, gs_texture_t *src, uint32_t w, uint
 	gs_technique_end(t);
 }
 
-gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, gs_texture_t *input, uint32_t w,
-				 uint32_t h, float dt)
+gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress,
+				 gs_texture_t *input, uint32_t w, uint32_t h, float dt)
 {
 	static const struct ff_frame silence = {0};
 	if (!r || !w || !h)
@@ -817,7 +823,7 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 		struct vec4 clear = {0};
 		gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
 		gs_ortho(0.f, (float)w, 0.f, (float)h, -100.f, 100.f);
-		set_builtins(r, L, f, prev, (int)i, dt, rand_frame);
+		set_builtins(r, L, f, prev, (int)i, dt, rand_frame, progress);
 		set_params(r, L);
 		render_layer(L, prev, w, h);
 		gs_texrender_end(dst);

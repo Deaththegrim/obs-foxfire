@@ -102,8 +102,15 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 		snprintf(why, cap, "preset id '%s' must be [a-z0-9-]", pr->id);
 		return false;
 	}
-	if (strcmp(pr->kind, "visualizer") && strcmp(pr->kind, "effects") && strcmp(pr->kind, "overlay")) {
-		snprintf(why, cap, "preset '%s': kind must be visualizer, effects or overlay", pr->id);
+	/* "alert" joined this list when the alerts plugin landed. The list is shared by every
+	   Foxfire plugin -- they all load packs through this one loader -- so a pack carrying an
+	   alert preset stays valid even on a machine where only the visualizer is installed. It
+	   simply will not be offered anywhere, which is the right outcome: refusing the whole pack
+	   would take its visualizer presets down with it. */
+	if (strcmp(pr->kind, "visualizer") && strcmp(pr->kind, "effects") && strcmp(pr->kind, "overlay") &&
+	    strcmp(pr->kind, "alert")) {
+		snprintf(why, cap, "preset '%s': kind must be visualizer, effects, overlay or alert",
+			 pr->id);
 		return false;
 	}
 	if (pr->thumb[0] && (!ff_rel_ok(pr->thumb) || !file_in_pack(pk->dir, pr->thumb))) {

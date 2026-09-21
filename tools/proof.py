@@ -86,6 +86,7 @@ SCREEN = "1920x1080x24"
 FF_MAX_PRESETS = 64
 VISUALIZER_KINDS = {"visualizer", "overlay"}
 EFFECTS_KINDS = {"effects"}
+ALERT_KINDS = {"alert"}
 
 WARN_TAG = "[obs-foxfire] warn: "
 ERROR_TAG = "[obs-foxfire] error: "
@@ -294,6 +295,27 @@ async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Pa
             (out / f"{pack_id}-{pr['id']}.png").write_bytes(raw)
             ratio, hue = analyse_diff(before_raw, raw)
             unit = "diff"
+        elif kind in ALERT_KINDS:
+            # An alert draws only while an alert is RUNNING, so it has to be fired before it can
+            # be screenshotted -- a shot of an idle alert source is correctly empty, and treating
+            # that as a blank preset would fail every alert pack ever written. Fired through the
+            # properties button, which is the same path a streamer uses.
+            #
+            # The shot is taken partway in rather than immediately: an alert pack that animates
+            # its entrance (the `progress` builtin) is at its smallest on frame one, and judging
+            # it there would mark a working pack blank.
+            await client.request("CreateInput", {
+                "sceneName": "ffproof", "inputName": name, "inputKind": "foxfire_alert",
+                "inputSettings": {"pack": pack_id, "preset": pr["id"], "width": 640, "height": 360,
+                                  "duration": 6.0, "template": "{name} followed!"}})
+            await asyncio.sleep(1.0)
+            await client.request("PressInputPropertiesButton",
+                                 {"inputName": name, "propertyName": "test"})
+            await asyncio.sleep(2.0)
+            raw = await _shoot(client, name)
+            (out / f"{pack_id}-{pr['id']}.png").write_bytes(raw)
+            ratio, hue = analyse(raw)
+            unit = "nonblank"
         elif kind in VISUALIZER_KINDS:
             await client.request("CreateInput", {
                 "sceneName": "ffproof", "inputName": name, "inputKind": "foxfire_visualizer",
@@ -305,7 +327,7 @@ async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Pa
             unit = "nonblank"
         else:
             ff_proof.check(f"pack preset {pack_id}/{pr['id']} has a recognised kind", False,
-                            f"kind={kind!r} not in {sorted(VISUALIZER_KINDS | EFFECTS_KINDS)}")
+                            f"kind={kind!r} not in {sorted(VISUALIZER_KINDS | EFFECTS_KINDS | ALERT_KINDS)}")
             report["presets"].append({"pack": pack_id, "id": pr["id"], "kind": kind,
                                        "nonblank_ratio": 0.0, "dominant_hue": -1.0, "ok": False})
             continue

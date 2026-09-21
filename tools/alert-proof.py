@@ -66,6 +66,40 @@ def write_tone_wav(path: Path, seconds=3.0, hz=440.0, rate=48000):
             for i in range(frames)))
 
 
+def build_alert_pack(root: Path) -> Path:
+    """The pack this proof drives, generated here rather than depending on one in another repo.
+
+    Its shader is deliberately the simplest thing that uses `progress`: a filled rectangle whose
+    SIZE follows it. A real pack's card is prettier and no more proven by this.
+    """
+    pack = root / "alertproof"
+    (pack / "effects").mkdir(parents=True)
+    (pack / "effects" / "card.effect").write_text(
+        "uniform float4x4 ViewProj;\n"
+        "uniform texture2d image;\n"
+        "uniform float2 uv_size;\n"
+        "uniform float progress;\n"
+        "sampler_state linS { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };\n"
+        "struct VertData { float4 pos : POSITION; float2 uv : TEXCOORD0; };\n"
+        "VertData VSDefault(VertData v) { VertData o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);"
+        " o.uv = v.uv; return o; }\n"
+        "float4 PSDraw(VertData v) : TARGET\n"
+        "{\n"
+        "\tfloat grow = smoothstep(0.0, 0.25, progress) * (1.0 - smoothstep(0.75, 1.0, progress));\n"
+        "\tfloat2 d = abs(v.uv - 0.5);\n"
+        "\tfloat inside = step(d.x, 0.45 * grow) * step(d.y, 0.45 * grow);\n"
+        "\treturn float4(1.0, 0.4, 0.3, inside);\n"
+        "}\n"
+        "technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSDraw(v); } }\n")
+    (pack / "pack.json").write_text(json.dumps({
+        "format": 1, "id": "alertproof", "name": "Alert proof", "version": "0.1.0",
+        "author": "proof", "min_engine": "0.1.0", "licensed": False, "kinds": ["alert"],
+        "presets": [{"id": "card", "name": "card", "kind": "alert", "thumb": "", "heavy": False,
+                     "layers": [{"effect": "effects/card.effect", "params": {}}]}],
+    }))
+    return pack
+
+
 async def shoot(c) -> Image.Image:
     r = await c.request("GetSourceScreenshot", {"sourceName": "alert", "imageFormat": "png",
                                                 "imageWidth": W, "imageHeight": H})
@@ -188,9 +222,52 @@ async def drive(sound: Path, logdir: Path):
         check("the alert goes away when it is over", n_after == 0,
               f"{n_after} pixels 5.5s after firing a 4.0s alert")
         await check_queue(c)
+        await check_art(c)
     finally:
         await ws.close()
     return logdir
+
+
+async def check_art(c):
+    """A pack's art draws behind the name, and its `progress` uniform actually moves.
+
+    The art is the product -- an alert with no art is a line of text. And `progress` is the whole
+    reason a Foxfire alert pack can do something the hosted services cannot: it animates its own
+    entrance in a shader instead of picking from a fixed list of four transitions. A card that
+    drew at full size the whole time would look completely fine in any single frame, so this is
+    measured across THREE frames of one alert.
+    """
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert",
+                                         "inputSettings": {"pack": "alertproof", "preset": "card",
+                                                           "duration": 6.0, "template": "{name}!"}})
+    await asyncio.sleep(1.0)
+
+    idle = ink(await shoot(c))
+    check("art still draws nothing while idle", idle == 0,
+          f"{idle} pixels with a pack selected but no alert running")
+
+    t0 = time.monotonic()
+    await fire(c)
+
+    async def at(when: float) -> int:
+        await asyncio.sleep(max(0.0, when - (time.monotonic() - t0)))
+        return ink(await shoot(c))
+
+    early = await at(0.35)   # inside the 0.14-of-6s entrance? no: 0.84s. so mid-entrance
+    middle = await at(3.0)   # fully in
+    late = await at(5.85)    # inside the exit
+    check("the pack's art draws, and far more of it than text alone",
+          middle > 40000,
+          f"{middle} pixels mid-alert -- the text alone measured ~21000, so this is the card")
+    check("`progress` reaches the shader: the card grows in and shrinks out",
+          early < middle * 0.95 and late < middle * 0.95 and early > 0,
+          f"ink at 0.35s {early}, 3.0s {middle}, 5.85s {late} -- a card that ignored `progress` "
+          f"would read the same at all three")
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert",
+                                         "inputSettings": {"pack": "", "preset": ""}})
+    await asyncio.sleep(0.6)
 
 
 async def check_queue(c):
@@ -329,6 +406,7 @@ def main() -> int:
 
         proof.write_ws_config(obs_cfg)
         proof.install_plugin(repo, obs_cfg)
+        proof.install_pack(build_alert_pack(scratch), obs_cfg)
         proof.wait_for_port_free(proof.PORT)
         p = subprocess.Popen(
             ["xvfb-run", "-a", "-s", f"-screen 0 {proof.SCREEN}", "obs", "--multi", "--minimize-to-tray"],
