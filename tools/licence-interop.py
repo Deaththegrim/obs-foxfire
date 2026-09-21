@@ -34,12 +34,12 @@ if not CLI.exists():
     sys.exit(77)
 
 
-def canonical(discord_id, pack_id, licence_id, issued, expires):
+def canonical(discord_id, pack_id, licence_id, issued, entitled_through):
     """Byte-for-byte what ff_licence_canonical() builds: sorted keys, no spaces."""
     return json.dumps(
         {
             "discord_id": discord_id,
-            "expires": int(expires),
+            "entitled_through": int(entitled_through),
             "issued": int(issued),
             "licence_id": licence_id,
             "pack_id": pack_id,
@@ -62,12 +62,11 @@ def main():
         "pack_id": "ember",
         "licence_id": "lic_interop",
         "issued": now - 86400,
-        "expires": now + 90 * 86400,
+        "entitled_through": now + 90 * 86400,
     }
     sig = base64.b64encode(key.sign(canonical(**fields))).decode()
     doc = dict(fields, sig=sig)
-    expires = fields["expires"]
-    grace = 7 * 86400
+    through = fields["entitled_through"]
 
     failures = []
     tmp = Path(tempfile.mkdtemp()) / "licence.json"
@@ -93,10 +92,14 @@ def main():
 
     compact = json.dumps(doc, sort_keys=True, separators=(",", ":"))
 
-    # The three licence states, driven only by the clock.
-    check("valid, in date", compact, now, "OK")
-    check("expired 3 days, inside grace", compact, expires + 3 * 86400, "GRACE")
-    check("expired past grace", compact, expires + grace + 86400, "EXPIRED")
+    # The CLI's fourth argument is the PACK'S RELEASE DATE, not the clock. Entitlement compares
+    # two fixed dates, so a pack the buyer owns can never stop working with the passage of time --
+    # the property the old expiry model could not offer.
+    check("released long before the sub ended", compact, fields["issued"], "OK")
+    check("released exactly on the boundary", compact, through, "OK")
+    check("released one second after", compact, through + 1, "NEWER")
+    check("released years after", compact, through + 900 * 86400, "NEWER")
+    check("no release date at all (older pack)", compact, 0, "OK")
 
     # Every signed field is actually covered by the signature.
     for field, bad in [
@@ -104,10 +107,10 @@ def main():
         ("pack_id", "embyr"),
         ("licence_id", "lic_someone_else"),
         ("issued", fields["issued"] - 99999),
-        ("expires", expires + 365 * 86400),
+        ("entitled_through", through + 365 * 86400),
     ]:
         tampered = json.dumps(dict(doc, **{field: bad}), sort_keys=True, separators=(",", ":"))
-        check(f"tampered {field}", tampered, now, "INVALID")
+        check(f"tampered {field}", tampered, fields["issued"], "INVALID")
 
     other = Ed25519PrivateKey.generate()
     foreign = dict(fields, sig=base64.b64encode(other.sign(canonical(**fields))).decode())
@@ -131,9 +134,9 @@ def main():
 
     # A licence is still a licence whatever serialiser formatted it. These are the
     # cases that regressed to "missing a field" before the parser skipped whitespace.
-    check("json.dumps default separators", json.dumps(doc, sort_keys=True), now, "OK")
-    check("pretty-printed, indent 2", json.dumps(doc, sort_keys=True, indent=2), now, "OK")
-    check("tab-indented", json.dumps(doc, sort_keys=True, indent="\t"), now, "OK")
+    check("json.dumps default separators", json.dumps(doc, sort_keys=True), fields["issued"], "OK")
+    check("pretty-printed, indent 2", json.dumps(doc, sort_keys=True, indent=2), fields["issued"], "OK")
+    check("tab-indented", json.dumps(doc, sort_keys=True, indent="\t"), fields["issued"], "OK")
     check(
         "whitespace before the colon",
         ",".join(f'"{k}" : {json.dumps(v)}' for k, v in sorted(doc.items())).join("{}"),

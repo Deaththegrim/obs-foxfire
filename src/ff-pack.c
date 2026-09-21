@@ -160,7 +160,7 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 	return true;
 }
 
-static bool load_pack_dir(struct ff_pack_list *l, const char *dir, int64_t now)
+static bool load_pack_dir(struct ff_pack_list *l, const char *dir)
 {
 	struct dstr mp = {0};
 	dstr_printf(&mp, "%s/pack.json", dir);
@@ -182,6 +182,7 @@ static bool load_pack_dir(struct ff_pack_list *l, const char *dir, int64_t now)
 	snprintf(pk.name, sizeof pk.name, "%s", obs_data_get_string(m, "name"));
 	snprintf(pk.version, sizeof pk.version, "%s", obs_data_get_string(m, "version"));
 	pk.licensed = obs_data_get_bool(m, "licensed");
+	pk.released = (int64_t)obs_data_get_int(m, "released"); /* absent -> 0 -> always entitled */
 	if (!id_ok(pk.id)) {
 		add_error(l, dir, "id must be [a-z0-9-]");
 		obs_data_release(m);
@@ -240,7 +241,7 @@ static bool load_pack_dir(struct ff_pack_list *l, const char *dir, int64_t now)
 			pk.licence.state = FF_LIC_INVALID;
 			snprintf(pk.licence.reason, sizeof pk.licence.reason, "missing");
 		} else {
-			ff_licence_verify(txt, strlen(txt), FF_PUBLIC_KEY, pk.id, now, &pk.licence);
+			ff_licence_verify(txt, strlen(txt), FF_PUBLIC_KEY, pk.id, pk.released, &pk.licence);
 			bfree(txt);
 		}
 		struct dstr np = {0};
@@ -258,7 +259,7 @@ static bool load_pack_dir(struct ff_pack_list *l, const char *dir, int64_t now)
 	return true;
 }
 
-static void scan_dir(struct ff_pack_list *l, const char *root, int64_t now)
+static void scan_dir(struct ff_pack_list *l, const char *root)
 {
 	os_dir_t *d = os_opendir(root);
 	if (!d)
@@ -269,7 +270,7 @@ static void scan_dir(struct ff_pack_list *l, const char *root, int64_t now)
 			continue;
 		struct dstr p = {0};
 		dstr_printf(&p, "%s/%s", root, e->d_name);
-		load_pack_dir(l, p.array, now);
+		load_pack_dir(l, p.array);
 		dstr_free(&p);
 	}
 	os_closedir(d);
@@ -305,7 +306,7 @@ static void log_stale_temp_dirs(const char *packs_root)
 	os_closedir(d);
 }
 
-void ff_packs_scan(struct ff_pack_list *out, int64_t now)
+void ff_packs_scan(struct ff_pack_list *out)
 {
 	memset(out, 0, sizeof *out);
 	static bool warned_pubkey = false;
@@ -315,13 +316,13 @@ void ff_packs_scan(struct ff_pack_list *out, int64_t now)
 	}
 	char *bundled = obs_module_file("packs");
 	if (bundled) {
-		scan_dir(out, bundled, now);
+		scan_dir(out, bundled);
 		bfree(bundled);
 	}
 	char *user = obs_module_config_path("packs");
 	if (user) {
 		os_mkdirs(user);
-		scan_dir(out, user, now);
+		scan_dir(out, user);
 		log_stale_temp_dirs(user);
 		bfree(user);
 	}
@@ -741,7 +742,7 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 
 	struct ff_pack_list check;
 	memset(&check, 0, sizeof check);
-	bool ok = load_pack_dir(&check, pack_src.array, (int64_t)time(NULL));
+	bool ok = load_pack_dir(&check, pack_src.array);
 	if (!ok) {
 		snprintf(msg, cap, "%s", check.nerrors ? check.errors[0] : "pack failed validation");
 		ff_packs_free(&check);

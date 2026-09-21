@@ -32,7 +32,7 @@ static void make(const uint8_t sk[64], const char *pack, int64_t issued, int64_t
 	b64(sig, 64, s64);
 	snprintf(
 		json, cap,
-		"{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"%s\",\"sig\":\"%s\"}",
+		"{\"discord_id\":\"123456789012345678\",\"entitled_through\":%lld,\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"%s\",\"sig\":\"%s\"}",
 		(long long)expires, (long long)issued, pack, s64);
 }
 
@@ -46,20 +46,44 @@ int main(void)
 	struct ff_licence L;
 	const int64_t issued = 1758240000, expires = issued + 90 * 86400;
 
+	/* The last argument is the PACK'S RELEASE DATE, not the current time. Entitlement is a
+	   comparison of two fixed dates, so none of these verdicts can change with the clock --
+	   which is the whole point: a pack cannot stop working mid-stream. */
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
 	ff_licence_verify(json, strlen(json), pk, "ember", issued + 10 * 86400, &L);
 	CHECK(L.state == FF_LIC_OK);
 	CHECK(!strcmp(L.pack_id, "ember"));
 	CHECK(!strcmp(L.discord_id, "123456789012345678"));
-	CHECK(L.expires == expires);
+	CHECK(L.entitled_through == expires);
 
-	ff_licence_verify(json, strlen(json), pk, "ember", expires + 3 * 86400, &L);
-	CHECK(L.state == FF_LIC_GRACE);
-	ff_licence_verify(json, strlen(json), pk, "ember", expires + 8 * 86400, &L);
-	CHECK(L.state == FF_LIC_EXPIRED);
-	CHECK(strstr(L.reason, "expired") != NULL);
-	ff_licence_verify(json, strlen(json), pk, "ember", expires + 7 * 86400 - 1, &L);
-	CHECK(L.state == FF_LIC_GRACE);
+	/* released exactly ON the entitlement boundary is INCLUDED -- <=, not < */
+	ff_licence_verify(json, strlen(json), pk, "ember", expires, &L);
+	CHECK(L.state == FF_LIC_OK);
+
+	/* one second past it is not */
+	ff_licence_verify(json, strlen(json), pk, "ember", expires + 1, &L);
+	CHECK(L.state == FF_LIC_NEWER);
+	CHECK(strstr(L.reason, "released after your subscription") != NULL);
+
+	/* a pack released long after the sub lapsed: still only NEWER, never an error */
+	ff_licence_verify(json, strlen(json), pk, "ember", expires + 900 * 86400, &L);
+	CHECK(L.state == FF_LIC_NEWER);
+
+	/* a pack with no release date at all (0) is always entitled -- packs authored before the
+	   field existed must not break */
+	ff_licence_verify(json, strlen(json), pk, "ember", 0, &L);
+	CHECK(L.state == FF_LIC_OK);
+
+	/* THE PROPERTY THAT REPLACES EXPIRY: an entitlement that ended in the distant past still
+	   unlocks a pack released before it. This is the assertion that would fail if anyone
+	   reintroduced a now() comparison. */
+	{
+		char old_json[1024];
+		const int64_t old_issued = 1000000000, old_through = old_issued + 30 * 86400;
+		make(sk, "ember", old_issued, old_through, old_json, sizeof old_json, 0);
+		ff_licence_verify(old_json, strlen(old_json), pk, "ember", old_issued + 86400, &L);
+		CHECK(L.state == FF_LIC_OK);
+	}
 
 	/* a genuine, validly-signed "ember" licence sitting in a DIFFERENT pack's folder ("smoke")
 	   must not verify there -- pack_id is signed so the signature itself is fine; only comparing
@@ -99,7 +123,7 @@ int main(void)
 	size_t n = ff_licence_canonical("1", "p", "l", 5, 6, canon, sizeof canon);
 	CHECK(n == strlen(canon));
 	CHECK(!strcmp(canon,
-		      "{\"discord_id\":\"1\",\"expires\":6,\"issued\":5,\"licence_id\":\"l\",\"pack_id\":\"p\"}"));
+		      "{\"discord_id\":\"1\",\"entitled_through\":6,\"issued\":5,\"licence_id\":\"l\",\"pack_id\":\"p\"}"));
 
 	/* truncated buffer (length cuts inside the sig value): must be INVALID, must not crash */
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
@@ -107,11 +131,11 @@ int main(void)
 	ff_licence_verify(json, jl - 3, pk, "ember", issued + 10, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 
-	/* non-null-terminated buffer: "expires" is the last field, and the buffer ends
+	/* non-null-terminated buffer: "entitled_through" is the last field, and the buffer ends
 	 * immediately after its final digit (no trailing comma/brace within bounds).
 	 * Bytes past json_len are filled with '9' inside a malloc'd region large enough
 	 * to read from safely; an unbounded strtoll would pull those '9's into the
-	 * number and corrupt L.expires, which then fails signature verification. */
+	 * number and corrupt L.entitled_through, which then fails signature verification. */
 	{
 		char canon2[512];
 		size_t cn2 = ff_licence_canonical("123456789012345678", "ember", "lic_test1", issued, expires, canon2,
@@ -123,7 +147,7 @@ int main(void)
 		char json2[1024];
 		int jl2 = snprintf(
 			json2, sizeof json2,
-			"{\"discord_id\":\"123456789012345678\",\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\",\"expires\":%lld",
+			"{\"discord_id\":\"123456789012345678\",\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\",\"entitled_through\":%lld",
 			(long long)issued, s642, (long long)expires);
 		size_t bn = (size_t)jl2 + 8;
 		char *buf = malloc(bn);
@@ -131,7 +155,7 @@ int main(void)
 		memcpy(buf, json2, (size_t)jl2);
 		ff_licence_verify(buf, (size_t)jl2, pk, "ember", issued + 10 * 86400, &L);
 		CHECK(L.state == FF_LIC_OK);
-		CHECK(L.expires == expires);
+		CHECK(L.entitled_through == expires);
 		free(buf);
 	}
 
@@ -155,7 +179,7 @@ int main(void)
 
 		/* 1. a space after every colon and comma (python json.dumps defaults) */
 		snprintf(v, sizeof v,
-			 "{\"discord_id\": \"123456789012345678\", \"expires\": %lld, \"issued\": %lld, "
+			 "{\"discord_id\": \"123456789012345678\", \"entitled_through\": %lld, \"issued\": %lld, "
 			 "\"licence_id\": \"lic_test1\", \"pack_id\": \"ember\", \"sig\": \"%s\"}",
 			 (long long)expires, (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
@@ -163,7 +187,7 @@ int main(void)
 
 		/* 2. pretty-printed with newlines and indentation */
 		snprintf(v, sizeof v,
-			 "{\n  \"discord_id\": \"123456789012345678\",\n  \"expires\": %lld,\n"
+			 "{\n  \"discord_id\": \"123456789012345678\",\n  \"entitled_through\": %lld,\n"
 			 "  \"issued\": %lld,\n  \"licence_id\": \"lic_test1\",\n  \"pack_id\": \"ember\",\n"
 			 "  \"sig\": \"%s\"\n}\n",
 			 (long long)expires, (long long)issued, s64);
@@ -172,7 +196,7 @@ int main(void)
 
 		/* 3. whitespace BEFORE the colon as well */
 		snprintf(v, sizeof v,
-			 "{\"discord_id\" : \"123456789012345678\",\"expires\" : %lld,\"issued\" : %lld,"
+			 "{\"discord_id\" : \"123456789012345678\",\"entitled_through\" : %lld,\"issued\" : %lld,"
 			 "\"licence_id\" : \"lic_test1\",\"pack_id\" : \"ember\",\"sig\" : \"%s\"}",
 			 (long long)expires, (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
@@ -181,35 +205,35 @@ int main(void)
 		/* 4. a key name occurring inside an EARLIER string value is not mistaken for
 		 *    the key itself; the scanner must walk past it to the real field. */
 		snprintf(v, sizeof v,
-			 "{\"note\":\"expires\",\"discord_id\":\"123456789012345678\",\"expires\":%lld,"
+			 "{\"note\":\"entitled_through\",\"discord_id\":\"123456789012345678\",\"entitled_through\":%lld,"
 			 "\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_OK);
-		CHECK(L.expires == expires);
+		CHECK(L.entitled_through == expires);
 
 		/* 5. a number written as a string is malformed, NOT absent */
 		snprintf(v, sizeof v,
-			 "{\"discord_id\":\"123456789012345678\",\"expires\":\"%lld\",\"issued\":%lld,"
+			 "{\"discord_id\":\"123456789012345678\",\"entitled_through\":\"%lld\",\"issued\":%lld,"
 			 "\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_INVALID);
-		CHECK(strstr(L.reason, "'expires' field is not a usable number") != NULL);
+		CHECK(strstr(L.reason, "'entitled_through' field is not a usable number") != NULL);
 		CHECK(strstr(L.reason, "has no") == NULL);
 
 		/* 6. trailing garbage in a number is rejected, never silently truncated */
 		snprintf(v, sizeof v,
-			 "{\"discord_id\":\"123456789012345678\",\"expires\":12x3,\"issued\":%lld,"
+			 "{\"discord_id\":\"123456789012345678\",\"entitled_through\":12x3,\"issued\":%lld,"
 			 "\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_INVALID);
-		CHECK(strstr(L.reason, "'expires' field is not a usable number") != NULL);
+		CHECK(strstr(L.reason, "'entitled_through' field is not a usable number") != NULL);
 
 		/* 7. a string too long for its destination is malformed, NOT absent */
 		snprintf(v, sizeof v,
-			 "{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,"
+			 "{\"discord_id\":\"123456789012345678\",\"entitled_through\":%lld,\"issued\":%lld,"
 			 "\"licence_id\":\"%0100d\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, 1, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
@@ -219,7 +243,7 @@ int main(void)
 
 		/* 8. an absent field names itself */
 		snprintf(v, sizeof v,
-			 "{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,"
+			 "{\"discord_id\":\"123456789012345678\",\"entitled_through\":%lld,\"issued\":%lld,"
 			 "\"licence_id\":\"lic_test1\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);

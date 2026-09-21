@@ -51,7 +51,7 @@ bool obs_module_load(void)
 	/* startup scan: logs pack counts; the source keeps its own list (Task 8) */
 	{
 		struct ff_pack_list l;
-		ff_packs_scan(&l, (int64_t)time(NULL));
+		ff_packs_scan(&l);
 		ff_packs_free(&l);
 	}
 	obs_register_source(&ff_source_info);

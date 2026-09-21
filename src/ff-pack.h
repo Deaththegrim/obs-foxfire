@@ -26,6 +26,9 @@ struct ff_preset {
 struct ff_pack {
 	char id[64], name[128], version[32], dir[1024];
 	bool licensed;
+	int64_t released; /* unix seconds from the manifest's "released"; 0 when absent, which is
+	                     before every entitlement and so always unlocks -- a pack authored before
+	                     this field existed must not break */
 	struct ff_preset *presets;
 	size_t npresets;
 	struct ff_licence licence; /* state NONE when unlicensed pack */
@@ -41,7 +44,10 @@ struct ff_pack_list {
 };
 
 /* scans data/packs/* (bundled) then obs_module_config_path("packs")/*; bad packs are skipped and named in errors */
-void ff_packs_scan(struct ff_pack_list *out, int64_t now);
+/* No clock argument, deliberately. Entitlement compares the pack's release date against the
+   licence's, so scanning does not depend on what time it is and cannot change its answer while
+   OBS is running. */
+void ff_packs_scan(struct ff_pack_list *out);
 void ff_packs_free(struct ff_pack_list *l);
 const struct ff_pack *ff_packs_find(const struct ff_pack_list *l, const char *id);
 const struct ff_preset *ff_pack_find_preset(const struct ff_pack *p, const char *id);

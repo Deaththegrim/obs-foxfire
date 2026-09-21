@@ -15,7 +15,7 @@ static int hex(const char *h, uint8_t out[32])
 int main(int argc, char **argv)
 {
 	if (argc != 5) {
-		fprintf(stderr, "usage: verify_cli <pubkey-hex> <licence.json> <expected-pack-id> <now-unix>\n");
+		fprintf(stderr, "usage: verify_cli <pubkey-hex> <licence.json> <expected-pack-id> <pack-released-unix>\n");
 		return 2;
 	}
 	uint8_t pk[32];
@@ -30,7 +30,25 @@ int main(int argc, char **argv)
 	buf[n] = 0;
 	struct ff_licence L;
 	ff_licence_verify(buf, n, pk, argv[3], strtoll(argv[4], NULL, 10), &L);
-	static const char *names[] = {"NONE", "OK", "GRACE", "EXPIRED", "INVALID"};
-	printf("%s %s\n", names[L.state], L.reason);
+	/* A switch, not a parallel array. The array version silently shifted every name by one when
+	   the enum lost GRACE and EXPIRED and gained NEWER -- it kept printing plausible state names
+	   that were simply wrong, while the reason text beside them was correct. A switch with no
+	   default makes the compiler point at this line the next time a state is added. */
+	const char *name = "?";
+	switch (L.state) {
+	case FF_LIC_NONE:
+		name = "NONE";
+		break;
+	case FF_LIC_OK:
+		name = "OK";
+		break;
+	case FF_LIC_NEWER:
+		name = "NEWER";
+		break;
+	case FF_LIC_INVALID:
+		name = "INVALID";
+		break;
+	}
+	printf("%s %s\n", name, L.reason);
 	return 0;
 }

@@ -107,7 +107,7 @@ static void refresh_packs(struct ff_instance *in)
 {
 	struct ff_pack_list fresh;
 	memset(&fresh, 0, sizeof fresh);
-	ff_packs_scan(&fresh, (int64_t)time(NULL));
+	ff_packs_scan(&fresh);
 
 	pthread_mutex_lock(&in->state_lock);
 	struct ff_pack_list displaced = in->packs;
@@ -162,20 +162,15 @@ static void licence_sentence(const struct ff_pack *pk, char *out, size_t cap)
 	struct dstr t = {0};
 	switch (pk->licence.state) {
 	case FF_LIC_OK:
-		fmt_date(pk->licence.expires, date, sizeof date);
+		fmt_date(pk->licence.entitled_through, date, sizeof date);
 		dstr_copy(&t, obs_module_text("Foxfire.Licence.OK"));
 		dstr_replace(&t, "%1", pk->licensee_name[0] ? pk->licensee_name : pk->licence.discord_id);
 		dstr_replace(&t, "%2", date);
 		break;
-	case FF_LIC_GRACE:
-		fmt_date(pk->licence.expires + FF_LIC_GRACE_SECONDS, date, sizeof date);
-		dstr_copy(&t, obs_module_text("Foxfire.Licence.Grace"));
-		dstr_replace(&t, "%1", date);
-		break;
-	case FF_LIC_EXPIRED:
-		fmt_date(pk->licence.expires, date, sizeof date);
-		dstr_copy(&t, obs_module_text("Foxfire.Licence.Expired"));
-		dstr_replace(&t, "%1", date);
+	case FF_LIC_NEWER:
+		/* no date interpolated: naming the day their sub lapsed adds nothing the sentence does
+		   not already say, and reads as a reprimand */
+		dstr_copy(&t, obs_module_text("Foxfire.Licence.Newer"));
 		break;
 	case FF_LIC_INVALID:
 		if (!strcmp(pk->licence.reason, "missing")) {
@@ -200,7 +195,7 @@ static bool licence_blocks(const struct ff_pack *pk)
 {
 	if (!pk || !pk->licensed)
 		return false;
-	return pk->licence.state == FF_LIC_EXPIRED || pk->licence.state == FF_LIC_INVALID ||
+	return pk->licence.state == FF_LIC_NEWER || pk->licence.state == FF_LIC_INVALID ||
 	       pk->licence.state == FF_LIC_NONE;
 }
 
@@ -395,7 +390,7 @@ static void add_licence_line(struct ff_instance *in, obs_properties_t *props)
 	char line[320];
 	licence_sentence(pk, line, sizeof line);
 	enum obs_text_info_type type = licence_blocks(pk)                                    ? OBS_TEXT_INFO_ERROR
-				       : (pk->licensed && pk->licence.state == FF_LIC_GRACE) ? OBS_TEXT_INFO_WARNING
+				       : (pk->licensed && pk->licence.state == FF_LIC_NEWER) ? OBS_TEXT_INFO_WARNING
 											     : OBS_TEXT_INFO_NORMAL;
 	add_info(props, "licence", line, type);
 }

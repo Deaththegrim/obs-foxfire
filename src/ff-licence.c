@@ -115,17 +115,17 @@ static int b64dec(const char *s, uint8_t *out, size_t cap)
 }
 
 size_t ff_licence_canonical(const char *discord_id, const char *pack_id, const char *licence_id, int64_t issued,
-			    int64_t expires, char *buf, size_t cap)
+			    int64_t entitled_through, char *buf, size_t cap)
 {
 	int n = snprintf(
 		buf, cap,
-		"{\"discord_id\":\"%s\",\"expires\":%lld,\"issued\":%lld,\"licence_id\":\"%s\",\"pack_id\":\"%s\"}",
-		discord_id, (long long)expires, (long long)issued, licence_id, pack_id);
+		"{\"discord_id\":\"%s\",\"entitled_through\":%lld,\"issued\":%lld,\"licence_id\":\"%s\",\"pack_id\":\"%s\"}",
+		discord_id, (long long)entitled_through, (long long)issued, licence_id, pack_id);
 	return n < 0 || (size_t)n >= cap ? 0 : (size_t)n;
 }
 
-void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], const char *expected_pack_id, int64_t now,
-		       struct ff_licence *L)
+void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], const char *expected_pack_id,
+		       int64_t pack_released, struct ff_licence *L)
 {
 	memset(L, 0, sizeof *L);
 	L->state = FF_LIC_INVALID;
@@ -144,7 +144,7 @@ void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], con
 		{"pack_id", L->pack_id, sizeof L->pack_id, NULL},
 		{"licence_id", L->licence_id, sizeof L->licence_id, NULL},
 		{"issued", NULL, 0, &L->issued},
-		{"expires", NULL, 0, &L->expires},
+		{"entitled_through", NULL, 0, &L->entitled_through},
 		{"sig", sig64, sizeof sig64, NULL},
 	};
 	for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
@@ -165,8 +165,8 @@ void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], con
 		return;
 	}
 	char canon[512];
-	size_t cn = ff_licence_canonical(L->discord_id, L->pack_id, L->licence_id, L->issued, L->expires, canon,
-					 sizeof canon);
+	size_t cn = ff_licence_canonical(L->discord_id, L->pack_id, L->licence_id, L->issued, L->entitled_through,
+					 canon, sizeof canon);
 	if (!cn || crypto_ed25519_check(sig, pubkey, (const uint8_t *)canon, cn) != 0) {
 		snprintf(L->reason, sizeof L->reason, "licence signature does not verify");
 		return;
@@ -183,16 +183,14 @@ void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], con
 			 expected_pack_id);
 		return;
 	}
-	if (now <= L->expires) {
+	/* The whole model, in one comparison. Note what is NOT here: the current time. A pack the
+	   buyer is entitled to keeps working forever, including years after the subscription stops,
+	   because nothing in this decision can change once both dates are fixed. */
+	if (pack_released <= L->entitled_through) {
 		L->state = FF_LIC_OK;
 		return;
 	}
-	if (now <= L->expires + FF_LIC_GRACE_SECONDS) {
-		L->state = FF_LIC_GRACE;
-		snprintf(L->reason, sizeof L->reason, "licence expired; grace period, renew on kitsune.gg");
-		return;
-	}
-	L->state = FF_LIC_EXPIRED;
-	snprintf(L->reason, sizeof L->reason, "licence expired on %lld; renew on kitsune.gg/art/gear.html",
-		 (long long)L->expires);
+	L->state = FF_LIC_NEWER;
+	snprintf(L->reason, sizeof L->reason,
+		 "this pack was released after your subscription ended; everything you already have keeps working");
 }
