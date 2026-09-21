@@ -60,6 +60,17 @@ add_executable(test_url test_url.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
 target_link_libraries(test_url PRIVATE ff-core CURL::libcurl)
 add_test(NAME url COMMAND test_url)
 
+add_executable(twitch_cli twitch_cli.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+target_link_libraries(twitch_cli PRIVATE ff-core CURL::libcurl)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME twitch_api
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/twitch-api-proof.py $<TARGET_FILE:twitch_cli>)
+  set_tests_properties(twitch_api PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 add_executable(ws_cli ws_cli.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
   ${CMAKE_SOURCE_DIR}/src/ff-net.c)
 target_link_libraries(ws_cli PRIVATE ff-core CURL::libcurl)
