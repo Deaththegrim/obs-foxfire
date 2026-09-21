@@ -46,3 +46,20 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/licence-interop.py $<TARGET_FILE:verify_cli>)
   set_tests_properties(licence_interop PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+# A real socket, a real curl connection, and a WebSocket server built out of raw sockets in
+# Python. The unit test proves the state machine; this proves it is wired to a socket. Skips (77)
+# when Python is absent rather than passing having inspected nothing.
+add_executable(test_url test_url.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+target_link_libraries(test_url PRIVATE ff-core CURL::libcurl)
+add_test(NAME url COMMAND test_url)
+
+add_executable(ws_cli ws_cli.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+target_link_libraries(ws_cli PRIVATE ff-core CURL::libcurl)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME ws_server
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ws-server-proof.py $<TARGET_FILE:ws_cli>)
+  set_tests_properties(ws_server PROPERTIES SKIP_RETURN_CODE 77)
+endif()

@@ -78,13 +78,19 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/plugin-main.c src/ff-props.c src/ff-source.c src/ff-filter.c)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ff-core)
 
+# curl carries the EventSub connection. obs-deps ships it on every platform OBS builds for, and
+# curl's own WebSocket API is experimental and absent from the libcurl here (measured), so
+# CONNECT_ONLY hands over the TLS socket and src/ff-ws*.c do the framing. Only the alerts plugin
+# needs it -- the visualizer talks to nothing.
+find_package(CURL REQUIRED)
+
 # --- obs-foxfire-alerts: the alerts engine, installable on its own -----------------------------
 # Its own .so, its own entry in OBS's plugin list, its own enable/disable. A streamer who wants
 # alerts installs this one and nothing else; it still reads the same packs directory (see
 # ff_shared_config_path) so packs are not split across plugins.
 add_library(obs-foxfire-alerts MODULE)
-target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c src/ff-alert-source.c src/ff-alert-queue.c src/ff-ws.c src/ff-ws-conn.c)
-target_link_libraries(obs-foxfire-alerts PRIVATE ff-core)
+target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c src/ff-alert-source.c src/ff-alert-queue.c src/ff-ws.c src/ff-ws-conn.c src/ff-net.c)
+target_link_libraries(obs-foxfire-alerts PRIVATE ff-core CURL::libcurl)
 set_target_properties_plugin(obs-foxfire-alerts PROPERTIES OUTPUT_NAME obs-foxfire-alerts)
 option(FOXFIRE_BUILD_TESTS "Build ff unit tests" OFF)
 if(FOXFIRE_BUILD_TESTS)
