@@ -78,10 +78,23 @@ what shows up there for the demo pack).
 ## About licences and copying
 
 Foxfire is GPL and its source is right here, so nothing in it can stop a rebuilt copy from loading
-any pack. Paid packs carry a licence file signed by KitsuneStudio that the engine checks offline (no
-network, ever); it exists to show who a pack was sold to and to expire quietly if a licence is not
-renewed. If you rebuild Foxfire without that check, you can; the packs are still licensed to the
-person who bought them.
+any pack. Paid packs carry a licence file signed by KitsuneStudio that the engine checks offline —
+no network, ever, and no clock.
+
+**A pack you bought never stops working.** There is no expiry, no grace period and nothing that can
+lapse on you mid-stream. The licence carries the date your subscription last covered
+(`entitled_through`); a pack carries the date that version was published (`released`); the pack
+opens when `released <= entitled_through`. So everything that existed while you were subscribed is
+yours permanently, offline, on a machine whose clock is wrong — and packs published after you stop
+are the only thing you lose access to.
+
+If you rebuild Foxfire without the check, you can. The packs are still licensed to the person who
+bought them, and the point of the check was never to stop you: it is to show who a pack was sold to
+and to decide which packs a subscription entitles someone to.
+
+Free packs (`"licensed": false`) need none of this. The one that ships with the engine, and
+`basics` in the packforge repo, are free — their effect files are CC0, so nothing about this
+engine's GPL reaches your channel.
 
 ## Documentation
 
