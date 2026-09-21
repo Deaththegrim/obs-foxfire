@@ -25,6 +25,9 @@ void ff_viseme_defaults(struct ff_viseme_params *p)
 	   reads as speech or as flapping. */
 	p->hold_ms = 80.0f;
 	p->release_ms = 120.0f;
+	/* 0: the thresholds as measured. Every voice this was checked against classifies sanely
+	   without a trim -- the control is for the one that does not. */
+	p->jaw_bias = 0.0f;
 }
 
 void ff_viseme_init(struct ff_viseme_state *s)
@@ -97,7 +100,7 @@ float ff_viseme_frication(const struct ff_frame *f)
 	return s.high / total;
 }
 
-enum ff_viseme ff_viseme_classify(const struct ff_frame *f)
+enum ff_viseme ff_viseme_classify(const struct ff_frame *f, float jaw_bias)
 {
 	/* Voiced energy only. Everything above ~3.5 kHz is sibilance and room noise, and below
 	   ~180 Hz is the fundamental and whatever the desk is resting on; neither says anything
@@ -165,29 +168,52 @@ enum ff_viseme ff_viseme_classify(const struct ff_frame *f)
 	 * above fix what is CORRECT: they are built from published formants, so a shape that comes
 	 * out wrong there is wrong. Real speech fixes what is BALANCED.
 	 *
-	 * THE SECOND ANCHOR CANNOT BE RE-CHECKED. The distribution below was measured once against
-	 * a recording that is no longer anywhere on the machine it was measured on, and nothing
-	 * here reproduces it. Treat the numbers as the reason these thresholds are what they are,
-	 * not as something that has been verified since. tests/calibrate_cli.c is the tool for
-	 * redoing it properly against a named recording -- and see the note in ff-viseme.h about
-	 * what else that would settle.
-	 *
-	 * Measured over 638 voiced frames of recorded voice:
-	 *
-	 *     openness   5% 0.281  25% 0.392  50% 0.469  75% 0.521  90% 0.564  99% 0.630
-	 *     frontness  5% 0.104  25% 0.212  50% 0.292  75% 0.358  90% 0.425  99% 0.612
-	 *
 	 * The first version put "wide open" at 0.65, which 99% of real frames never reach -- so D
 	 * never appeared at all, on any speech. Synthetic vowels alone would never have shown
 	 * that: "ae" hits 0.776 and classified perfectly. A threshold can be right about the
-	 * physics and still be wrong about a voice. */
-	if (openness > FF_VIS_OPEN_WIDE)
+	 * physics and still be wrong about a voice.
+	 *
+	 * RE-MEASURED 2026-09-21 over FOUR corpora of real recorded speech, 107,259 voiced frames,
+	 * four speakers -- because the distribution this was originally balanced against was 638
+	 * frames of a recording that no longer exists and could not be reproduced. Run it again
+	 * with tests/calibrate_cli.c.
+	 *
+	 *     corpus                      frames   B     C     D     E     F    open p50  front p50
+	 *     48 kHz interview            31719  55.0  12.0   9.2   9.9  13.9    0.440      0.342
+	 *     24 kHz clips, same speaker  14883  52.1  10.4  10.4  10.5  16.6    0.433      0.336
+	 *     24 kHz clips, speaker 2     50172  38.4  13.3  23.8   8.8  15.8    0.484      0.334
+	 *     24 kHz clips, speaker 3     10485  17.7   7.8  56.0   7.6  11.0    0.589      0.292
+	 *
+	 * What that settles and what it does not:
+	 *
+	 *   - NO SHAPE IS EVER DEAD. The worst case for any of B-F on any corpus is 7.6%, so the
+	 *     failure that produced the 0.65 threshold cannot be hiding here.
+	 *   - frontness is portable. Its median is 0.342, 0.336, 0.334, 0.292 across four different
+	 *     voices, and 0.29 sits under all four. Nothing to do.
+	 *   - OPENNESS IS NOT PORTABLE, and that is why jaw_bias exists. The median moves 0.156
+	 *     between corpora -- nearly twice the 0.08 between the two thresholds it is compared
+	 *     against -- and speaker 3 spends 56% of frames wide open. A bias of -0.10 brings that
+	 *     to B 27.9 / C 11.7 / D 27.7 / E 11.9 / F 20.9. The same -0.10 applied to the first
+	 *     corpus, which does not need it, degrades it to C 2.9 / D 2.3 / E 1.5. The control is
+	 *     directional and 0 is right for three of the four.
+	 *   - The numbers are four voices, not a population, and three of the four are 24 kHz so
+	 *     their frication is measured against a 12 kHz ceiling rather than 16. Neither affects
+	 *     openness or frontness, which use bands below 3 kHz.
+	 *
+	 * Frication, for the record, over the same corpora: 90th percentile 0.266 / 0.246 / 0.205 /
+	 * 0.189 against a threshold of 0.22, so somewhere near a tenth to an eighth of voiced frames
+	 * read as a hiss. That is the right order for English and is the only check that number has
+	 * ever had against a real voice -- it was set from synthesis. */
+	/* Both thresholds move together, so the trim slides the whole jaw axis rather than
+	   squeezing the middle shape out of existence, which is what moving one of them alone
+	   would do at either end of its range. */
+	if (openness > FF_VIS_OPEN_WIDE - jaw_bias)
 		return FF_VIS_D; /* wide open: "ah" is a wide mouth whatever the tongue is doing,
 				    and deciding front-or-back at that jaw angle makes a held vowel
 				    twitch between two shapes */
 
 	bool is_front = frontness > FF_VIS_FRONT;
-	if (openness > FF_VIS_JAW)
+	if (openness > FF_VIS_JAW - jaw_bias)
 		return is_front ? FF_VIS_C : FF_VIS_E;
 	return is_front ? FF_VIS_B : FF_VIS_F;
 }
@@ -233,7 +259,7 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
 	s->silent_ms = 0.0f;
 	s->spoke = true;
 
-	enum ff_viseme want = ff_viseme_classify(f);
+	enum ff_viseme want = ff_viseme_classify(f, p->jaw_bias);
 
 	/* Coming out of rest or a closure is immediate for the same reason: the first frame of a
 	   word should already be the right shape. */

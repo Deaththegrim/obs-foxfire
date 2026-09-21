@@ -82,6 +82,20 @@ struct ff_viseme_params {
 	/* How fast openness follows the audio, milliseconds to close. Too fast and the mouth
 	   chatters between words; too slow and it hangs open. */
 	float release_ms;
+	/* Shifts BOTH jaw thresholds together. Positive opens the mouth more readily, negative
+	   keeps it shut.
+
+	   This exists because openness turned out not to be portable between recordings, and the
+	   measurement is in ff-viseme.c: across four real corpora its median runs from 0.433 to
+	   0.589 -- a spread of 0.156, which is nearly twice the gap between the two thresholds it
+	   is compared against. One of the four sits on the wide-open shape 56% of the time. The
+	   cause is the recording as much as the speaker, because this feature is the balance of two
+	   bands and anything that tilts the low end tilts it.
+
+	   Nothing else in this struct touches that: the gate decides whether to listen, and the
+	   three times decide when a shape may change, but none of them can tell a mouth that hangs
+	   open to stop. Without this the only fix would be a rebuild. */
+	float jaw_bias;
 };
 
 void ff_viseme_defaults(struct ff_viseme_params *p);
@@ -144,13 +158,15 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
  * B, C and D and "aw" between D, E and F. The tighter axis is openness, and radiation tilts the
  * spectrum, which moves it.
  *
- * That does NOT mean these numbers are wrong. It means the fixture they were set against cannot
- * settle it, and neither can the other fixture. Settling it needs speech through a microphone,
- * which is also what the claim above about 638 recorded frames needs: nothing in this repo
- * reproduces those percentiles and the recording they came from is gone.
+ * That does NOT mean these numbers are wrong, and real speech has since said they are not: over
+ * 107,259 voiced frames of four recorded voices every shape from B to F fires, worst case 7.6%,
+ * which is the check the synthetic fixtures cannot perform. The full distribution is in
+ * ff-viseme.c. What the same measurement DID find is that openness is not portable between
+ * recordings, which is what jaw_bias is for.
  *
- * Do not "fix" these by re-running them against the five-formant model. That would be swapping
- * one unvalidated fixture for another. */
+ * Still open: all four corpora are somebody else's voice, and none is a streaming microphone in
+ * the room the mouth will actually run in. Do not "fix" these by re-running them against the
+ * five-formant model -- that would be swapping one unvalidated fixture for another. */
 
 /* jaw open enough to be a wide mouth */
 #define FF_VIS_OPEN_WIDE 0.56f
@@ -171,9 +187,12 @@ float ff_viseme_frication(const struct ff_frame *f);
 
 /* What the classifier would say with no timing applied: the raw shape for this frame. Exposed so
    a test can check the CLASSIFICATION and the HOLD separately -- together they hide each other.
-   Takes no params: the shape of a frame does not depend on any of them, and a parameter that is
-   accepted and ignored is a lie about what the function reads. */
-enum ff_viseme ff_viseme_classify(const struct ff_frame *f);
+
+   Takes the jaw bias, and nothing else. The old rule has not changed -- a parameter that is
+   accepted and ignored is a lie about what the function reads -- and this is the only setting
+   that changes the answer for a single frame. The gate and the three timings are all about what
+   happens BETWEEN frames and live in ff_viseme_update. Pass 0 for the untrimmed answer. */
+enum ff_viseme ff_viseme_classify(const struct ff_frame *f, float jaw_bias);
 
 /* The shape's conventional letter, for logs and the properties panel. Never NULL. */
 const char *ff_viseme_name(enum ff_viseme v);

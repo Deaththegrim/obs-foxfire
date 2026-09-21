@@ -439,6 +439,7 @@ timing the classifier runs on, and they describe the voice and the microphone ra
 | Closed-mouth gap (ms) | 200 | A gap **shorter** than this is a stop consonant — the closure in P, B, M — and the mouth shuts. Longer, and the speaker has stopped, so the mouth rests. |
 | Minimum shape time (ms) | 80 | How long a shape stays up once chosen. The number that decides whether this reads as speech or as flapping; roughly the length of a spoken phoneme. |
 | Mouth close speed (ms) | 120 | How fast `mouth_open` falls. Opening is immediate either way — a mouth that lags the attack of a word looks dubbed. |
+| Jaw bias | 0.00 | Shifts both jaw thresholds together: positive opens the mouth more readily, negative keeps it shut. Openness is the one feature measured **not** to be portable between recordings — its median moves 0.156 across four real voices, against 0.08 between the thresholds — so this is the control a streamer is most likely to need. |
 
 They are **not** keyed per layer, so switching preset keeps them: a streamer who dialled a mouth
 in to their own voice should not have to do it again to try different art.

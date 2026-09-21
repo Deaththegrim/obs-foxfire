@@ -119,12 +119,18 @@ still works — the extra cells are simply never selected.
   as speech or as flapping. Shorten it for fast talkers.
 - **Mouth close speed** — how fast the mouth relaxes. Opening is always immediate; a mouth that
   lags the start of a word looks dubbed.
+- **Jaw bias** — raise it if the mouth stays too shut, lower it if it hangs open. This is the one
+  most likely to need moving, and it is not a matter of taste: measured across four recorded
+  voices, the feature it trims varies by more than the distance between the two thresholds it is
+  compared against, and one of the four sat wide open on 56% of frames until it was trimmed.
+  Three of the four needed nothing.
 
 These describe your voice and your microphone rather than the art, so they survive a change of
 pack or preset.
 
-**Not yet tuned against a real microphone.** The thresholds were set against synthesised speech.
-If your mouth reads wrong on your own voice, the four controls above are the first thing to move.
+**Finding the right bias without guessing:** `calibrate_cli --jaw-bias N voice.wav` prints what
+share of frames each shape gets. Run it at 0, and if one shape is taking most of them, re-run
+with a bias until it is not. See below.
 
 ## Connecting to Twitch
 

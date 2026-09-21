@@ -19,7 +19,19 @@
  *     silence does not close the mouth               103 checks,  1 failed
  *     band layout off by an octave                   103 checks, 12 failed
  *
- * and for the frication half, which came later (numbers re-measured at 201 checks):
+ * for the jaw bias (at 250 checks):
+ *
+ *     bias ignored in the classifier                 250 checks,  4 failed
+ *     bias sign flipped                              250 checks,  8 failed
+ *     bias applied to the wide line only             250 checks,  2 failed
+ *     update() passing 0 instead of the setting      250 checks,  2 failed
+ *     default bias nudged off zero                   250 checks,  2 failed
+ *
+ * The fourth of those SURVIVED at first, clean: every bias check called the classifier directly,
+ * so none of them said anything about whether the SETTING reaches it. The wiring from the params
+ * struct is now driven through ff_viseme_update, which is the only path the plugin takes.
+ *
+ * and for the frication half, which came earlier (numbers re-measured at 201 checks):
  *
  *     frication branch removed                       201 checks,  6 failed
  *     threshold lowered to 0.05                      201 checks, 13 failed
@@ -253,7 +265,7 @@ int main(void)
 	for (size_t k = 0; k < sizeof V / sizeof V[0]; k++) {
 		synth_vowel(buf, SR, 120.0f, V[k].f1, V[k].f2, V[k].f3);
 		CHECK(last_frame(buf, SR, &f));
-		enum ff_viseme got = ff_viseme_classify(&f);
+		enum ff_viseme got = ff_viseme_classify(&f, 0.0f);
 		CHECK(got == V[k].want);
 		if (got != V[k].want)
 			fprintf(stderr, "      (%s at F1=%.0f F2=%.0f gave %s, wanted %s)\n",
@@ -266,10 +278,62 @@ int main(void)
 	   must not change the shape -- otherwise the rig works for one person only. */
 	synth_vowel(buf, SR, 220.0f, 250, 595, 2400);
 	CHECK(last_frame(buf, SR, &f));
-	CHECK(ff_viseme_classify(&f) == FF_VIS_F);
+	CHECK(ff_viseme_classify(&f, 0.0f) == FF_VIS_F);
 	synth_vowel(buf, SR, 220.0f, 240, 2400, 2900);
 	CHECK(last_frame(buf, SR, &f));
-	CHECK(ff_viseme_classify(&f) == FF_VIS_B);
+	CHECK(ff_viseme_classify(&f, 0.0f) == FF_VIS_B);
+
+	/* ---- the jaw bias: one voice's openness is not another's ---- */
+
+	/* One frame, three shapes, decided only by the trim. "eh" sits at openness 0.527, between
+	   the two thresholds, which is what makes it the frame that can show all three. */
+	synth_vowel(buf, SR, 110.0f, 390, 2300, 3000);
+	CHECK(last_frame(buf, SR, &f));
+	CHECK(ff_viseme_classify(&f, 0.0f) == FF_VIS_C);
+	CHECK(ff_viseme_classify(&f, 0.05f) == FF_VIS_D);  /* + opens: crosses the wide line */
+	CHECK(ff_viseme_classify(&f, -0.10f) == FF_VIS_B); /* - closes: falls under the jaw line */
+
+	/* The sign, stated as a property rather than as three examples: raising the bias can only
+	   ever move a frame toward a MORE open shape, never back. Checked across the whole vowel
+	   set so it cannot pass on one lucky frame. */
+	for (size_t k = 0; k < sizeof V / sizeof V[0]; k++) {
+		synth_vowel(buf, SR, 110.0f, V[k].f1, V[k].f2, V[k].f3);
+		CHECK(last_frame(buf, SR, &f));
+		int prev = -1;
+		for (float bias = -0.15f; bias <= 0.1501f; bias += 0.05f) {
+			/* rank by jaw aperture, not by the enum, which is drawn in art order:
+			   B and F are the closed pair, C and E the middle, D the wide one */
+			enum ff_viseme g = ff_viseme_classify(&f, bias);
+			int rank = (g == FF_VIS_D) ? 2 : (g == FF_VIS_C || g == FF_VIS_E) ? 1 : 0;
+			CHECK(rank >= prev);
+			prev = rank;
+		}
+	}
+
+	/* And zero is exactly the old behaviour -- the vowel sweep above ran at 0 and every shape
+	   came out as it did before the trim existed. That is what makes 0 a safe default rather
+	   than a number that happens to look neutral. */
+	ff_viseme_defaults(&p);
+	CHECK(p.jaw_bias == 0.0f);
+
+	/* Through ff_viseme_update, which is the only path the plugin ever takes. Everything above
+	   calls the classifier directly and so says nothing about whether the SETTING reaches it --
+	   a mutation replacing p->jaw_bias with 0 at the call site survived all of it cleanly. */
+	{
+		struct ff_viseme_state js;
+		struct ff_viseme_params jp;
+		synth_vowel(buf, SR, 110.0f, 390, 2300, 3000);
+		CHECK(last_frame(buf, SR, &f));
+		ff_viseme_defaults(&jp);
+		ff_viseme_init(&js);
+		CHECK(ff_viseme_update(&js, &f, 16.0f, &jp) == FF_VIS_C);
+		jp.jaw_bias = 0.05f;
+		ff_viseme_init(&js);
+		CHECK(ff_viseme_update(&js, &f, 16.0f, &jp) == FF_VIS_D);
+		jp.jaw_bias = -0.10f;
+		ff_viseme_init(&js);
+		CHECK(ff_viseme_update(&js, &f, 16.0f, &jp) == FF_VIS_B);
+	}
 
 	/* ---- frication: a hiss is not a vowel ---- */
 
@@ -296,7 +360,7 @@ int main(void)
 			worst_fric = fr;
 		CHECK(fr > FF_VIS_FRICATION);
 		/* the teeth-together shape, never the open jaw it drew before this existed */
-		enum ff_viseme got = ff_viseme_classify(&f);
+		enum ff_viseme got = ff_viseme_classify(&f, 0.0f);
 		CHECK(got == FF_VIS_B);
 		if (got != FF_VIS_B)
 			fprintf(stderr, "      (%s: frication %.4f gave %s, wanted B)\n", FR[k].name, fr,
@@ -325,7 +389,7 @@ int main(void)
 			   move under the five-formant model and that is a finding, not a test: see
 			   the note on the vowel thresholds in ff-viseme.h. */
 			if (VF[k].f1 == 850)
-				CHECK(ff_viseme_classify(&f) == FF_VIS_D);
+				CHECK(ff_viseme_classify(&f, 0.0f) == FF_VIS_D);
 		}
 
 	/* The margin itself, so a threshold creeping toward either family fails here rather than
@@ -372,7 +436,7 @@ int main(void)
 	/* silence is rest, not a guess */
 	memset(buf, 0, sizeof buf);
 	CHECK(last_frame(buf, SR, &f));
-	CHECK(ff_viseme_classify(&f) == FF_VIS_X);
+	CHECK(ff_viseme_classify(&f, 0.0f) == FF_VIS_X);
 
 	/* ---- timing: the half that decides whether this reads as speech ---- */
 	struct ff_viseme_state s;

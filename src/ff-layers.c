@@ -53,6 +53,9 @@ static const struct mouth_ctl MOUTH_CTLS[] = {
 	{"mouth.hold_ms", "Foxfire.Mouth.Hold", offsetof(struct ff_viseme_params, hold_ms), 0.0, 250.0, 5.0},
 	{"mouth.release_ms", "Foxfire.Mouth.Release", offsetof(struct ff_viseme_params, release_ms), 0.0, 500.0,
 	 10.0},
+	/* +-0.15 covers the 0.156 spread measured between real recordings; wider than that and the
+	   trim would push one of the two thresholds past the other. */
+	{"mouth.jaw_bias", "Foxfire.Mouth.Jaw", offsetof(struct ff_viseme_params, jaw_bias), -0.15, 0.15, 0.005},
 };
 #define MOUTH_NCTLS (sizeof MOUTH_CTLS / sizeof MOUTH_CTLS[0])
 

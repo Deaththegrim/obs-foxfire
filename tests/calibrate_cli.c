@@ -9,7 +9,11 @@
  *
  * Point it at a recording of the voice that will actually be driving the mouth:
  *
- *     calibrate_cli voice.wav [more.wav ...]
+ *     calibrate_cli [--jaw-bias N] voice.wav [more.wav ...]
+ *
+ * --jaw-bias is the Mouth control of the same name, so the number can be FOUND from the
+ * distribution rather than guessed at by watching a mouth. Run it once at 0, look at the shape
+ * mix, and if one shape is taking most of the frames, re-run with a bias until it is not.
  *
  * It prints the percentiles of each feature over the frames that pass the noise gate, what
  * share of them each shape gets, and where the current thresholds sit. What to look for:
@@ -149,17 +153,22 @@ static void percentiles(const char *name, float *v, size_t k, float lo_mark, flo
 
 int main(int argc, char **argv)
 {
-	if (argc < 2) {
-		fprintf(stderr, "usage: %s voice.wav [more.wav ...]\n", argv[0]);
-		return 2;
-	}
 	struct ff_viseme_params p;
 	ff_viseme_defaults(&p);
+	int first = 1;
+	if (argc > 2 && !strcmp(argv[1], "--jaw-bias")) {
+		p.jaw_bias = (float)atof(argv[2]);
+		first = 3;
+	}
+	if (first >= argc) {
+		fprintf(stderr, "usage: %s [--jaw-bias N] voice.wav [more.wav ...]\n", argv[0]);
+		return 2;
+	}
 	size_t k = 0, total = 0, files = 0;
 	int shape[FF_VISEME_COUNT];
 	memset(shape, 0, sizeof shape);
 
-	for (int a = 1; a < argc; a++) {
+	for (int a = first; a < argc; a++) {
 		uint32_t sr = 0;
 		size_t n = 0;
 		float *m = load_wav(argv[a], &sr, &n);
@@ -183,7 +192,7 @@ int main(int argc, char **argv)
 			frontness[k] = ft / (ft + bk + 1e-6f);
 			frication[k] = ff_viseme_frication(&f);
 			level[k] = f.level;
-			shape[ff_viseme_classify(&f)]++;
+			shape[ff_viseme_classify(&f, p.jaw_bias)]++;
 			k++;
 		}
 		ff_analysis_destroy(an);
@@ -201,13 +210,13 @@ int main(int argc, char **argv)
 	}
 	/* The denominator, always: a distribution over 40 frames is not a calibration, and the
 	   only way to know that is for the count to be printed next to it. */
-	printf("\n%zu voiced frames of %zu (%.0f%% over the %.3f gate), from %zu file(s)\n", k, total,
-	       100.0 * (double)k / (double)total, (double)p.gate, files);
+	printf("\n%zu voiced frames of %zu (%.0f%% over the %.3f gate), from %zu file(s), jaw bias %+.3f\n", k,
+	       total, 100.0 * (double)k / (double)total, (double)p.gate, files, (double)p.jaw_bias);
 	printf("  shape mix:");
 	for (int i = 0; i < FF_VISEME_COUNT; i++)
 		printf(" %s=%.1f%%", ff_viseme_name(i), 100.0 * shape[i] / (double)k);
 	printf("   (A and X come from the timing, not from here -- near 0%% is correct)\n");
-	percentiles("openness", openness, k, FF_VIS_JAW, FF_VIS_OPEN_WIDE);
+	percentiles("openness", openness, k, FF_VIS_JAW - p.jaw_bias, FF_VIS_OPEN_WIDE - p.jaw_bias);
 	percentiles("frontness", frontness, k, FF_VIS_FRONT, 0.0f);
 	percentiles("frication", frication, k, FF_VIS_FRICATION, 0.0f);
 	percentiles("level", level, k, p.gate, 0.0f);

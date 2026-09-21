@@ -21,8 +21,8 @@ uniforms, so no render can show whether the panel is wired to the engine or to n
 mouth looks equally correct either way. Each is checked by making it change a shape already
 known from the sweep above.
 
-WHAT THIS DOES NOT COVER, of the four controls: only "Silence threshold" and "Minimum shape
-time" are here. "Closed-mouth gap" chooses between rest and a closure, and the placeholder strip
+WHAT THIS DOES NOT COVER, of the five controls: "Silence threshold", "Minimum shape time" and
+"Jaw bias" are here. "Closed-mouth gap" chooses between rest and a closure, and the placeholder strip
 folds rest onto the closed cell, so both land on the same hue and no colour can tell them apart.
 "Mouth close speed" moves `mouth_open`, which changes no cell index. Nor is the `uses_mouth()`
 half covered -- obs-websocket cannot enumerate a source's properties, so whether the group
@@ -30,17 +30,18 @@ APPEARS is unproven here; what is proven is that the settings reach the classifi
 
 ARMED by mutation -- every number below was measured by running it, not predicted:
 
-    control (everything wired up)             9/9 passed
-    mouth stuck on the first cell             3/9   -- the survivors are "silence draws A", the
-                                                       gate check (both want A anyway) and the
-                                                       pixel count: exactly the false pass this
-                                                       file is for
-    rest folds to the wrong shape             7/9
-    mouth settings never reach the engine     7/9
-    hold wired to the release field           8/9
-    frication branch removed                  8/9   -- the hiss goes back to drawing an open jaw
-    uses_mouth() forced false                 9/9   -- UNARMED, as stated above
-    pack art swapped for drawn-style art      9/9   -- the point: it must NOT fail
+    control (everything wired up)            10/10 passed
+    mouth stuck on the first cell             3/10  -- the survivors are "silence draws A", the
+                                                        gate check (both want A anyway) and the
+                                                        pixel count: exactly the false pass this
+                                                        file is for
+    rest folds to the wrong shape             8/10
+    mouth settings never reach the engine     7/10
+    hold wired to the release field           9/10
+    frication branch removed                  9/10  -- the hiss goes back to drawing an open jaw
+    uses_mouth() forced false                10/10  -- UNARMED, as stated above
+    pack art swapped for drawn-style art      9/9   -- the point: it must NOT fail (measured
+                                                        before the jaw check existed)
 
     tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
 """
@@ -292,6 +293,14 @@ async def drive(pack_id: str, wavs: dict, strip: Path):
         seen["ee_oo_held"] = (nearest_shape(hue), hue, px)
         await set_mouth("mouth.hold_ms", 80.0)
 
+        # JAW BIAS, the fifth control: "oo" is a pucker at the shipped thresholds, and trimming
+        # the jaw axis wide open turns the same audio into the wide-open shape. Two cells apart
+        # in the strip and 150 degrees apart in hue, so nothing subtle is being read here.
+        await set_mouth("mouth.jaw_bias", 0.15)
+        hue, px = await rest_then(wavs["oo"])
+        seen["oo_biased"] = (nearest_shape(hue), hue, px)
+        await set_mouth("mouth.jaw_bias", 0.0)
+
         # And the pack's OWN art, once, because nothing else here looks at it any more. Not by
         # colour -- that is the coupling this file just got rid of -- but it has to draw
         # something: "" means the pack's own image, and a strip that failed to load draws
@@ -392,6 +401,10 @@ def main() -> int:
           f"{seen.get('pack_art', (None, None, 0))[2]} lit pixels with the shipped strip bound "
           f"-- every other check here uses a strip this file generates, so this is the only one "
           f"that touches the art the pack ships")
+    got, hue, px = seen.get("oo_biased", (None, None, 0))
+    check("the jaw bias re-opens the mouth", got == "D",
+          f"the same \"oo\" that draws F untrimmed draws {got} at a bias of +0.15 "
+          f"(hue {hue if hue is None else round(hue)}); F would mean the setting never arrived")
     free = seen.get("ee_oo_free", (None, None, 0))[0]
     held = seen.get("ee_oo_held", (None, None, 0))[0]
     check("the hold time keeps a shape up", free == "F" and held == "B",
