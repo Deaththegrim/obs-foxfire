@@ -447,6 +447,34 @@ shape upward.
 `tools/make-mouth-strip.py` draws the examples the pack ships (`--style flat`, `--style ink`) and
 a registration template to draw over (`--style guide`).
 
+### Generating a strip from a rendered animation
+
+Six independent image generations are six independent mouths. A video model is a better fit,
+because temporal coherence is the thing it is trained for — but then the question becomes which
+frame is which shape, and answering that by eye is the same judgement that puts drift into
+hand-aligned art. So it gets measured:
+
+```
+tools/pick-mouth-frames.py --out raw.png close/*.png pucker/*.png
+tools/check-mouth-strip.py --fix strip.png raw.png
+```
+
+**Start the render from an open mouth**, showing teeth and tongue. A shut mouth has no interior,
+so a model starting there invents one — differently each time. Every other shape is a subset of
+detail that already exists in an open frame.
+
+**Two clips, not one.** `open → closed` gives D, C, B and A; `neutral → pucker` gives E and F.
+E and F are not small versions of C and D: rounding the lips pulls the *corners* in, so what
+separates them is width, not aperture, and no closing clip contains them however many frames it
+has. The picker measures both axes and says `nothing close` for any shape the clips do not hold.
+
+The clips must contain at least one wide, unrounded frame, because lip widths are normalised
+against the widest one present.
+
+`pick-mouth-frames.py --selftest` renders an animation whose right answer is known by
+construction and checks the picks against it; `--mutate` breaks the picker four ways and shows
+the selftest catching each.
+
 ### The Mouth controls
 
 A preset that declares either builtin also gets a **Mouth** group in the properties panel, added

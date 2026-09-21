@@ -77,6 +77,11 @@ jobs:
         run: |
           python3 ../foxfire/tools/check-mouth-strip.py ../foxfire/packs/mouth/art/mouth-strip.png
           python3 ../foxfire/tools/check-mouth-strip.py ../foxfire/packs/mouth/art/mouth-strip-ink.png
+          # the picker and the aligner against an animation whose right answer is known by
+          # construction -- and --mutate, so a selftest that has stopped being able to fail
+          # reports that rather than a pass
+          python3 ../foxfire/tools/pick-mouth-frames.py --selftest
+          python3 ../foxfire/tools/pick-mouth-frames.py --mutate
 
       - name: Pack controls actually move the picture
         # A control that exists in the properties panel and changes nothing is this project's

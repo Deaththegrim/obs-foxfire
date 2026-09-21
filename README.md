@@ -106,6 +106,13 @@ The pack ships two example strips and a template you can draw over, all generate
 which is the one defect that no amount of redrawing the shapes fixes and that a contact sheet
 will not show you. It has a `--fix` that aligns them.
 
+Generating the art rather than drawing it works, and a video model suits it better than six
+separate image generations — temporal coherence is what it is for. Render from an **open** mouth
+(a shut one has no interior, so the model invents teeth differently every time), in two clips:
+open→closed covers A–D, neutral→pucker covers E and F. Then `tools/pick-mouth-frames.py` measures
+every frame and picks the six, and the registration check aligns them. Details in
+`docs/PACK-FORMAT.md`.
+
 **Six cells is the whole set — do not draw more.** Preston Blair and Rhubarb also define G (teeth
 on the lip, for F and V) and H (tongue up, for a long L), and Foxfire will never ask for either.
 Both are articulatory facts rather than spectral ones: /f/ differs from /s/ mainly by being flat
