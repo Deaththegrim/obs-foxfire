@@ -39,7 +39,20 @@
 
 /* The Preston Blair set, as used by Rhubarb Lip Sync. A-F are the ones that matter; G, H and X
    are optional and an artist may skip them (rhubarb's own documentation says so). Kept in this
-   order because it is the order the art is conventionally drawn and numbered in. */
+   order because it is the order the art is conventionally drawn and numbered in.
+
+   G AND H ARE NEVER RETURNED, and an artist should not spend a cell on either. Both are
+   articulatory facts rather than spectral ones: G is the teeth on the lip in F and V, and telling
+   /f/ from /s/ comes down to amplitude and how sharp the spectral peak is -- /f/ is flat and some
+   15-20 dB quieter -- neither of which survives 64 logarithmic bands and a microphone whose gain
+   is a knob on the desk. H is the tongue up in a long L, which is an ANTI-formant, a notch, and
+   nothing here looks for notches. Rhubarb produces them because it runs a phoneme recogniser over
+   the whole file offline; doing that live would mean shipping an acoustic model and spending the
+   CPU on a machine that is already encoding video. X is returned, and is the rest position.
+
+   So the classifier's real range is A-F and X. ff_cell() in packs/mouth folds G and H onto B and
+   C for any pack that does draw them, which costs nothing and means a strip drawn for Rhubarb
+   still works. */
 enum ff_viseme {
 	FF_VIS_A = 0, /* closed, slight pressure: P B M */
 	FF_VIS_B,     /* slightly open, teeth together: K S T, and "EE" */
@@ -102,6 +115,43 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
 #define FF_VIS_P25_FRONT 0.212f
 #define FF_VIS_P75_FRONT 0.358f
 
+/* Share of 180 Hz-16 kHz energy sitting above 3.5 kHz. Over this and the frame is frication --
+ * a hiss, not a vowel -- and the two ratios above mean nothing on it.
+ *
+ * Measured through this engine's own analysis, with the vowels synthesised through FIVE formants
+ * and a lip-radiation term. That detail is the whole measurement: three resonators roll off
+ * 36 dB/octave above F3, so a three-formant vowel has literally nothing over 3.5 kHz, reads 0.000
+ * however breathy you make it, and would put this threshold anywhere at all. A real tract has
+ * formants near 3.5 and 4.5 kHz and radiates from the lips at +6 dB/octave.
+ *
+ *     vowels, clean to aspiration -6 dB     0.000 - 0.087   (worst: a breathy "eh")
+ *     fricatives                            0.418 - 0.705   (worst: a dark /sh/ peaking at 2.6k)
+ *
+ * 0.22 sits between them with roughly 2.5x of margin each way, which is why the modelling
+ * question above does not decide it: under the cruder three-formant model the same fricatives
+ * read 0.155-0.362 against vowels at 0.000, and 0.22 separates those too.
+ *
+ * NOT YET CHECKED AGAINST A REAL MICROPHONE. Both anchors here are synthetic, and the upper one
+ * is the one that matters: a bright mic, a sibilant voice or no de-esser all push real vowels up,
+ * and nothing here would notice. Erring HIGH is deliberate -- a missed fricative leaves the old
+ * behaviour, a false one puts the teeth together on a vowel and is visible immediately. */
+#define FF_VIS_FRICATION 0.22f
+
+/* KNOWN UNFINISHED, and the frication work above is what turned it up. The three vowel
+ * thresholds below were set against a THREE-formant synthesis with no lip radiation, which has
+ * nothing above 3.5 kHz. Run the same five vowels through the five-formant model with radiation
+ * -- the realistic one -- and "ae" still lands on D at every breathiness, but "eh" moves between
+ * B, C and D and "aw" between D, E and F. The tighter axis is openness, and radiation tilts the
+ * spectrum, which moves it.
+ *
+ * That does NOT mean these numbers are wrong. It means the fixture they were set against cannot
+ * settle it, and neither can the other fixture. Settling it needs speech through a microphone,
+ * which is also what the claim above about 638 recorded frames needs: nothing in this repo
+ * reproduces those percentiles and the recording they came from is gone.
+ *
+ * Do not "fix" these by re-running them against the five-formant model. That would be swapping
+ * one unvalidated fixture for another. */
+
 /* jaw open enough to be a wide mouth */
 #define FF_VIS_OPEN_WIDE 0.56f
 /* jaw open at all, as opposed to nearly closed */
@@ -112,6 +162,12 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
 /* The centre frequency of band `i`, in Hz. Exposed because a test that hard-codes band indices
    is a test that breaks silently the day the layout changes. */
 float ff_viseme_band_hz(int i);
+
+/* The high-band share this frame, 0..1 -- the feature FF_VIS_FRICATION is compared against.
+   Exposed for the same reason as the band layout: a test that can only see the shape that came
+   out cannot tell a threshold that is wrong from a feature that is wrong, and "ee" classifies as
+   B whether it was heard as a vowel or as a hiss. */
+float ff_viseme_frication(const struct ff_frame *f);
 
 /* What the classifier would say with no timing applied: the raw shape for this frame. Exposed so
    a test can check the CLASSIFICATION and the HOLD separately -- together they hide each other.

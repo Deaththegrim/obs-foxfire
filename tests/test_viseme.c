@@ -8,7 +8,7 @@
  *
  * ARMED by mutation -- each decision inverted in turn, recompiled and rerun:
  *
- *     control (every guard in place)                 103 checks,  0 failed
+ *     control (every guard in place)                 201 checks,  0 failed
  *     wide-open threshold back to the old 0.65       103 checks,  1 failed
  *     front/back threshold moved off the median      103 checks,  1 failed
  *     jaw threshold removed (never closed)           103 checks,  9 failed
@@ -18,6 +18,20 @@
  *     no immediate attack out of rest                103 checks,  3 failed
  *     silence does not close the mouth               103 checks,  1 failed
  *     band layout off by an octave                   103 checks, 12 failed
+ *
+ * and for the frication half, which came later (numbers re-measured at 201 checks):
+ *
+ *     frication branch removed                       201 checks,  6 failed
+ *     threshold lowered to 0.05                      201 checks, 13 failed
+ *     threshold raised to 0.50                       201 checks,  7 failed
+ *     high band starting at 2 kHz                    201 checks, 28 failed
+ *     frication reading the voiced half              201 checks, 36 failed
+ *     the two halves of the split swapped            201 checks, 48 failed
+ *
+ * The 2 kHz mutant SURVIVED at first, at a clean 0 failed, and finding out why was the point:
+ * ff_viseme_frication and ff_viseme_classify each computed the split themselves, so moving the
+ * line in one left the other -- the one every test reads -- saying the old thing. One
+ * split_bands() now, and the mutant takes 28 checks with it.
  *
  * The first two are caught ONLY by the percentile checks. Every synthetic vowel classifies
  * perfectly with the old 0.65 threshold -- which is precisely how it shipped in the first place.
@@ -33,6 +47,7 @@
 #include <ff-analysis.h>
 #include <ff-viseme.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -89,6 +104,90 @@ static void synth_vowel(float *out, size_t n, float f0, float f1, float f2, floa
 	if (mx > 1e-9f)
 		for (size_t i = 0; i < n; i++)
 			out[i] *= 0.3f / mx;
+}
+
+/* Deterministic noise. rand() would make a failure depend on the C library, and a fixture whose
+   value changes between machines is a fixture nobody can argue with. */
+static uint32_t nseed = 1u;
+static float noise(void)
+{
+	nseed = nseed * 1664525u + 1013904223u; /* Numerical Recipes LCG */
+	return (float)(nseed >> 8) / 8388608.0f - 1.0f;
+}
+
+static void normalise(float *out, size_t n)
+{
+	float mx = 0.0f;
+	for (size_t i = 0; i < n; i++)
+		if (fabsf(out[i]) > mx)
+			mx = fabsf(out[i]);
+	if (mx > 1e-9f)
+		for (size_t i = 0; i < n; i++)
+			out[i] *= 0.3f / mx;
+}
+
+/* A vowel with the high end MODELLED rather than missing: five formants and a lip-radiation
+ * term, plus optional aspiration noise at the glottis.
+ *
+ * synth_vowel above is deliberately kept as it is -- it is the fixture the vowel thresholds were
+ * set against -- but it cannot say anything about frication, because three resonators roll off
+ * 36 dB/octave past F3 and leave exactly nothing above 3.5 kHz. Measured: every vowel it makes
+ * reads frication 0.0000 at every aspiration level up to -6 dB, which would justify any
+ * threshold at all. Real tracts have formants near 3.5 and 4.5 kHz, and radiation from the lips
+ * is a differentiator: +6 dB/octave, lifting the top end rather than burying it.
+ *
+ * `asp` is the aspiration amplitude relative to the glottal pulse; 0 is a clean voice. */
+static void synth_vowel5(float *out, size_t n, float f0, float f1, float f2, float f3, float asp)
+{
+	struct reso r1, r2, r3, r4, r5;
+	reso_set(&r1, f1, 80.0f);
+	reso_set(&r2, f2, 100.0f);
+	reso_set(&r3, f3, 150.0f);
+	reso_set(&r4, 3500.0f, 200.0f);
+	reso_set(&r5, 4500.0f, 250.0f);
+	float phase = 0.0f, step = f0 / (float)SR, prev = 0.0f;
+	for (size_t i = 0; i < n; i++) {
+		phase += step;
+		float x = 0.0f;
+		if (phase >= 1.0f) {
+			phase -= 1.0f;
+			x = 1.0f;
+		}
+		/* at the SOURCE: aspiration is turbulence at the glottis and goes through the same
+		   tract. Added to the output instead it would be room noise, which is a different
+		   signal and a much easier one to tell from a vowel. */
+		x += noise() * asp;
+		float y = reso_run(&r5, reso_run(&r4, reso_run(&r3, reso_run(&r2, reso_run(&r1, x)))));
+		out[i] = y - prev; /* radiation */
+		prev = y;
+	}
+	normalise(out, n);
+}
+
+/* A fricative: noise through one broad resonator, and the SAME radiation term as the vowel.
+   Applying it to one and not the other would be the separation being measured. `buzz` > 0 adds a
+   voicing bar underneath, which is what makes /v/ a /v/ and not an /f/. */
+static void synth_fric(float *out, size_t n, float hz, float bw, float buzz)
+{
+	struct reso r, vb;
+	reso_set(&r, hz, bw);
+	reso_set(&vb, 250.0f, 60.0f);
+	float phase = 0.0f, step = buzz / (float)SR, prev = 0.0f;
+	for (size_t i = 0; i < n; i++) {
+		float v = reso_run(&r, noise());
+		if (buzz > 0.0f) {
+			phase += step;
+			float pulse = 0.0f;
+			if (phase >= 1.0f) {
+				phase -= 1.0f;
+				pulse = 1.0f;
+			}
+			v += reso_run(&vb, pulse) * 0.5f;
+		}
+		out[i] = v - prev;
+		prev = v;
+	}
+	normalise(out, n);
 }
 
 /* Runs a buffer through the analysis and returns the last frame it produced. */
@@ -171,6 +270,104 @@ int main(void)
 	synth_vowel(buf, SR, 220.0f, 240, 2400, 2900);
 	CHECK(last_frame(buf, SR, &f));
 	CHECK(ff_viseme_classify(&f) == FF_VIS_B);
+
+	/* ---- frication: a hiss is not a vowel ---- */
+
+	/* Both sides of the threshold, as FEATURE values rather than shapes. The shape alone
+	   cannot referee this: "ee" is B, and a hiss is now B, so a check that only looked at the
+	   shape would pass with the feature reading anything at all. */
+	static const struct {
+		const char *name;
+		float hz, bw, buzz;
+	} FR[] = {
+		{"s, peak 6.5k", 6500.0f, 4000.0f, 0.0f},
+		{"s, peak 5.2k", 5200.0f, 3000.0f, 0.0f},
+		{"sh, peak 3.2k", 3200.0f, 2500.0f, 0.0f},
+		{"sh, dark 2.6k", 2600.0f, 2000.0f, 0.0f},
+		{"f, flat and broad", 4500.0f, 7000.0f, 0.0f},
+		{"v, voiced", 4500.0f, 7000.0f, 110.0f},
+	};
+	float worst_fric = 1.0f;
+	for (size_t k = 0; k < sizeof FR / sizeof FR[0]; k++) {
+		synth_fric(buf, SR, FR[k].hz, FR[k].bw, FR[k].buzz);
+		CHECK(last_frame(buf, SR, &f));
+		float fr = ff_viseme_frication(&f);
+		if (fr < worst_fric)
+			worst_fric = fr;
+		CHECK(fr > FF_VIS_FRICATION);
+		/* the teeth-together shape, never the open jaw it drew before this existed */
+		enum ff_viseme got = ff_viseme_classify(&f);
+		CHECK(got == FF_VIS_B);
+		if (got != FF_VIS_B)
+			fprintf(stderr, "      (%s: frication %.4f gave %s, wanted B)\n", FR[k].name, fr,
+				ff_viseme_name(got));
+	}
+
+	/* And the other side: a vowel stays under the threshold however breathy it is. The
+	   aspiration sweep is the point -- a clean vowel is easy, and the case that would break
+	   this is a breathy or bright voice, not a studio one. */
+	static const struct {
+		float f1, f2, f3;
+	} VF[] = {{240, 2400, 2900}, {390, 2300, 3000}, {850, 1610, 2600}, {360, 640, 2400}, {250, 595, 2400}};
+	static const float ASP[] = {0.0f, 0.05f, 0.1f, 0.2f, 0.32f, 0.5f}; /* clean to about -6 dB */
+	float worst_vowel = 0.0f;
+	for (size_t k = 0; k < sizeof VF / sizeof VF[0]; k++)
+		for (size_t a = 0; a < sizeof ASP / sizeof ASP[0]; a++) {
+			synth_vowel5(buf, SR, 110.0f, VF[k].f1, VF[k].f2, VF[k].f3, ASP[a]);
+			CHECK(last_frame(buf, SR, &f));
+			float fr = ff_viseme_frication(&f);
+			if (fr > worst_vowel)
+				worst_vowel = fr;
+			CHECK(fr < FF_VIS_FRICATION);
+			/* "ae" is the one vowel that keeps its SHAPE right across this sweep, so it
+			   is the one asserted on. A feature check alone cannot catch frication
+			   stealing a vowel, because "ee" is legitimately B either way. The others
+			   move under the five-formant model and that is a finding, not a test: see
+			   the note on the vowel thresholds in ff-viseme.h. */
+			if (VF[k].f1 == 850)
+				CHECK(ff_viseme_classify(&f) == FF_VIS_D);
+		}
+
+	/* The margin itself, so a threshold creeping toward either family fails here rather than
+	   in somebody's stream. Both numbers are printed because a gate that narrows quietly is
+	   the one nobody notices. */
+	fprintf(stderr, "      frication: vowels reach %.4f, fricatives fall to %.4f, threshold %.2f\n",
+		worst_vowel, worst_fric, FF_VIS_FRICATION);
+	CHECK(worst_vowel < FF_VIS_FRICATION * 0.6f);
+	CHECK(worst_fric > FF_VIS_FRICATION * 1.6f);
+
+	/* LEVEL. Frication looks like a share of the spectrum and is not one -- the bands are
+	   dB-mapped with a -60 dB floor, so it moves with gain. This was written first as an
+	   invariance check, which failed immediately and was right to: see band_sum() in
+	   ff-viseme.c. What actually has to hold is weaker and is what is checked here -- the drift
+	   pushes both families AWAY from the threshold, so turning a signal down never turns a
+	   vowel into a hiss.
+
+	   Quarter level, not a tenth: a dark /sh/ does fall through at a tenth (0.275 measured,
+	   under the threshold), and that limit is written down rather than tested around. At a
+	   tenth of this level the frame is under the default noise gate and the mouth is shut. */
+	float quiet_v = 0.0f, quiet_f = 1.0f;
+	for (float scale = 1.0f; scale > 0.2f; scale *= 0.5f) {
+		synth_fric(buf, SR, 5200.0f, 3000.0f, 0.0f);
+		for (size_t i = 0; i < SR; i++)
+			buf[i] *= scale;
+		CHECK(last_frame(buf, SR, &f));
+		float fr = ff_viseme_frication(&f);
+		if (fr < quiet_f)
+			quiet_f = fr;
+		CHECK(fr > FF_VIS_FRICATION);
+
+		synth_vowel5(buf, SR, 110.0f, 240, 2400, 2900, 0.2f);
+		for (size_t i = 0; i < SR; i++)
+			buf[i] *= scale;
+		CHECK(last_frame(buf, SR, &f));
+		fr = ff_viseme_frication(&f);
+		if (fr > quiet_v)
+			quiet_v = fr;
+		CHECK(fr < FF_VIS_FRICATION);
+	}
+	fprintf(stderr, "      frication down to quarter level: vowel <= %.4f, /s/ >= %.4f\n", quiet_v,
+		quiet_f);
 
 	/* silence is rest, not a guess */
 	memset(buf, 0, sizeof buf);

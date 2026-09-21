@@ -41,8 +41,27 @@ const char *ff_viseme_name(enum ff_viseme v)
 	return N[v];
 }
 
-/* Total energy between two frequencies, by summing the bands whose centres fall inside. */
-static float band_energy(const struct ff_frame *f, float lo_hz, float hi_hz)
+/* Sums the bands whose centres fall between two frequencies.
+ *
+ * NOT energy, whatever the shape of this function suggests. ff-analysis maps each band through
+ * db_to_unit(): 0..1 across a 60 dB window, everything quieter than -60 dB clamped to 0. So this
+ * is a sum of loudness-ish numbers, and every ratio built from it -- openness, frontness,
+ * frication -- drifts with the overall level instead of being the share of the spectrum it
+ * looks like. Measured, frication of one signal at five gains:
+ *
+ *     /s/ at 5.2 kHz    0.636  0.729  0.795  0.982  1.000   <- rises: its quiet LOW bands floor
+ *     "ee"              0.061  0.042  0.014  0.000  0.000   <- falls: its quiet HIGH bands floor
+ *                       x1.0   x0.5   x0.25  x0.1   x0.05
+ *
+ * Both move AWAY from the threshold between them, which is why this is survivable rather than a
+ * defect: quiet makes a fricative look more like a fricative and a vowel less like one. The
+ * exception is a dark /sh/, which falls to 0.275 at a tenth of level and is missed -- but a tenth
+ * of this level is under the default noise gate, so the mouth is closed there anyway.
+ *
+ * The principled fix is to undo db_to_unit and work in linear amplitude, which would make these
+ * true spectral shares. It is not done here because every threshold in this file was set in this
+ * domain, and re-setting them needs a corpus this repo does not have. */
+static float band_sum(const struct ff_frame *f, float lo_hz, float hi_hz)
 {
 	float sum = 0.0f;
 	for (int i = 0; i < FF_BANDS; i++) {
@@ -53,27 +72,75 @@ static float band_energy(const struct ff_frame *f, float lo_hz, float hi_hz)
 	return sum;
 }
 
+/* The one place the 3.5 kHz line between "vowel" and "hiss" is drawn. It was written twice --
+   once here and once in ff_viseme_classify -- and a mutation that moved it in the classifier left
+   every test green, because the tests measure the feature and the feature had its own copy. */
+struct band_split {
+	float voiced; /* 180 Hz - 3.5 kHz: formants, the shape of the mouth */
+	float high;   /* 3.5 kHz - 16 kHz: frication, sibilance, room */
+};
+
+static struct band_split split_bands(const struct ff_frame *f)
+{
+	struct band_split s;
+	s.voiced = band_sum(f, 180.0f, 3500.0f);
+	s.high = band_sum(f, 3500.0f, 16000.0f);
+	return s;
+}
+
+float ff_viseme_frication(const struct ff_frame *f)
+{
+	struct band_split s = split_bands(f);
+	float total = s.voiced + s.high;
+	if (total <= 0.0001f)
+		return 0.0f;
+	return s.high / total;
+}
+
 enum ff_viseme ff_viseme_classify(const struct ff_frame *f)
 {
 	/* Voiced energy only. Everything above ~3.5 kHz is sibilance and room noise, and below
 	   ~180 Hz is the fundamental and whatever the desk is resting on; neither says anything
 	   about the shape of the mouth. */
-	float voiced = band_energy(f, 180.0f, 3500.0f);
+	struct band_split sp = split_bands(f);
+	float voiced = sp.voiced, high = sp.high;
+	if (voiced + high <= 0.0001f)
+		return FF_VIS_X;
+
+	/* FRICATION, before any of the vowel reasoning, because the two ratios below are
+	   MEANINGLESS on noise. An "sss" puts almost nothing in F1's range, so openness becomes
+	   the quotient of two near-nothings and lands wherever the noise floor happens to put it.
+	   Measured before this existed: synthesised /s/, /sh/ and /f/ every one came out as C, a
+	   half-open jaw. Every sibilant in every sentence opened the mouth, and since English runs
+	   somewhere near a fifth fricative by time, that is a lot of a conversation spent with the
+	   jaw down on a hiss.
+	 *
+	 * The teeth-together B for all of it, not G. G is the F/V shape and telling /f/ from /s/
+	 * is an amplitude and peak-sharpness judgement that this cannot make from 64 log bands --
+	 * see ff-viseme.h. B is the honest answer: right for the sibilants and the stop releases,
+	 * and closer to an /f/ than the open jaw it used to draw.
+	 *
+	 * ORDER MATTERS the other way too: the check above used to ask only about 180-3500 Hz, so
+	 * a bright /s/ with little below 3.5 kHz fell out as X, rest. Rest is what the mouth does
+	 * when the speaker has STOPPED. */
+	if (high > FF_VIS_FRICATION * (voiced + high))
+		return FF_VIS_B;
+
 	if (voiced <= 0.0001f)
 		return FF_VIS_X;
 
 	/* JAW: where the energy sits inside F1's range. The low half of the range is a closed jaw
 	   ("ee", "oo" at 240-250 Hz), the top is wide open ("ah" at 850). A ratio rather than a
 	   peak, because a peak needs to be told which formant it found and a ratio does not. */
-	float f1_low = band_energy(f, 180.0f, 450.0f);
-	float f1_high = band_energy(f, 450.0f, 1100.0f);
+	float f1_low = band_sum(f, 180.0f, 450.0f);
+	float f1_high = band_sum(f, 450.0f, 1100.0f);
 	float openness = f1_high / (f1_low + f1_high + 1e-6f);
 
 	/* FRONT vs BACK: F2 is up at 2300-2400 Hz for front vowels and down at ~600 Hz for back,
 	   rounded ones. The gap is enormous, which is what makes this robust at 10% band spacing.
 	   The low window starts above F1's range so a wide-open "ah" does not read as rounded. */
-	float front = band_energy(f, 1800.0f, 3000.0f);
-	float back = band_energy(f, 550.0f, 1300.0f);
+	float front = band_sum(f, 1800.0f, 3000.0f);
+	float back = band_sum(f, 550.0f, 1300.0f);
 	float frontness = front / (front + back + 1e-6f);
 
 	/* The boundaries below are MEASURED, not chosen: each vowel was synthesised at its

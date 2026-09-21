@@ -24,14 +24,15 @@ APPEARS is unproven here; what is proven is that the settings reach the classifi
 
 ARMED by mutation -- every number below was measured by running it, not predicted:
 
-    control (everything wired up)             7/7 passed
-    mouth stuck on the first cell             2/7   -- the survivors are "silence draws A" and the
+    control (everything wired up)             8/8 passed
+    mouth stuck on the first cell             2/8   -- the survivors are "silence draws A" and the
                                                        gate check, which both want A anyway:
                                                        exactly the false pass this file is for
-    rest folds to the wrong shape             5/7
-    mouth settings never reach the engine     5/7
-    hold wired to the release field           6/7
-    uses_mouth() forced false                 7/7   -- UNARMED, as stated above
+    rest folds to the wrong shape             6/8
+    mouth settings never reach the engine     6/8
+    hold wired to the release field           7/8
+    frication branch removed                  7/8   -- the hiss goes back to drawing an open jaw
+    uses_mouth() forced false                 8/8   -- UNARMED, as stated above
 
     tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
 """
@@ -104,6 +105,30 @@ def render_vowel(f1: float, f2: float, f3: float, secs: float = 6.0, f0: float =
             y1[k] = y
             x = y
         out[i] = x
+    mx = max(abs(v) for v in out) or 1.0
+    return [v / mx * 0.3 for v in out]
+
+
+def render_fricative(hz: float, bw: float, secs: float = 6.0):
+    """Noise through one broad resonator, then lip radiation -- an "sss".
+
+    The radiation term is the same one the vowel gets. Applying it to one and not the other
+    would BE the difference the classifier is being asked to find.
+    """
+    n = int(SR * secs)
+    r = math.exp(-math.pi * bw / SR)
+    a1 = 2.0 * r * math.cos(2.0 * math.pi * hz / SR)
+    a2 = -r * r
+    y1 = y2 = prev = 0.0
+    seed = 1
+    out = [0.0] * n
+    for i in range(n):
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        x = (seed >> 8) / 8388608.0 - 1.0
+        y = x + a1 * y1 + a2 * y2
+        y2, y1 = y1, y
+        out[i] = y - prev
+        prev = y
     mx = max(abs(v) for v in out) or 1.0
     return [v / mx * 0.3 for v in out]
 
@@ -189,7 +214,7 @@ async def drive(pack_id: str, wavs: dict, scratch: Path):
         hue, px = dominant_hue(await shoot(c, "mouth"))
         seen["silence"] = (nearest_shape(hue), hue, px)
 
-        for vowel in ("ee", "ah", "oo"):
+        for vowel in ("ee", "ah", "oo", "hiss"):
             await c.request("SetInputSettings", {"inputName": "voice", "inputSettings": {
                 "local_file": str(wavs[vowel])}})
             await c.request("TriggerMediaInputAction", {
@@ -262,6 +287,11 @@ def main() -> int:
             wavs[name] = scratch / f"{name}.wav"
             write_wav(wavs[name], render_vowel(f1, f2, f3))
 
+        # A hiss. Nothing about it is a vowel, and before the classifier looked for frication
+        # it drew C -- a half-open jaw on every "s" in every sentence.
+        wavs["hiss"] = scratch / "hiss.wav"
+        write_wav(wavs["hiss"], render_fricative(5200.0, 3000.0))
+
         # "ee" running straight into "oo" with NO gap between them. The gap is the point: a
         # silence long enough to reach the mouth resets it to rest, and coming out of rest is
         # deliberately immediate, which bypasses the hold entirely. Switching files to change
@@ -292,7 +322,7 @@ def main() -> int:
         shutil.rmtree(cfg, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
-    want = {"silence": "A", "ee": "B", "ah": "D", "oo": "F"}
+    want = {"silence": "A", "ee": "B", "ah": "D", "oo": "F", "hiss": "B"}
     for key, expect in want.items():
         got, hue, px = seen.get(key, (None, None, 0))
         check(f"{key} draws shape {expect}", got == expect,
