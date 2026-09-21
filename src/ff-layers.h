@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "ff-frame.h"
+#include "ff-viseme.h"
 #include "ff-pack.h"
 
 /* A gradient is a texture2d the SHADER never loads: the engine bakes it from colour stops the
@@ -83,6 +84,12 @@ struct ff_renderer {
 	                       picks a different file and only the renderer is in scope */
 	uint32_t rng; /* xorshift32 state; per renderer so two instances do not move in lockstep */
 	float rand_instance;
+	/* The mouth. Kept per renderer rather than per source because the state it carries -- which
+	   shape is up and how long it has been up -- belongs to whatever is being drawn, and two
+	   sources on the same audio should each hold their own. Updated once per render, so every
+	   layer in a preset sees the same shape on the same frame. */
+	struct ff_viseme_state viseme;
+	struct ff_viseme_params viseme_params;
 	int64_t frames_rendered;
 };
 

@@ -15,7 +15,7 @@
 static const char *BUILTINS[] = {"ViewProj", "image",    "uv_size",     "time",       "frame_dt",      "level",
 				 "peak",     "bass",     "mid",         "treble",     "beat",          "beat_count",
 				 "spectrum", "waveform", "layer_index", "rand_frame", "rand_instance",
-				 "progress",  NULL};
+				 "progress", "viseme",  "mouth_open", NULL};
 
 static bool is_builtin(const char *n)
 {
@@ -571,6 +571,8 @@ struct ff_renderer *ff_renderer_create(void)
 	r->pong = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 	r->spectrum_tex = gs_texture_create(FF_BANDS, 1, GS_R32F, 1, NULL, GS_DYNAMIC);
 	r->wave_tex = gs_texture_create(FF_WAVE, 1, GS_R32F, 1, NULL, GS_DYNAMIC);
+	ff_viseme_init(&r->viseme);
+	ff_viseme_defaults(&r->viseme_params);
 	const uint8_t zero[4] = {0, 0, 0, 0};
 	const uint8_t *zero_p = zero;
 	r->blank = gs_texture_create(1, 1, GS_RGBA, 1, &zero_p, 0);
@@ -665,6 +667,15 @@ static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct
 			   this is 0 -- neither has a beginning and an end -- so a shader that reads
 			   it there gets a defined value rather than a stale one. */
 			gs_effect_set_float(p->ep, progress);
+		} else if (!strcmp(n, "viseme")) {
+			/* Which mouth shape to draw, 0-8, as a float so a shader can use it as a
+			   sprite-strip index without an integer uniform. See ff-viseme.h for what
+			   each number means -- the order is the one the art is drawn in. */
+			gs_effect_set_float(p->ep, (float)r->viseme.current);
+		} else if (!strcmp(n, "mouth_open")) {
+			/* How open, 0..1, smoothed. For a rig that wants to stretch one mouth
+			   rather than swap between drawn shapes, and for blending between them. */
+			gs_effect_set_float(p->ep, r->viseme.openness);
 		} else if (!strcmp(n, "rand_instance")) {
 			gs_effect_set_float(p->ep, r->rand_instance);
 		}
@@ -798,6 +809,9 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 	r->height = h;
 	r->time += dt;
 	r->frames_rendered++;
+	/* Once per rendered frame, before any layer reads it, so every layer in a preset agrees
+	   about which shape the mouth is making. dt is in seconds here and milliseconds there. */
+	ff_viseme_update(&r->viseme, f, dt * 1000.0f, &r->viseme_params);
 	if (r->spectrum_tex)
 		gs_texture_set_image(r->spectrum_tex, (const uint8_t *)f->bands, FF_BANDS * sizeof(float), false);
 	if (r->wave_tex)

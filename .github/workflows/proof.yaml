@@ -96,6 +96,17 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: The mouth draws the shape the audio asked for
+        # Every layer under this is tested alone -- the classifier against synthesised vowels, the
+        # band layout, the hold timing. None of it shows that the number reaches the shader or
+        # that the shader picks the cell the number names, and a mouth stuck on one shape renders
+        # perfectly well. The placeholder strip gives each shape its own hue so a screenshot can
+        # say WHICH cell was drawn.
+        if: hashFiles('../foxfire/packs/mouth/pack.json') != ''
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
