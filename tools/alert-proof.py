@@ -168,7 +168,7 @@ async def drive(sound: Path, logdir: Path):
         await c.request("CreateInput", {
             "sceneName": "al", "inputName": "alert", "inputKind": "foxfire_alert",
             "inputSettings": {"width": W, "height": H, "duration": 4.0,
-                              "template": "{name} followed!", "sound": str(sound),
+                              "k.follow.template": "{name} followed!", "sound": str(sound),
                               "font_size": 64}})
         await asyncio.sleep(1.5)
 
@@ -183,6 +183,11 @@ async def drive(sound: Path, logdir: Path):
         n_lit = ink(lit)
         check("firing draws ink", n_lit > 200, f"{n_lit} pixels (idle was {idle})")
 
+        # Per KIND, because there is no shared message box: every kind's default is a complete
+        # sentence, so a shared one would never be consulted unless a streamer blanked a kind's
+        # first -- a control that appears to work and does nothing. This check found that: it
+        # went on setting the old shared key and read the same width twice.
+        #
         # The name IS the ink: a different template must change the picture. Measured as the
         # WIDTH of the drawn text, not as a pixel count -- a longer message at 64px overflows an
         # 800px canvas, gets clipped to the same visible area, and lands on a nearly identical
@@ -200,7 +205,7 @@ async def drive(sound: Path, logdir: Path):
         w_short = ink_width(await shoot(c))
         await reset(c)
         await c.request("SetInputSettings", {"inputName": "alert",
-                                             "inputSettings": {"template": "{name} followed and here is a much longer line"}})
+                                             "inputSettings": {"k.follow.template": "{name} followed and here is a much longer line"}})
         await asyncio.sleep(0.8)
         await fire(c)
         await asyncio.sleep(1.2)
@@ -213,7 +218,7 @@ async def drive(sound: Path, logdir: Path):
         # back to the short one, then let it run out
         await reset(c)
         await c.request("SetInputSettings", {"inputName": "alert",
-                                             "inputSettings": {"template": "{name} followed!",
+                                             "inputSettings": {"k.follow.template": "{name} followed!",
                                                                "font_size": 64}})
         await asyncio.sleep(0.8)
         await fire(c)
@@ -223,9 +228,60 @@ async def drive(sound: Path, logdir: Path):
               f"{n_after} pixels 5.5s after firing a 4.0s alert")
         await check_queue(c)
         await check_art(c)
+        await check_kinds(c)
     finally:
         await ws.close()
     return logdir
+
+
+async def check_kinds(c):
+    """A follow, a sub and a raid must not look and sound the same.
+
+    The parity study lists this twice -- core event triggers, and tier variations -- and it is the
+    difference between an alert system and a text box. Three things are checked, each through the
+    real trigger: the kind's own message is used, a kind that is switched off produces NOTHING,
+    and switching it back on works (an off switch that cannot be undone is worse than none).
+    """
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {
+        "duration": 3.0, "font_size": 32, "test_kind": "raid",
+        "k.raid.enabled": True, "k.raid.template": "{name} raided with {amount}!",
+        "k.follow.enabled": True, "k.follow.template": "{name} followed!"}})
+    await asyncio.sleep(0.8)
+    await fire(c)
+    await asyncio.sleep(1.2)
+    raid_w = ink_width(await shoot(c))
+
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {"test_kind": "follow"}})
+    await asyncio.sleep(0.8)
+    await fire(c)
+    await asyncio.sleep(1.2)
+    follow_w = ink_width(await shoot(c))
+    check("each kind draws its own message",
+          raid_w > 0 and follow_w > 0 and abs(raid_w - follow_w) > 40,
+          f"raid message is {raid_w}px wide, follow is {follow_w}px -- different templates, so "
+          f"the same width would mean one of them was ignored")
+
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert",
+                                         "inputSettings": {"test_kind": "raid", "k.raid.enabled": False}})
+    await asyncio.sleep(0.8)
+    await fire(c)
+    await asyncio.sleep(1.5)
+    off = ink(await shoot(c))
+    check("a kind that is switched off produces nothing at all", off == 0,
+          f"{off} pixels after firing a raid alert with raids switched off")
+
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {"k.raid.enabled": True}})
+    await asyncio.sleep(0.8)
+    await fire(c)
+    await asyncio.sleep(1.2)
+    back = ink(await shoot(c))
+    check("and switching it back on works", back > 200,
+          f"{back} pixels -- an off switch that cannot be undone is worse than no off switch, and "
+          f"the event fired while it was off must NOT come back either (it was refused, not queued)")
+    await reset(c)
 
 
 async def check_art(c):
@@ -240,7 +296,7 @@ async def check_art(c):
     await reset(c)
     await c.request("SetInputSettings", {"inputName": "alert",
                                          "inputSettings": {"pack": "alertproof", "preset": "card",
-                                                           "duration": 6.0, "template": "{name}!"}})
+                                                           "duration": 6.0, "k.follow.template": "{name}!"}})
     await asyncio.sleep(1.0)
 
     idle = ink(await shoot(c))
@@ -282,7 +338,7 @@ async def check_queue(c):
     await reset(c)
     await c.request("SetInputSettings", {"inputName": "alert",
                                          "inputSettings": {"duration": 2.0, "paused": False,
-                                                           "template": "{name} followed!",
+                                                           "k.follow.template": "{name} followed!",
                                                            "font_size": 48}})
     await asyncio.sleep(0.8)
 

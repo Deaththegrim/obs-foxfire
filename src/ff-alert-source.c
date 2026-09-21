@@ -63,12 +63,31 @@ struct ff_alert_source {
 	   competitor offers. */
 	struct ff_renderer *renderer;
 	struct ff_pack_list packs;
-	char pack_id[64], preset_id[64];
-	bool art_dirty; /* the pack or preset changed; reload on the next render, in the graphics context */
+	char pack_id[64];
+	char loaded_preset[64]; /* what the renderer currently holds */
+	char want_preset[64];   /* what the alert on screen asked for */
+	bool art_dirty;         /* reload on the next render, where the graphics context is held */
+
+	/* Per kind: a follow, a sub and a raid should not look and sound the same. The parity
+	   study lists this twice -- as core event triggers and again as tier variations -- and it
+	   is the difference between an alert system and a text box.
+
+	   One renderer, reloaded when the preset actually changes, rather than one renderer per
+	   kind. Seven renderers would each hold a ping/pong pair at the source's size, which at
+	   1080p is over a hundred megabytes to avoid a shader compile that happens at the exact
+	   moment an alert is fading in anyway. Consecutive alerts of one kind -- a raid, which is
+	   the case that matters -- cost nothing either way. */
+	struct {
+		bool enabled;
+		char template_[512];
+		char preset[64];
+		char sound[512];
+	} kinds[FF_ALERT_KIND_COUNT];
 
 	struct ff_alert_text style;
-	char template_[512]; /* the message, with {name} standing in for the sender */
-	char sound_path[512];
+	char preset_fallback[64]; /* art used by any kind that has none of its own */
+	char sound_fallback[512];
+	char sound_path[512];     /* what the sound child currently holds */
 	float duration; /* seconds an alert stays on screen */
 
 	/* Pending alerts. Events will arrive on a network thread once the feed is real, and the
@@ -76,7 +95,8 @@ struct ff_alert_source {
 	   thread appears -- a queue that races is a queue that drops the alert nobody can reproduce. */
 	struct ff_alert_queue queue;
 	pthread_mutex_t qlock;
-	bool paused; /* stops STARTING new alerts; whatever is on screen still finishes */
+	bool paused;                 /* stops STARTING new alerts; whatever is on screen still finishes */
+	enum ff_alert_kind test_kind; /* which kind the test button fires */
 
 	/* Playback state, written and read on the video thread only (tick and render both run
 	   there), so it needs no lock of its own. */
@@ -153,8 +173,16 @@ static void render_template(const struct ff_alert_source *a, const struct ff_ale
 	snprintf(num, sizeof num, "%lld", (long long)e->amount);
 	snprintf(tier, sizeof tier, "%d", e->tier);
 
+	/* The kind's own message. There is deliberately NO shared message to fall back to: every
+	   kind's default is a complete sentence ("{name} subscribed!", "{name} cheered {amount}
+	   bits!"), so a shared box would never be consulted unless a streamer first blanked a
+	   kind's -- a control that appears to work and does nothing. Art and sound DO have a
+	   shared fallback, because those are genuinely often the same for every kind; the words
+	   never are. */
+	const char *tmpl = a->kinds[e->kind].template_;
+
 	struct dstr t = {0};
-	dstr_copy(&t, a->template_[0] ? a->template_ : "{name} followed!");
+	dstr_copy(&t, tmpl[0] ? tmpl : "{name}!");
 	dstr_replace(&t, "{name}", safe_name ? safe_name : "");
 	dstr_replace(&t, "{message}", safe_msg ? safe_msg : "");
 	dstr_replace(&t, "{amount}", num);
@@ -186,6 +214,18 @@ static void start_alert(struct ff_alert_source *a, const struct ff_alert_event *
 		ff_alert_text_apply(a->text, &t);
 	}
 
+	/* the kind's art, then the kind's sound, each falling back to the shared setting */
+	const char *preset = a->kinds[e->kind].preset[0] ? a->kinds[e->kind].preset : a->preset_fallback;
+	if (strcmp(preset, a->want_preset)) {
+		snprintf(a->want_preset, sizeof a->want_preset, "%s", preset);
+		a->art_dirty = true;
+	}
+	const char *snd = a->kinds[e->kind].sound[0] ? a->kinds[e->kind].sound : a->sound_fallback;
+	if (strcmp(snd, a->sound_path)) {
+		snprintf(a->sound_path, sizeof a->sound_path, "%s", snd);
+		ensure_sound_child(a);
+	}
+
 	ensure_sound_child(a);
 	if (a->sound)
 		obs_source_media_restart(a->sound); /* from the top, every time */
@@ -200,6 +240,18 @@ void ff_alert_enqueue(void *data, const struct ff_alert_event *e)
 	struct ff_alert_source *a = data;
 	if (!a || !e)
 		return;
+	if (e->kind < 0 || e->kind >= FF_ALERT_KIND_COUNT) {
+		obs_log(LOG_WARNING, "alerts: ignoring an event of unknown kind %d", (int)e->kind);
+		return;
+	}
+	if (!a->kinds[e->kind].enabled) {
+		/* Turned off deliberately, so this is not a warning -- but it IS logged, because
+		   "my follow alerts stopped working" and "I turned follow alerts off" look identical
+		   from the outside and the log is the only place they differ. */
+		obs_log(LOG_INFO, "alerts: '%s' alerts are switched off; ignoring one for '%s'",
+			ff_alert_kind_id(e->kind), e->name);
+		return;
+	}
 	pthread_mutex_lock(&a->qlock);
 	bool ok = ff_alert_queue_push(&a->queue, e);
 	uint64_t dropped = a->queue.dropped;
@@ -228,18 +280,30 @@ static void alert_update(void *d, obs_data_t *s)
 {
 	struct ff_alert_source *a = d;
 	const char *pk = obs_data_get_string(s, "pack");
-	const char *pr = obs_data_get_string(s, "preset");
-	if (strcmp(pk, a->pack_id) || strcmp(pr, a->preset_id)) {
+	if (strcmp(pk, a->pack_id)) {
 		snprintf(a->pack_id, sizeof a->pack_id, "%s", pk);
-		snprintf(a->preset_id, sizeof a->preset_id, "%s", pr);
 		/* Deferred: loading an effect needs the graphics context, and update() is called
 		   from the UI thread. The visualizer enters the context here; this source does not
 		   have to, because it already has a per-frame hook that is inside it. */
 		a->art_dirty = true;
 	}
+	snprintf(a->preset_fallback, sizeof a->preset_fallback, "%s", obs_data_get_string(s, "preset"));
+	snprintf(a->sound_fallback, sizeof a->sound_fallback, "%s", obs_data_get_string(s, "sound"));
+	for (int k = 0; k < FF_ALERT_KIND_COUNT; k++) {
+		char key[96];
+		const char *id = ff_alert_kind_id((enum ff_alert_kind)k);
+		snprintf(key, sizeof key, "k.%s.enabled", id);
+		a->kinds[k].enabled = obs_data_get_bool(s, key);
+		snprintf(key, sizeof key, "k.%s.template", id);
+		snprintf(a->kinds[k].template_, sizeof a->kinds[k].template_, "%s",
+			 obs_data_get_string(s, key));
+		snprintf(key, sizeof key, "k.%s.preset", id);
+		snprintf(a->kinds[k].preset, sizeof a->kinds[k].preset, "%s", obs_data_get_string(s, key));
+		snprintf(key, sizeof key, "k.%s.sound", id);
+		snprintf(a->kinds[k].sound, sizeof a->kinds[k].sound, "%s", obs_data_get_string(s, key));
+	}
 	a->width = (uint32_t)obs_data_get_int(s, "width");
 	a->height = (uint32_t)obs_data_get_int(s, "height");
-	snprintf(a->template_, sizeof a->template_, "%s", obs_data_get_string(s, "template"));
 	snprintf(a->style.face, sizeof a->style.face, "%s", obs_data_get_string(s, "font_face"));
 	a->style.size = (int)obs_data_get_int(s, "font_size");
 	a->style.colour = (uint32_t)obs_data_get_int(s, "colour");
@@ -248,6 +312,11 @@ static void alert_update(void *d, obs_data_t *s)
 	a->style.shadow = obs_data_get_bool(s, "shadow");
 	a->duration = (float)obs_data_get_double(s, "duration");
 	a->paused = obs_data_get_bool(s, "paused");
+	enum ff_alert_kind tk;
+	/* an unrecognised id leaves the previous choice alone rather than snapping to follow --
+	   ff_alert_kind_parse refuses instead of defaulting for exactly this reason */
+	if (ff_alert_kind_parse(obs_data_get_string(s, "test_kind"), &tk))
+		a->test_kind = tk;
 	snprintf(a->sound_path, sizeof a->sound_path, "%s", obs_data_get_string(s, "sound"));
 	ensure_sound_child(a);
 }
@@ -285,17 +354,45 @@ static void alert_destroy(void *d)
 	bfree(a);
 }
 
+/* What each kind says by default. Every one is a complete sentence a streamer could leave alone,
+   because a default of "" would draw an empty card for an event that fired correctly. */
+static const struct {
+	const char *id, *tmpl;
+} KIND_DEFAULTS[FF_ALERT_KIND_COUNT] = {
+	{"follow", "{name} followed!"},
+	{"sub", "{name} subscribed!"},
+	{"resub", "{name} resubscribed for {amount} months!"},
+	{"gift", "{name} gifted {amount} subs!"},
+	{"bits", "{name} cheered {amount} bits!"},
+	{"raid", "{name} raided with {amount}!"},
+	{"redeem", "{name} redeemed {message}"},
+};
+
 static void alert_defaults(obs_data_t *s)
 {
+	for (int k = 0; k < FF_ALERT_KIND_COUNT; k++) {
+		char key[96];
+		const char *id = ff_alert_kind_id((enum ff_alert_kind)k);
+		snprintf(key, sizeof key, "k.%s.enabled", id);
+		obs_data_set_default_bool(s, key, true); /* all on: a new install works out of the box */
+		snprintf(key, sizeof key, "k.%s.template", id);
+		/* looked up by id rather than by index, so a reordering of the enum cannot silently
+		   give "raid" the bits message */
+		const char *tmpl = "{name}!";
+		for (int i = 0; i < FF_ALERT_KIND_COUNT; i++)
+			if (KIND_DEFAULTS[i].id && !strcmp(KIND_DEFAULTS[i].id, id))
+				tmpl = KIND_DEFAULTS[i].tmpl;
+		obs_data_set_default_string(s, key, tmpl);
+	}
 	obs_data_set_default_int(s, "width", 800);
 	obs_data_set_default_int(s, "height", 240);
-	obs_data_set_default_string(s, "template", "{name} followed!");
 	obs_data_set_default_string(s, "font_face", "Sans Serif");
 	obs_data_set_default_int(s, "font_size", 48);
 	obs_data_set_default_int(s, "colour", 0xFFFFFFFF);
 	obs_data_set_default_bool(s, "outline", true);
 	obs_data_set_default_bool(s, "shadow", true);
 	obs_data_set_default_double(s, "duration", 5.0);
+	obs_data_set_default_string(s, "test_kind", "follow");
 }
 
 static bool on_test_fire(obs_properties_t *props, obs_property_t *p, void *data)
@@ -305,8 +402,14 @@ static bool on_test_fire(obs_properties_t *props, obs_property_t *p, void *data)
 	/* A name with a right-to-left override and a newline in it, on purpose. The test button is
 	   the one place a viewer can see what the sanitiser does, and a button that fires a tidy
 	   name proves only that tidy names work. */
+	struct ff_alert_source *a = data;
 	struct ff_alert_event e = {0};
-	e.kind = FF_ALERT_FOLLOW;
+	e.kind = a->test_kind;
+	/* plausible numbers, so {amount} and {tier} in a template are visible in the test rather
+	   than rendering as "0" and sending someone looking for a bug */
+	e.amount = 42;
+	e.tier = 1;
+	snprintf(e.message, sizeof e.message, "a message from the test button");
 	snprintf(e.name, sizeof e.name, "Test\xe2\x80\xaeViewer\n42");
 	ff_alert_enqueue(data, &e);
 	return false;
@@ -369,7 +472,6 @@ static obs_properties_t *alert_props(void *d)
 
 	obs_properties_add_int(p, "width", obs_module_text("Foxfire.Width"), 16, 8192, 1);
 	obs_properties_add_int(p, "height", obs_module_text("Foxfire.Height"), 16, 8192, 1);
-	obs_properties_add_text(p, "template", obs_module_text("Foxfire.Alert.Template"), OBS_TEXT_DEFAULT);
 	obs_properties_add_font(p, "font_face", obs_module_text("Foxfire.Alert.Font"));
 	obs_properties_add_int_slider(p, "font_size", obs_module_text("Foxfire.Alert.FontSize"), 8, 256, 1);
 	obs_properties_add_color_alpha(p, "colour", obs_module_text("Foxfire.Alert.Colour"));
@@ -379,7 +481,50 @@ static obs_properties_t *alert_props(void *d)
 				"Audio (*.wav *.mp3 *.ogg *.flac *.m4a);;All files (*.*)", NULL);
 	obs_properties_add_float_slider(p, "duration", obs_module_text("Foxfire.Alert.Duration"), 1.0, 30.0,
 					0.1);
+	/* One group per kind, each collapsed into its own box, so seven kinds x four settings does
+	   not become a wall. The shared Message/Preset/Sound above stay as the fallback for any
+	   kind that has none of its own -- so a streamer who wants one look everywhere sets it
+	   once and never opens these. */
+	for (int k = 0; k < FF_ALERT_KIND_COUNT; k++) {
+		const char *id = ff_alert_kind_id((enum ff_alert_kind)k);
+		char key[96], label[96];
+		obs_properties_t *g = obs_properties_create();
+
+		snprintf(key, sizeof key, "k.%s.enabled", id);
+		obs_properties_add_bool(g, key, obs_module_text("Foxfire.Alert.KindEnabled"));
+		snprintf(key, sizeof key, "k.%s.template", id);
+		obs_properties_add_text(g, key, obs_module_text("Foxfire.Alert.Template"), OBS_TEXT_DEFAULT);
+
+		snprintf(key, sizeof key, "k.%s.preset", id);
+		obs_property_t *pl = obs_properties_add_list(g, key, obs_module_text("Foxfire.Preset"),
+							     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+		obs_property_list_add_string(pl, obs_module_text("Foxfire.Alert.SameAsAbove"), "");
+		if (a) {
+			const struct ff_pack *chosen = ff_packs_find(&a->packs, a->pack_id);
+			if (chosen)
+				for (size_t j = 0; j < chosen->npresets; j++)
+					if (!strcmp(chosen->presets[j].kind, "alert"))
+						obs_property_list_add_string(pl, chosen->presets[j].name,
+									     chosen->presets[j].id);
+		}
+		snprintf(key, sizeof key, "k.%s.sound", id);
+		obs_properties_add_path(g, key, obs_module_text("Foxfire.Alert.Sound"), OBS_PATH_FILE,
+					"Audio (*.wav *.mp3 *.ogg *.flac *.m4a);;All files (*.*)", NULL);
+
+		snprintf(key, sizeof key, "k.%s", id);
+		snprintf(label, sizeof label, "Foxfire.Alert.Kind.%s", id);
+		obs_properties_add_group(p, key, obs_module_text(label), OBS_GROUP_NORMAL, g);
+	}
+
 	obs_properties_add_bool(p, "paused", obs_module_text("Foxfire.Alert.Paused"));
+	obs_property_t *tk = obs_properties_add_list(p, "test_kind", obs_module_text("Foxfire.Alert.TestKind"),
+						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	for (int k = 0; k < FF_ALERT_KIND_COUNT; k++) {
+		const char *id = ff_alert_kind_id((enum ff_alert_kind)k);
+		char lk[96];
+		snprintf(lk, sizeof lk, "Foxfire.Alert.Kind.%s", id);
+		obs_property_list_add_string(tk, obs_module_text(lk), id);
+	}
 	obs_properties_add_button2(p, "test", obs_module_text("Foxfire.Alert.Test"), on_test_fire, d);
 	obs_properties_add_button2(p, "skip", obs_module_text("Foxfire.Alert.Skip"), on_skip, d);
 	obs_properties_add_button2(p, "clear", obs_module_text("Foxfire.Alert.Clear"), on_clear, d);
@@ -447,14 +592,15 @@ static void alert_render(void *d, gs_effect_t *effect)
 		/* here, not in update(): this callback already runs inside the graphics context,
 		   and ff_renderer_load requires it */
 		const struct ff_pack *pack = ff_packs_find(&a->packs, a->pack_id);
-		const struct ff_preset *preset = ff_pack_find_preset(pack, a->preset_id);
+		const struct ff_preset *preset = ff_pack_find_preset(pack, a->want_preset);
 		if (preset && strcmp(preset->kind, "alert")) {
 			obs_log(LOG_WARNING,
 				"alerts: preset '%s' of pack '%s' is kind '%s', not 'alert'; not loading it",
-				a->preset_id, a->pack_id, preset->kind);
+				a->want_preset, a->pack_id, preset->kind);
 			preset = NULL;
 		}
 		ff_renderer_load(a->renderer, pack, preset);
+		snprintf(a->loaded_preset, sizeof a->loaded_preset, "%s", preset ? preset->id : "");
 		a->art_dirty = false;
 	}
 	if (!a->playing)
