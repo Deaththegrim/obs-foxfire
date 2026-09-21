@@ -62,6 +62,12 @@ struct ff_renderer {
 struct ff_renderer *ff_renderer_create(void);
 /* graphics context required */
 void ff_renderer_destroy(struct ff_renderer *r);
+/* Logs once, at create, when a GPU object obj (as returned by a gs_*_create call) is NULL --
+   so a failure is reported at its source instead of surfacing later as a silent pass-through or a
+   null dereference at render time. Any caller that creates a GPU object outside ff_renderer_create
+   and then unconditionally dereferences it at render time (ff-props.c's filter capture texrender,
+   read at ff-filter.c) must guard it the same way. graphics context required. */
+void ff_require(const void *obj, const char *name);
 /* (re)loads effects for the preset; releases whatever was loaded before, so it is idempotent.
    Passing a NULL pack or preset leaves the renderer with zero layers.
    Compile errors land in layer.error and the log. graphics context required. */

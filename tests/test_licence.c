@@ -47,22 +47,29 @@ int main(void)
 	const int64_t issued = 1758240000, expires = issued + 90 * 86400;
 
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
-	ff_licence_verify(json, strlen(json), pk, issued + 10 * 86400, &L);
+	ff_licence_verify(json, strlen(json), pk, "ember", issued + 10 * 86400, &L);
 	CHECK(L.state == FF_LIC_OK);
 	CHECK(!strcmp(L.pack_id, "ember"));
 	CHECK(!strcmp(L.discord_id, "123456789012345678"));
 	CHECK(L.expires == expires);
 
-	ff_licence_verify(json, strlen(json), pk, expires + 3 * 86400, &L);
+	ff_licence_verify(json, strlen(json), pk, "ember", expires + 3 * 86400, &L);
 	CHECK(L.state == FF_LIC_GRACE);
-	ff_licence_verify(json, strlen(json), pk, expires + 8 * 86400, &L);
+	ff_licence_verify(json, strlen(json), pk, "ember", expires + 8 * 86400, &L);
 	CHECK(L.state == FF_LIC_EXPIRED);
 	CHECK(strstr(L.reason, "expired") != NULL);
-	ff_licence_verify(json, strlen(json), pk, expires + 7 * 86400 - 1, &L);
+	ff_licence_verify(json, strlen(json), pk, "ember", expires + 7 * 86400 - 1, &L);
 	CHECK(L.state == FF_LIC_GRACE);
 
+	/* a genuine, validly-signed "ember" licence sitting in a DIFFERENT pack's folder ("smoke")
+	   must not verify there -- pack_id is signed so the signature itself is fine; only comparing
+	   it against the pack it was found in catches the copy */
+	ff_licence_verify(json, strlen(json), pk, "smoke", issued + 10, &L);
+	CHECK(L.state == FF_LIC_INVALID);
+	CHECK(strstr(L.reason, "licence is for pack 'ember', not 'smoke'") != NULL);
+
 	make(sk, "ember", issued, expires, json, sizeof json, 1);
-	ff_licence_verify(json, strlen(json), pk, issued + 10, &L);
+	ff_licence_verify(json, strlen(json), pk, "ember", issued + 10, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 	CHECK(strstr(L.reason, "signature") != NULL);
 
@@ -71,21 +78,21 @@ int main(void)
 	seed[0] = 99;
 	crypto_ed25519_key_pair(other_sk, other_pk, seed);
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
-	ff_licence_verify(json, strlen(json), other_pk, issued + 10, &L);
+	ff_licence_verify(json, strlen(json), other_pk, "ember", issued + 10, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 
 	/* tampered field after signing */
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
 	char *p = strstr(json, "\"pack_id\":\"ember\"");
 	memcpy(p + 11, "embyr", 5);
-	ff_licence_verify(json, strlen(json), pk, issued + 10, &L);
+	ff_licence_verify(json, strlen(json), pk, "ember", issued + 10, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 
 	const char *missing = "{\"discord_id\":\"1\",\"pack_id\":\"ember\",\"sig\":\"AAAA\"}";
-	ff_licence_verify(missing, strlen(missing), pk, issued, &L);
+	ff_licence_verify(missing, strlen(missing), pk, "ember", issued, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 	CHECK(strstr(L.reason, "no 'licence_id' field") != NULL);
-	ff_licence_verify("not json", 8, pk, issued, &L);
+	ff_licence_verify("not json", 8, pk, "ember", issued, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 
 	char canon[256];
@@ -97,7 +104,7 @@ int main(void)
 	/* truncated buffer (length cuts inside the sig value): must be INVALID, must not crash */
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
 	size_t jl = strlen(json);
-	ff_licence_verify(json, jl - 3, pk, issued + 10, &L);
+	ff_licence_verify(json, jl - 3, pk, "ember", issued + 10, &L);
 	CHECK(L.state == FF_LIC_INVALID);
 
 	/* non-null-terminated buffer: "expires" is the last field, and the buffer ends
@@ -122,7 +129,7 @@ int main(void)
 		char *buf = malloc(bn);
 		memset(buf, '9', bn);
 		memcpy(buf, json2, (size_t)jl2);
-		ff_licence_verify(buf, (size_t)jl2, pk, issued + 10 * 86400, &L);
+		ff_licence_verify(buf, (size_t)jl2, pk, "ember", issued + 10 * 86400, &L);
 		CHECK(L.state == FF_LIC_OK);
 		CHECK(L.expires == expires);
 		free(buf);
@@ -151,7 +158,7 @@ int main(void)
 			 "{\"discord_id\": \"123456789012345678\", \"expires\": %lld, \"issued\": %lld, "
 			 "\"licence_id\": \"lic_test1\", \"pack_id\": \"ember\", \"sig\": \"%s\"}",
 			 (long long)expires, (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_OK);
 
 		/* 2. pretty-printed with newlines and indentation */
@@ -160,7 +167,7 @@ int main(void)
 			 "  \"issued\": %lld,\n  \"licence_id\": \"lic_test1\",\n  \"pack_id\": \"ember\",\n"
 			 "  \"sig\": \"%s\"\n}\n",
 			 (long long)expires, (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_OK);
 
 		/* 3. whitespace BEFORE the colon as well */
@@ -168,7 +175,7 @@ int main(void)
 			 "{\"discord_id\" : \"123456789012345678\",\"expires\" : %lld,\"issued\" : %lld,"
 			 "\"licence_id\" : \"lic_test1\",\"pack_id\" : \"ember\",\"sig\" : \"%s\"}",
 			 (long long)expires, (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_OK);
 
 		/* 4. a key name occurring inside an EARLIER string value is not mistaken for
@@ -177,7 +184,7 @@ int main(void)
 			 "{\"note\":\"expires\",\"discord_id\":\"123456789012345678\",\"expires\":%lld,"
 			 "\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_OK);
 		CHECK(L.expires == expires);
 
@@ -186,7 +193,7 @@ int main(void)
 			 "{\"discord_id\":\"123456789012345678\",\"expires\":\"%lld\",\"issued\":%lld,"
 			 "\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_INVALID);
 		CHECK(strstr(L.reason, "'expires' field is not a usable number") != NULL);
 		CHECK(strstr(L.reason, "has no") == NULL);
@@ -196,7 +203,7 @@ int main(void)
 			 "{\"discord_id\":\"123456789012345678\",\"expires\":12x3,\"issued\":%lld,"
 			 "\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_INVALID);
 		CHECK(strstr(L.reason, "'expires' field is not a usable number") != NULL);
 
@@ -205,7 +212,7 @@ int main(void)
 			 "{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,"
 			 "\"licence_id\":\"%0100d\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, 1, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_INVALID);
 		CHECK(strstr(L.reason, "'licence_id' field is not a usable string") != NULL);
 		CHECK(strstr(L.reason, "has no") == NULL);
@@ -215,7 +222,7 @@ int main(void)
 			 "{\"discord_id\":\"123456789012345678\",\"expires\":%lld,\"issued\":%lld,"
 			 "\"licence_id\":\"lic_test1\",\"sig\":\"%s\"}",
 			 (long long)expires, (long long)issued, s64);
-		ff_licence_verify(v, strlen(v), pk, in_date, &L);
+		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_INVALID);
 		CHECK(strstr(L.reason, "has no 'pack_id' field") != NULL);
 	}

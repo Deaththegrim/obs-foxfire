@@ -421,8 +421,15 @@ struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self,
 	refresh_packs(in);
 	obs_enter_graphics();
 	in->renderer = ff_renderer_create();
-	if (is_filter)
+	if (is_filter) {
 		in->capture = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
+		/* the one GPU object created outside ff_renderer_create; flt_render (ff-filter.c) resets
+		   and begins it every frame with no null check of its own, so a create failure here must
+		   be reported now, at create -- ff_renderer_render's ping/pong guard is the pattern this
+		   follows (see ff-layers.c), and flt_render's own guard is what actually keeps a failed
+		   create from being a null dereference on the video thread. */
+		ff_require(in->capture, "the filter's capture render target");
+	}
 	obs_leave_graphics();
 	ff_instance_update(in, settings);
 	return in;

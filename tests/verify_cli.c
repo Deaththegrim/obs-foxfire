@@ -14,8 +14,8 @@ static int hex(const char *h, uint8_t out[32])
 }
 int main(int argc, char **argv)
 {
-	if (argc != 4) {
-		fprintf(stderr, "usage: verify_cli <pubkey-hex> <licence.json> <now-unix>\n");
+	if (argc != 5) {
+		fprintf(stderr, "usage: verify_cli <pubkey-hex> <licence.json> <expected-pack-id> <now-unix>\n");
 		return 2;
 	}
 	uint8_t pk[32];
@@ -29,7 +29,7 @@ int main(int argc, char **argv)
 	fclose(f);
 	buf[n] = 0;
 	struct ff_licence L;
-	ff_licence_verify(buf, n, pk, strtoll(argv[3], NULL, 10), &L);
+	ff_licence_verify(buf, n, pk, argv[3], strtoll(argv[4], NULL, 10), &L);
 	static const char *names[] = {"NONE", "OK", "GRACE", "EXPIRED", "INVALID"};
 	printf("%s %s\n", names[L.state], L.reason);
 	return 0;

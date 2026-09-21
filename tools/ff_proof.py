@@ -16,7 +16,7 @@ failing. Every request and every connect therefore runs under a wall clock, and 
 a named FAIL, not a traceback. tools/render-proof.sh puts a second clock around the whole driver.
 
 This module is both a CLI (`python3 tools/ff_proof.py [port]`, used by tools/render-proof.sh) and an
-importable driver: tools/proof.py imports it to run this exact 29-check harness as the first phase of
+importable driver: tools/proof.py imports it to run this exact 31-check harness as the first phase of
 its packforge-facing proof, then reuses its Client/check()/CHECKS bookkeeping to add pack-driven
 preset checks on the same OBS instance. Nothing here is weakened or duplicated for that reuse --
 only main() gained a `port` parameter and the old module-level `asyncio.run(main())` + exit call
@@ -26,6 +26,7 @@ import asyncio
 import base64
 import json
 import math
+import shutil
 import struct
 import sys
 import wave
@@ -34,6 +35,9 @@ from pathlib import Path
 
 import websockets
 from PIL import Image, ImageStat
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from build_symlink_pack_zip import build as build_symlink_zip  # noqa: E402 -- Critical-1 repro zip
 
 PORT = 4460
 URL = f"ws://127.0.0.1:{PORT}"
@@ -52,6 +56,9 @@ OUT_ALPHA_UNFILTERED = "/tmp/ff-filter-alphahole-unfiltered.png"
 OUT_ALPHA_FILTERED = "/tmp/ff-filter-alphahole-filtered.png"
 WAV = "/tmp/ff-tone.wav"
 ZIP = "/tmp/ff-demo2.zip"
+ZIP_SYMLINK = "/tmp/ff-symlink-attack.zip"
+SYMLINK_VICTIM_DIR = "/tmp/ff-symlink-victim"
+SYMLINK_CANARY = f"{SYMLINK_VICTIM_DIR}/canary.txt"
 QUAD_PNG = "/tmp/ff-quadrant.png"
 ALPHAHOLE_PNG = "/tmp/ff-alphahole.png"
 W, H = 640, 360
@@ -63,7 +70,7 @@ REQ_TIMEOUT = 20  # seconds; generous for a local socket, short next to a hang
 # a check is added or removed -- it exists so a run that times out partway through prints a visibly
 # SHRUNKEN armed count next to this constant, instead of silently reporting "N/N (N armed)" for
 # whatever smaller N it actually reached.
-EXPECTED_CHECKS = 29
+EXPECTED_CHECKS = 31
 
 FAILURES = []
 CHECKS = []  # every check that ran, pass or fail -- "armed" count: see check() below
@@ -396,6 +403,28 @@ async def run(c):
     check("install adds demo2", "demo2" in ids, f"{len(ids)} pack(s): {ids}")
     check("install path cleared one-shot", left in (None, ""), f"install_zip={left!r}")
 
+    # Critical-1 (whole-branch review): a zip containing a symlink entry that points OUTSIDE the
+    # packs tree must be refused by the real, currently-loaded plugin, end to end -- not just by
+    # the isolated entry-check logic (see tools/build_symlink_pack_zip.py + the before/after repro
+    # in the fix report). victim_dir stands in for anything outside packs/ a malicious/careless
+    # pack author's symlink could point at; canary.txt proves it, not just the install's own report.
+    victim_dir = Path(SYMLINK_VICTIM_DIR)
+    if victim_dir.exists():
+        shutil.rmtree(victim_dir)
+    victim_dir.mkdir(parents=True)
+    canary = Path(SYMLINK_CANARY)
+    canary.write_text("canary-do-not-delete")
+    build_symlink_zip(ZIP_SYMLINK, str(victim_dir), "evilpack")
+
+    await c.request("SetInputSettings", {"inputName": "ff", "inputSettings": {"install_zip": ZIP_SYMLINK}})
+    packs_after_attack = await c.request("GetInputPropertiesListPropertyItems",
+                                         {"inputName": "ff", "propertyName": "pack"})
+    ids_after_attack = [i["itemValue"] for i in packs_after_attack["propertyItems"]]
+    check("symlink-zip install refused: pack not added", "evilpack" not in ids_after_attack,
+          f"{len(ids_after_attack)} pack(s): {ids_after_attack}")
+    check("symlink-zip install: victim directory outside packs/ survives", canary.exists(),
+          f"{canary} exists={canary.exists()}")
+
     # C1: properties (pack rescan + a walk of the renderer's layer array) on the RPC thread
     # against update()/render on the video thread.
     await stress("ff")
@@ -640,7 +669,7 @@ async def run_transparency(c):
 
 
 async def main(port=None):
-    """Runs the full 29-check harness once. `port` overrides the module-level default (4460) so a
+    """Runs the full 31-check harness once. `port` overrides the module-level default (4460) so a
     caller that already knows its sandbox's obs-websocket port -- tools/render-proof.sh via argv,
     tools/proof.py via its own sandbox setup -- can point this at it. CHECKS/FAILURES are cleared
     first so a process that calls main() more than once (tools/proof.py does not; this only guards

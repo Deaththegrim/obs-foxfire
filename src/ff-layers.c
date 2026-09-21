@@ -327,9 +327,11 @@ static void unload_layers(struct ff_renderer *r)
 	r->nlayers = 0;
 }
 
-/* Named so a failure is reported once, at create, instead of being hidden forever by the
-   pass-through in ff_renderer_render. */
-static void require(const void *obj, const char *name)
+/* Named so a failure is reported once, at create, instead of being hidden forever by a silent
+   pass-through or, worse, a null dereference at render time. Exported (see ff-layers.h) so
+   ff_instance_create in ff-props.c can apply the SAME guard to the filter's capture texrender --
+   the one GPU object created outside this file that render-time code dereferences unconditionally. */
+void ff_require(const void *obj, const char *name)
 {
 	if (!obj)
 		obs_log(LOG_ERROR, "renderer: could not create %s (graphics context held?)", name);
@@ -345,11 +347,11 @@ struct ff_renderer *ff_renderer_create(void)
 	const uint8_t zero[4] = {0, 0, 0, 0};
 	const uint8_t *zero_p = zero;
 	r->blank = gs_texture_create(1, 1, GS_RGBA, 1, &zero_p, 0);
-	require(r->ping, "the ping render target");
-	require(r->pong, "the pong render target");
-	require(r->spectrum_tex, "the spectrum texture");
-	require(r->wave_tex, "the waveform texture");
-	require(r->blank, "the blank texture");
+	ff_require(r->ping, "the ping render target");
+	ff_require(r->pong, "the pong render target");
+	ff_require(r->spectrum_tex, "the spectrum texture");
+	ff_require(r->wave_tex, "the waveform texture");
+	ff_require(r->blank, "the blank texture");
 	r->rng = (uint32_t)(os_gettime_ns() & 0xFFFFFFFFu);
 	if (!r->rng)
 		r->rng = 0x9E3779B9u; /* xorshift32 is dead at zero */

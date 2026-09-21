@@ -8,9 +8,11 @@
 #include <time.h>
 #ifdef _WIN32
 #include <process.h>
+#include <windows.h>
 #define ff_getpid() _getpid()
 #else
 #include <unistd.h>
+#include <sys/stat.h>
 #define ff_getpid() getpid()
 #endif
 
@@ -237,7 +239,7 @@ static bool load_pack_dir(struct ff_pack_list *l, const char *dir, int64_t now)
 			pk.licence.state = FF_LIC_INVALID;
 			snprintf(pk.licence.reason, sizeof pk.licence.reason, "missing");
 		} else {
-			ff_licence_verify(txt, strlen(txt), FF_PUBLIC_KEY, now, &pk.licence);
+			ff_licence_verify(txt, strlen(txt), FF_PUBLIC_KEY, pk.id, now, &pk.licence);
 			bfree(txt);
 		}
 		struct dstr np = {0};
@@ -333,8 +335,37 @@ const struct ff_preset *ff_pack_find_preset(const struct ff_pack *p, const char 
 
 /* ---- zip install ---- */
 
+/* path_is_symlink: the ONLY question that matters before recursing or opening a directory during
+   cleanup. os_readdir()'s e->directory comes from stat(), which follows a symlink -- so a symlinked
+   directory reads as a directory and remove_recursive() would descend into (and delete the contents
+   of) whatever it points at, which can be outside the packs tree entirely. lstat()/the reparse-point
+   attribute never follow the link, so this is the one place that decision is actually safe to make. */
+#ifdef _WIN32
+static bool path_is_symlink(const char *path)
+{
+	wchar_t *w = NULL;
+	os_utf8_to_wcs_ptr(path, 0, &w);
+	if (!w)
+		return false;
+	DWORD attrs = GetFileAttributesW(w);
+	bfree(w);
+	return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+}
+#else
+static bool path_is_symlink(const char *path)
+{
+	struct stat st;
+	return lstat(path, &st) == 0 && S_ISLNK(st.st_mode);
+}
+#endif
+
 static bool remove_recursive(const char *path)
 {
+	/* path itself may be a symlink (e.g. a symlinked pack directory renamed straight into the
+	   backup slot on reinstall, see ff_packs_install_zip): unlink it and stop, never opendir()
+	   it -- opendir() on a symlink-to-directory follows the link exactly like stat() does. */
+	if (path_is_symlink(path))
+		return os_unlink(path) == 0 || !os_file_exists(path);
 	os_dir_t *d = os_opendir(path);
 	if (!d)
 		return os_rmdir(path) == 0 || !os_file_exists(path);
@@ -345,7 +376,10 @@ static bool remove_recursive(const char *path)
 			continue;
 		struct dstr p = {0};
 		dstr_printf(&p, "%s/%s", path, e->d_name);
-		if (e->directory) {
+		if (path_is_symlink(p.array)) {
+			if (os_unlink(p.array) != 0)
+				ok = false;
+		} else if (e->directory) {
 			if (!remove_recursive(p.array))
 				ok = false;
 		} else if (os_unlink(p.array) != 0)
@@ -439,6 +473,27 @@ static bool check_zip_entries(const struct dstr *listing, struct dstr *top, char
 		return false;
 	}
 	return true;
+}
+
+/* listing_has_symlink: check_zip_entries above judges entry NAMES only -- a symlink entry with an
+   in-tree name (e.g. "ember/link") passes every one of those checks and would be restored by the
+   extractor as an actual symlink inside the extraction directory, which is exactly what lets
+   remove_recursive() (or anything else that later walks the pack) be steered outside packs/<id>/.
+   The type character libobs never gives us via os_readdir()/os_dirent (that struct doesn't carry
+   it) is the first column of a VERBOSE zip/tar listing -- 'l' for a symlink, the same convention as
+   `ls -l` -- so this reads a second, verbose listing of the same static file purely to check that
+   one column, one line at a time, and never splits a line on whitespace (a name containing spaces
+   would corrupt a field-split, but the type character is always column zero regardless). */
+static bool listing_has_symlink(const struct dstr *verbose_listing)
+{
+	const char *p = verbose_listing->array, *end = p + verbose_listing->len;
+	while (p < end) {
+		if (*p == 'l')
+			return true;
+		const char *nl = memchr(p, '\n', (size_t)(end - p));
+		p = nl ? nl + 1 : end;
+	}
+	return false;
 }
 
 /* find_on_path: os_process_args_create()/os_process_pipe_create2() on this libobs build take the
@@ -549,6 +604,41 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	dstr_free(&listing);
 	if (!topdir_valid) {
 		obs_log(LOG_WARNING, "pack install: %s (%s)", msg, zip_path);
+		dstr_free(&topdir);
+		dstr_free(&tool);
+		bfree(packs_dir);
+		return false;
+	}
+
+	/* Second pass: a VERBOSE listing of the same static zip, read purely to refuse a symlink entry
+	   (see listing_has_symlink above) -- check_zip_entries above already accepted this zip on
+	   names alone, so this is the "listing step" catching what name-only checking cannot. */
+#ifdef _WIN32
+	os_process_args_t *type_args = os_process_args_create(tool.array);
+	os_process_args_add_arg(type_args, "-tvf");
+	os_process_args_add_arg(type_args, zip_path);
+#else
+	os_process_args_t *type_args = os_process_args_create(tool.array);
+	os_process_args_add_arg(type_args, "-Z");
+	os_process_args_add_arg(type_args, zip_path);
+#endif
+	struct dstr type_listing = {0};
+	bool type_listed = run_args_capture(type_args, &type_listing);
+	os_process_args_destroy(type_args);
+	if (!type_listed) {
+		snprintf(msg, cap, "could not read the zip's contents");
+		obs_log(LOG_WARNING, "pack install: could not read verbose zip listing: %s", zip_path);
+		dstr_free(&type_listing);
+		dstr_free(&topdir);
+		dstr_free(&tool);
+		bfree(packs_dir);
+		return false;
+	}
+	bool has_symlink = listing_has_symlink(&type_listing);
+	dstr_free(&type_listing);
+	if (has_symlink) {
+		snprintf(msg, cap, "zip must not contain symlinks");
+		obs_log(LOG_WARNING, "pack install: zip contains a symlink entry, refused: %s", zip_path);
 		dstr_free(&topdir);
 		dstr_free(&tool);
 		bfree(packs_dir);

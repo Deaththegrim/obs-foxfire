@@ -72,10 +72,10 @@ def main():
     failures = []
     tmp = Path(tempfile.mkdtemp()) / "licence.json"
 
-    def check(label, text, when, expected):
+    def check(label, text, when, expected, expected_pack_id="ember"):
         tmp.write_text(text)
         out = subprocess.run(
-            [str(CLI), pub_hex, str(tmp), str(when)],
+            [str(CLI), pub_hex, str(tmp), expected_pack_id, str(when)],
             capture_output=True,
             text=True,
             timeout=30,
@@ -111,6 +111,17 @@ def main():
         json.dumps(foreign, sort_keys=True, separators=(",", ":")),
         now,
         "INVALID",
+    )
+
+    # A genuine, validly-signed "ember" licence copied verbatim into a different paid pack's
+    # folder (e.g. "smoke") must NOT verify there: pack_id is signed, so the signature itself
+    # is fine -- only comparing it against the pack directory it was found in catches the copy.
+    check(
+        "valid licence for a different pack",
+        compact,
+        now,
+        "INVALID",
+        expected_pack_id="smoke",
     )
 
     # A licence is still a licence whatever serialiser formatted it. These are the

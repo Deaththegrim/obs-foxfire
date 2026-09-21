@@ -124,7 +124,8 @@ size_t ff_licence_canonical(const char *discord_id, const char *pack_id, const c
 	return n < 0 || (size_t)n >= cap ? 0 : (size_t)n;
 }
 
-void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], int64_t now, struct ff_licence *L)
+void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], const char *expected_pack_id, int64_t now,
+		       struct ff_licence *L)
 {
 	memset(L, 0, sizeof *L);
 	L->state = FF_LIC_INVALID;
@@ -168,6 +169,14 @@ void ff_licence_verify(const char *json, size_t n, const uint8_t pubkey[32], int
 					 sizeof canon);
 	if (!cn || crypto_ed25519_check(sig, pubkey, (const uint8_t *)canon, cn) != 0) {
 		snprintf(L->reason, sizeof L->reason, "licence signature does not verify");
+		return;
+	}
+	/* pack_id is signed (covered by canon above) so this cannot be spoofed by editing the file --
+	   but a genuine licence.json for pack A, copied verbatim into pack B's folder, has a perfectly
+	   valid signature; only comparing against the pack it was actually found in catches that. */
+	if (expected_pack_id && strcmp(L->pack_id, expected_pack_id) != 0) {
+		snprintf(L->reason, sizeof L->reason, "licence is for pack '%s', not '%s'", L->pack_id,
+			 expected_pack_id);
 		return;
 	}
 	if (now <= L->expires) {

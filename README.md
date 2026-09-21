@@ -99,7 +99,7 @@ Suggested reading to get up and running:
 it boots OBS on Xvfb in a throwaway config, installs the built plugin, and drives it over
 obs-websocket through silence/tone/gap/Restore Defaults/pack-install, a properties-vs-render stress
 race, source/filter destroy, and dedicated spatial (orientation + blur extent) and transparency
-(alpha convention) checks -- 29 named checks, printed as an armed/expected count so a run that gets
+(alpha convention) checks -- 31 named checks, printed as an armed/expected count so a run that gets
 cut short (e.g. a timeout) is visible as such, not silently reported green.
 
 A local run needs three Python packages CI already installs as system packages (see
@@ -134,9 +134,11 @@ Writes `<out>/report.json` (`obs`, `checks_armed`, `presets_inspected`, `presets
 `install_probe_pack`, `warnings`, `checks`), one `<out>/<pack>-<preset>.png` per inspected preset,
 and `<out>/obs.log`. Exit 0 all good; 1 any check failed, any preset blank, a `pack.json` with no
 presets or an out-of-range preset count, an armed/expected check-count mismatch, or any
-`[obs-foxfire]` warn:/error: line in the log (one exact, licence-public-key-is-zero warning is
-allowed while `FF_PUBLIC_KEY` is unset -- see `ALLOWED_WARNING_TEXT` in `tools/proof.py`); 2 nothing
-was armed (OBS never came up). Add `--keep` to keep the temp sandbox and print its path.
+`[obs-foxfire]` warn:/error: line in the log outside a short, named allow-list (the
+licence-public-key-is-zero warning while `FF_PUBLIC_KEY` is unset, and the two lines the harness's
+own symlink-zip pack-install attack produces when it is correctly refused -- see
+`ALLOWED_WARNING_TEXTS` in `tools/proof.py`); 2 nothing was armed (OBS never came up). Add `--keep`
+to keep the temp sandbox and print its path.
 
 ## GitHub Actions & CI
 

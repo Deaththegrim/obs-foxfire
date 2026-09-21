@@ -6,7 +6,7 @@ dir>] [--keep]`. packforge (a separate tool) runs this and then reads `<out>/rep
 
 This does NOT reimplement the render proof. It boots a throwaway OBS under Xvfb (the same sandbox
 recipe tools/render-proof.sh uses), installs the built plugin, then runs tools/ff_proof.py's full
-29-check harness against it unchanged -- silence/tone/gap/restore-defaults/pack-install/the
+31-check harness against it unchanged -- silence/tone/gap/restore-defaults/pack-install/the
 properties-vs-render stress race/destroy, the Foxfire Effects filter proof, the spatial (orientation
 + blur-extent) proof, and the transparency (alpha-convention) proof. That harness's check()/CHECKS/
 FAILURES bookkeeping is reused, not copied, for everything below.
@@ -36,7 +36,7 @@ in every run, and install_pack()'s copy into the user config dir is never actual
 probe pack's id can only have been found via install_pack(); report.json names it in
 "install_probe_pack" and its presets carry that id.
 
-Without --pack only the unchanged 29-check harness runs, matching tools/render-proof.sh's
+Without --pack only the unchanged 31-check harness runs, matching tools/render-proof.sh's
 behaviour exactly.
 
 report.json's "checks_armed" is the total number of named checks armed (harness + any per-preset
@@ -52,7 +52,7 @@ The obs.log scanner below keys on the severity TAG plugin-support.c.in now stamp
 line ("[obs-foxfire] warn: " / "[obs-foxfire] error: "), not on guessing severity from message
 wording -- OBS's log has no severity marker of its own, so a keyword search over the message text
 (the previous approach) misses most real warnings, whose wordings were never written to contain
-"warning" or "failed". See ALLOWED_WARNING_TEXT for the one expected exception.
+"warning" or "failed". See ALLOWED_WARNING_TEXTS for the short, named list of expected exceptions.
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import ff_proof  # noqa: E402  -- the 29-check harness this wraps; see its module docstring
+import ff_proof  # noqa: E402  -- the 31-check harness this wraps; see its module docstring
 
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
@@ -89,10 +89,22 @@ EFFECTS_KINDS = {"effects"}
 
 WARN_TAG = "[obs-foxfire] warn: "
 ERROR_TAG = "[obs-foxfire] error: "
-# src/ff-pack.c ff_packs_scan(): fires once per process on EVERY run while FF_PUBLIC_KEY is all
-# zeros (see pubkey_is_zero()) -- expected, not a defect, until packforge bakes the real key in.
-# Delete this allowance the day the key lands; every OTHER warn:/error: line fails the run.
-ALLOWED_WARNING_TEXT = "licence: public key not set; paid packs will not verify"
+# Every entry here is a warn:/error: line the harness EXPECTS to produce on every normal run --
+# proof that a defence fired correctly, not a defect. Any warn:/error: line that matches none of
+# these fails the run. Delete an entry the day its cause goes away (the pubkey one the day
+# packforge bakes in the real key; the other two are permanent as long as ff_proof.py's symlink-zip
+# install attempt stays part of the standard harness -- see tools/ff_proof.py's "Critical-1" check).
+ALLOWED_WARNING_TEXTS = (
+    # src/ff-pack.c ff_packs_scan(): fires once per process while FF_PUBLIC_KEY is all zeros
+    # (see pubkey_is_zero()) -- expected until packforge bakes the real key in.
+    "licence: public key not set; paid packs will not verify",
+    # src/ff-pack.c ff_packs_install_zip(): the symlink-zip attack ff_proof.py deliberately drives
+    # at "ff" (tools/build_symlink_pack_zip.py) must be refused, and IS refused, which logs a
+    # warn: line by the same obs_log(LOG_WARNING, ...) every other install refusal uses. A missing
+    # line here would mean the entry no longer fires, not that the log got quieter.
+    "pack install: zip contains a symlink entry, refused:",
+    "install '/tmp/ff-symlink-attack.zip': refused: zip must not contain symlinks",
+)
 
 
 def write_ws_config(obs_cfg: Path) -> None:
@@ -402,8 +414,8 @@ async def run(args) -> int:
         if logs:
             latest = logs[-1]
             for line in latest.read_text(errors="replace").splitlines():
-                if WARN_TAG in line and ALLOWED_WARNING_TEXT in line:
-                    continue  # expected until FF_PUBLIC_KEY is real -- see ALLOWED_WARNING_TEXT
+                if WARN_TAG in line and any(t in line for t in ALLOWED_WARNING_TEXTS):
+                    continue  # expected -- see ALLOWED_WARNING_TEXTS
                 if WARN_TAG in line or ERROR_TAG in line:
                     report["warnings"].append(line.strip())
             shutil.copy(latest, out / "obs.log")

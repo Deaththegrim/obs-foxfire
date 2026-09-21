@@ -63,7 +63,10 @@ static void flt_render(void *d, gs_effect_t *effect)
 	obs_source_t *target = obs_filter_get_target(in->self);
 	uint32_t w = target ? obs_source_get_base_width(target) : 0;
 	uint32_t h = target ? obs_source_get_base_height(target) : 0;
-	if (!target || !w || !h || !in->renderer->nlayers) {
+	/* in->capture is the one GPU object ff_instance_create does not guarantee (see ff_require at
+	   its gs_texrender_create call in ff-props.c) -- a create failure there must skip the filter
+	   here, not reach gs_texrender_reset/begin below with a NULL texrender and crash OBS. */
+	if (!target || !w || !h || !in->renderer->nlayers || !in->capture) {
 		obs_source_skip_video_filter(in->self);
 		return;
 	}
