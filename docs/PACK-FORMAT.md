@@ -383,6 +383,67 @@ manifest validation described everywhere else in this document. A zip that passe
 checks but fails manifest validation (a bad `min_engine`, too many layers, whatever) is refused with
 that validation's own reason, exactly as if it had been dropped straight into the packs folder.
 
+## The shared controls: Placement and Response
+
+Every Foxfire shader that **draws a shape** carries the same block of controls, with the same
+names, ranges and meanings:
+
+| Group | Controls |
+| --- | --- |
+| Placement | `pos_x`, `pos_y`, `size`, `rotate_deg`, `opacity` |
+| Response | `gain`, `smoothing`, `punch` — only where the shader reads the spectrum |
+
+This is a convention, not something the engine enforces, and it exists because moving from one
+preset to another should not mean relearning the panel.
+
+**Do not type these out.** OBS's effect language has no `#include` (this format refuses one — see
+*Refused paths* — because an include does not resolve into a pack directory), so the block is
+genuinely copied into each shader. Generate the copies:
+
+```
+tools/apply-placement.py --reference <a shader that has it> --blocks place,shape,response <target.effect>
+```
+
+and check them with `tools/check-placement.py <pack dir>`, which fails on a control declared two
+different ways, and on a helper that is defined and never called. Both tools live in the engine
+repo.
+
+### What the block gives you
+
+* `ff_place(uv, aspect)` turns canvas UV into the shape's own space, applying position, rotation
+  and size. Rotation happens in **square** units, before the size divide, or a rotated shape shears
+  on any canvas that is not square.
+* `ff_on_shape(uv)` is 1 inside the shape's own 0..1 box and 0 outside, so shrinking a shape leaves
+  empty canvas instead of tiling the pattern across the frame.
+* `ff_band(hL, hC, hR, beat)` reads one spectrum band with its neighbours blended in and gain and
+  beat punch applied. The three samples are taken by the **caller** and passed as floats: taking
+  `texture2d` and `sampler_state` parameters is the obvious way to write it and does not survive
+  OBS's HLSL→GLSL translation.
+
+### A shader may decline any of them, and should
+
+The checker compares **per control**, not per block, precisely so that it can:
+
+* A shader that reads a single level rather than a spectrum has **no `smoothing`** — there are no
+  neighbouring bands to blend, and the knob would do nothing.
+* A shape bounded by its own geometry — a ring, a rounded rectangle — needs **no `ff_on_shape`**.
+  Masking it to the square box would only square off a shape that grew past the edge.
+* A layer that **processes what is below it** (a grain overlay, a glow pass) gets **no Placement at
+  all**. Moving it means nothing, and its own one control is the control.
+* A shader reading a **signed** waveform applies gain and smoothing inline rather than through
+  `ff_band`, which clamps to 0..1 and would flatten the bottom half of the wave.
+
+`smoothing` is **spatial** — it blends a band with its neighbours. A shader has no memory of the
+previous frame, so a control that claimed to smooth over time would do nothing.
+
+### Alert presets do not take the block
+
+An alert source is a source of its own, so OBS's Transform already moves it, and it draws its art
+**under** a text child that the source positions itself — shifting the art in the shader would
+slide the card out from under its own text. The alert source also builds its properties panel by
+hand, so a knob declared in an alert shader never reaches a streamer at all: everything in one is
+set by the preset, by you.
+
 ## Shader construct compatibility — Linux/OpenGL
 
 Foxfire's `.effect` shaders build for both Direct3D (Windows) and OpenGL (Linux/macOS), and OBS's
