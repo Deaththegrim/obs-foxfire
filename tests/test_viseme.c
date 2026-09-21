@@ -8,7 +8,7 @@
  *
  * ARMED by mutation -- each decision inverted in turn, recompiled and rerun:
  *
- *     control (every guard in place)                 201 checks,  0 failed
+ *     control (every guard in place)                 276 checks,  0 failed
  *     wide-open threshold back to the old 0.65       103 checks,  1 failed
  *     front/back threshold moved off the median      103 checks,  1 failed
  *     jaw threshold removed (never closed)           103 checks,  9 failed
@@ -73,9 +73,11 @@
  *
  * Recorded speech was used too, and is not in here: it lives outside this repo, and a test that
  * silently skips when a file is missing is a test that passes having inspected nothing. What the
- * recordings were for is written into ff-viseme.c as the measured distribution of both features
- * over 638 voiced frames -- which is what set the thresholds, and which caught a threshold that
- * was right about the physics and wrong about every real voice (wide-open never fired at all).
+ * recordings were for is the measured distribution of both features -- which is what set the
+ * thresholds, and which caught one that was right about the physics and wrong about every real
+ * voice (wide-open never fired at all). The 638-frame distribution that did it is in
+ * ff-viseme.h beside the constants; ff-viseme.c carries the four corpora measured since, which
+ * are reproducible with tests/calibrate_cli.c and agree with it.
  */
 
 #include "ff-test.h"
@@ -308,8 +310,8 @@ int main(void)
 
 	/* ---- the jaw bias: one voice's openness is not another's ---- */
 
-	/* One frame, three shapes, decided only by the trim. "eh" sits at openness 0.527, between
-	   the two thresholds, which is what makes it the frame that can show all three. */
+	/* One frame, three shapes, decided only by the trim. "eh" measures openness 0.5195,
+	   between the two thresholds, which is what makes it the frame that can show all three. */
 	synth_vowel(buf, SR, 110.0f, 390, 2300, 3000);
 	CHECK(last_frame(buf, SR, &f));
 	CHECK(ff_viseme_classify(&f, 0.0f) == FF_VIS_C);
@@ -452,9 +454,13 @@ int main(void)
 	   pushes both families AWAY from the threshold, so turning a signal down never turns a
 	   vowel into a hiss.
 
-	   Quarter level, not a tenth: a dark /sh/ does fall through at a tenth (0.275 measured,
-	   under the threshold), and that limit is written down rather than tested around. At a
-	   tenth of this level the frame is under the default noise gate and the mouth is shut. */
+	   Quarter level, not a tenth, and not because a tenth fails -- it does not; a dark /sh/
+	   still reads 0.275 there, above the 0.22 threshold. It is because by a tenth the frame
+	   is far under the noise gate and the mouth is shut regardless, so the reading stops
+	   describing anything the engine would act on. Measured f.level for this signal: 0.0872
+	   at full, 0.0432 at a half, 0.0195 at a quarter, 0.0087 at a tenth, against a gate of
+	   0.040 -- so even the quarter-level frames here are gated off in practice, and what this
+	   sweep checks is the FEATURE's behaviour, not a frame the mouth would answer. */
 	float quiet_v = 0.0f, quiet_f = 1.0f;
 	for (float scale = 1.0f; scale > 0.2f; scale *= 0.5f) {
 		synth_fric(buf, SR, 5200.0f, 3000.0f, 0.0f);

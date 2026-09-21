@@ -50,13 +50,18 @@
    the whole file offline; doing that live would mean shipping an acoustic model and spending the
    CPU on a machine that is already encoding video. X is returned, and is the rest position.
 
-   So the classifier's real range is A-F and X. ff_cell() in packs/mouth folds G and H onto B and
-   C for any pack that does draw them, which costs nothing and means a strip drawn for Rhubarb
-   still works. */
+   So the classifier's real range is A-F and X. A strip drawn for Rhubarb still works: its G and
+   H cells are simply never indexed, since nothing ever asks for them. ff_cell() in packs/mouth
+   folds indices the strip does NOT have onto the drawn cell with the nearest mouth aperture,
+   which is what lets a three- or four-cell strip work at all -- and it produces Rhubarb's own
+   X->A, G->B and H->C as a side effect rather than by special-casing them. (This used to say
+   ff_cell folds G and H for packs that DO draw them, which is backwards: it folds only what is
+   missing.) */
 enum ff_viseme {
 	FF_VIS_A = 0, /* closed, slight pressure: P B M */
 	FF_VIS_B,     /* slightly open, teeth together: K S T, and "EE" */
-	FF_VIS_C,     /* open: "EH", "AE" */
+	FF_VIS_C,     /* open: "EH". NOT "AE" -- at F1 850 that measures openness 0.776 and
+	                 classifies as D, which tests/test_viseme.c asserts. */
 	FF_VIS_D,     /* wide open: "AA" as in father */
 	FF_VIS_E,     /* slightly rounded: "AO", "ER" */
 	FF_VIS_F,     /* puckered: "UW", "OW", "W" */
@@ -123,7 +128,12 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
  *
  * Measured over 638 voiced frames of recorded speech:
  *     openness   5% 0.281  25% 0.392  50% 0.469  75% 0.521  90% 0.564  95% 0.588  99% 0.630
- *     frontness  5% 0.104  25% 0.212  50% 0.292  75% 0.358  90% 0.425  95% 0.489  99% 0.612 */
+ *     frontness  5% 0.104  25% 0.212  50% 0.292  75% 0.358  90% 0.425  95% 0.489  99% 0.612
+ *
+ * THAT recording is gone and these four numbers are the older anchor, kept because the four
+ * corpora measured since (see ff-viseme.c) agree with them: medians of 0.440/0.433/0.484/0.589
+ * against this 0.469, and a frontness median within 0.05 on every one. They are not re-derived
+ * from the newer corpora because the constants they justify have not moved. */
 #define FF_VIS_P50_OPEN 0.469f
 #define FF_VIS_P90_OPEN 0.564f
 #define FF_VIS_P25_FRONT 0.212f
@@ -141,9 +151,11 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
  *     vowels, clean to aspiration -6 dB     0.000 - 0.087   (worst: a breathy "eh")
  *     fricatives                            0.418 - 0.705   (worst: a dark /sh/ peaking at 2.6k)
  *
- * 0.22 sits between them with roughly 2.5x of margin each way, which is why the modelling
- * question above does not decide it: under the cruder three-formant model the same fricatives
- * read 0.155-0.362 against vowels at 0.000, and 0.22 separates those too.
+ * 0.22 sits between them with 2.5x of margin below and 1.9x above -- the test asserts only the
+ * 1.6x it can guarantee. The modelling question above does not decide it either: under the
+ * cruder three-formant model the same fricatives read 0.155-0.362 against vowels at 0.000, and
+ * 0.22 separates all but the weakest of those. (This claimed "roughly 2.5x each way" and that
+ * 0.22 separates the 0.155 case, which is below it.)
  *
  * NOT YET CHECKED AGAINST A REAL MICROPHONE. Both anchors here are synthetic, and the upper one
  * is the one that matters: a bright mic, a sibilant voice or no de-esser all push real vowels up,

@@ -398,7 +398,7 @@ uniform float mouth_open; /* how open, 0..1, smoothed */
 | --- | --- | --- |
 | 0 | A | closed, slight pressure — P, B, M |
 | 1 | B | slightly open, teeth together — "EE", K, S, T, and every fricative |
-| 2 | C | open — "EH", "AE" |
+| 2 | C | open — "EH" |
 | 3 | D | wide open — "AA" as in *father* |
 | 4 | E | slightly rounded — "AO", "ER" |
 | 5 | F | puckered — "UW", "OW", W |
@@ -507,8 +507,8 @@ because the top edge of the image is the pivot, so it has to be the top of the u
 ### The Mouth controls
 
 A preset that declares either builtin also gets a **Mouth** group in the properties panel, added
-by the engine rather than by the pack. Nothing here is a shader uniform — these four are the
-timing the classifier runs on, and they describe the voice and the microphone rather than the art:
+by the engine rather than by the pack. Nothing here is a shader uniform — these five are what the
+classifier runs on, and they describe the voice and the microphone rather than the art:
 
 | Control | Default | What it does |
 | --- | --- | --- |

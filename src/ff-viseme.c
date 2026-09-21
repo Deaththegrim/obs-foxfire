@@ -25,8 +25,9 @@ void ff_viseme_defaults(struct ff_viseme_params *p)
 	   reads as speech or as flapping. */
 	p->hold_ms = 80.0f;
 	p->release_ms = 120.0f;
-	/* 0: the thresholds as measured. Every voice this was checked against classifies sanely
-	   without a trim -- the control is for the one that does not. */
+	/* 0: the thresholds as measured, and right for three of the four corpora below. The
+	   fourth sits wide open on 56% of frames and needs -0.10; "every voice classifies sanely
+	   without a trim" is what this used to say and the table 150 lines down refutes it. */
 	p->jaw_bias = 0.0f;
 }
 

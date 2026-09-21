@@ -66,6 +66,23 @@ jobs:
         if: hashFiles('../foxfire/packs/basics/effects/bars.effect') != ''
         run: tools/check-placement.py ../foxfire/packs
 
+      - name: Say which pack gates were skipped
+        # A green job must not mean two different things. The packs live in a private repo that
+        # is not checked out here, so every `hashFiles('../foxfire/...')` step above evaluates
+        # false on a stock runner -- and a skipped step and a passing step look identical once
+        # the list is collapsed. This writes the difference onto the run page.
+        if: always()
+        run: |
+          if [ -d ../foxfire/packs ]; then
+            echo "packs present: every pack-dependent gate ran" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Pack-dependent gates SKIPPED" >> "$GITHUB_STEP_SUMMARY"
+            echo "The foxfire packs repo is private and is not checked out here, so these" >> "$GITHUB_STEP_SUMMARY"
+            echo "did not run: check-placement, mouth-strip registration, the picker selftest" >> "$GITHUB_STEP_SUMMARY"
+            echo "and its --mutate, every-pack-renders, and the mouth render proof." >> "$GITHUB_STEP_SUMMARY"
+            echo "A green tick here does NOT mean they passed." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Mouth art is registered
         # Every cell of a mouth strip must sit on the same anchor: the engine swaps them frame to
         # frame, so drift reads as the mouth sliding around the face while the character talks.
@@ -107,7 +124,7 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         working-directory: ../foxfire
         run: |
-          for pack in basics ring tune overlay alerts; do
+          for pack in basics ring tune overlay alerts mouth; do
             echo "::group::$pack"
             python3 -m packforge proof --no-thumbs --engine "$GITHUB_WORKSPACE" "packs/$pack"
             echo "::endgroup::"

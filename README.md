@@ -95,7 +95,7 @@ same place in every cell, transparent background:
 | --- | --- | --- |
 | 1 | **A** closed | P, B, M |
 | 2 | **B** slightly open, teeth together | "EE", K, S, T, and every hiss |
-| 3 | **C** open | "EH", "AE" |
+| 3 | **C** open | "EH" |
 | 4 | **D** wide open | "AA" as in *father* |
 | 5 | **E** slightly rounded | "AO", "ER" |
 | 6 | **F** puckered | "OO", "OW", W |
@@ -125,7 +125,8 @@ still works — the extra cells are simply never selected.
 **If you have not drawn six shapes yet**, use the *Mouth — one image, stretched* preset instead.
 It takes a single drawing of an open mouth and opens and closes it with the audio. It cannot tell
 an "oo" from an "ee" — nothing that only knows how far the jaw is down can — but it is the rig
-most people already have, and it uses every one of the controls below.
+most people already have. Note that only **Mouth close speed** and **Silence threshold** affect
+it: the other three decide which *shape* to draw, and this preset never asks for a shape.
 
 **Tuning it.** A preset that draws a mouth grows a **Mouth** group in the properties panel:
 
@@ -258,9 +259,12 @@ voice, and that has happened before — an early "wide open" threshold sat above
 voiced frames reach, so the wide mouth never once fired while classifying every synthesised vowel
 perfectly.
 
-**The thresholds shipped today are set against synthesised speech only.** The recorded half of
-the original calibration cannot be reproduced — the file it was measured from is gone — which is
-why this tool is in the tree rather than in somebody's scratch directory.
+**One threshold is set against synthesised speech only** — the frication one, and its own
+comment says so. The vowel thresholds were balanced against recorded speech, and although the
+recording that originally did it is gone, four corpora measured since (107,259 voiced frames,
+four speakers) agree with it. What is still missing is a real streaming microphone in the room
+the mouth will run in, which is what the noise gate wants — hence this tool being in the tree
+rather than in somebody's scratch directory.
 
 ## Render proof
 

@@ -165,16 +165,23 @@ def make_probe_strip(path: Path, cells: int = 6):
 
 
 def render_fricative(hz: float, bw: float, secs: float = 6.0):
-    """Noise through one broad resonator, then lip radiation -- an "sss".
+    """Noise through one broad resonator -- an "sss".
 
-    The radiation term is the same one the vowel gets. Applying it to one and not the other
-    would BE the difference the classifier is being asked to find.
+    NO radiation term, because render_vowel above has none either. It had one, with a comment
+    claiming the vowel got the same -- it does not, and lip radiation is +6 dB/octave, so the
+    hiss was being handed extra high-band energy that the vowels it is compared against never
+    saw. That tilts the one check this signal exists for in its own favour. Both signals are
+    un-radiated now, which is the three-formant model tests/test_viseme.c's vowel sweep uses.
+
+    (The five-formant model with radiation lives in test_viseme.c and is used there for the
+    frication MARGIN, where the high end has to be modelled honestly. Here the question is only
+    which cell got drawn.)
     """
     n = int(SR * secs)
     r = math.exp(-math.pi * bw / SR)
     a1 = 2.0 * r * math.cos(2.0 * math.pi * hz / SR)
     a2 = -r * r
-    y1 = y2 = prev = 0.0
+    y1 = y2 = 0.0
     seed = 1
     out = [0.0] * n
     for i in range(n):
@@ -182,8 +189,7 @@ def render_fricative(hz: float, bw: float, secs: float = 6.0):
         x = (seed >> 8) / 8388608.0 - 1.0
         y = x + a1 * y1 + a2 * y2
         y2, y1 = y1, y
-        out[i] = y - prev
-        prev = y
+        out[i] = y
     mx = max(abs(v) for v in out) or 1.0
     return [v / mx * 0.3 for v in out]
 
