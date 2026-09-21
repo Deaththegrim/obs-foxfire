@@ -75,6 +75,27 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/placement-proof.py --plugin-build . --pack ../foxfire/packs/basics
 
+      - name: Every shipped pack renders
+        # The gap that let a broken shader ship: alert-proof.py builds its OWN minimal pack, so
+        # the real packs were never rendered by anything in CI. card.effect spent a while calling
+        # a function it no longer had -- "error: opacity undeclared", the card layer drawing
+        # nothing -- and every gate here was green. packforge's proof fails on a plugin warning,
+        # which is what catches a shader that does not compile; it simply was not being run.
+        #
+        # Conditional, because the packs are in a private repo checked out beside this one. ember
+        # is licensed, so it renders blank without a licence file and is deliberately not here --
+        # its shaders are covered by the pack repo's own run.
+        if: hashFiles('../foxfire/packs/basics/pack.json') != ''
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        working-directory: ../foxfire
+        run: |
+          for pack in basics ring tune overlay alerts; do
+            echo "::group::$pack"
+            python3 -m packforge proof --no-thumbs --engine "$GITHUB_WORKSPACE" "packs/$pack"
+            echo "::endgroup::"
+          done
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
