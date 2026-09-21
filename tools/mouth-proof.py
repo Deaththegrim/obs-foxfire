@@ -92,7 +92,8 @@ CHECKS: list[str] = []
 # when the pack became real: the placeholder is a stand-in for junkie's drawing, and the first
 # thing that happens to it is being replaced. A proof that cannot survive its subject being
 # finished is not a proof of the subject.
-CELL_HUE = {"A": 0, "B": 36, "C": 64, "D": 120, "E": 203, "F": 272}
+CELL_HUE = {"A": 0, "B": 36, "C": 64, "D": 120, "E": 203, "F": 272,
+            "G": 160, "H": 240, "X": 310}
 STRIP_CELL = 256
 
 
@@ -136,9 +137,15 @@ def render_vowel(f1: float, f2: float, f3: float, secs: float = 6.0, f0: float =
     return [v / mx * 0.3 for v in out]
 
 
-def make_probe_strip(path: Path):
-    """One flat, saturated cell per shape, in strip order."""
-    order = ["A", "B", "C", "D", "E", "F"]
+def make_probe_strip(path: Path, cells: int = 6):
+    """One flat, saturated cell per shape, in strip order.
+
+    `cells` is not decoration. At six, the only fold the engine can reach is X->A, because it
+    never returns G or H -- so six cells cannot show whether the fallback for a MISSING real
+    shape works. Four can. And nine gives X a hue of its own, which is the only way to tell rest
+    from a closure, since at six they are the same cell.
+    """
+    order = ["A", "B", "C", "D", "E", "F", "G", "H", "X"][:cells]
     img = Image.new("RGBA", (STRIP_CELL * len(order), STRIP_CELL), (0, 0, 0, 0))
     for i, name in enumerate(order):
         r, g, b = colorsys.hsv_to_rgb(CELL_HUE[name] / 360.0, 0.85, 0.95)
@@ -228,7 +235,7 @@ def nearest_shape(hue):
     return best
 
 
-async def drive(pack_id: str, wavs: dict, strip: Path):
+async def drive(pack_id: str, wavs: dict, strip: Path, strip4: Path, strip9: Path):
     ws, c = await ff_proof.open_client("mouth proof")
     seen = {}
     try:
@@ -263,7 +270,7 @@ async def drive(pack_id: str, wavs: dict, strip: Path):
         hue, px = dominant_hue(await shoot(c, "mouth"))
         seen["silence"] = (nearest_shape(hue), hue, px)
 
-        for vowel in ("ee", "ah", "oo", "hiss"):
+        for vowel in ("ee", "ah", "oo", "aw", "hiss"):
             await c.request("SetInputSettings", {"inputName": "voice", "inputSettings": {
                 "local_file": str(wavs[vowel])}})
             await c.request("TriggerMediaInputAction", {
@@ -351,6 +358,58 @@ async def drive(pack_id: str, wavs: dict, strip: Path):
             "l0.mouth": str(strip)}})
         await asyncio.sleep(1.5)
 
+        # ---- the fold, on a strip that does NOT have every shape ----
+        #
+        # Four cells: A B C D. "aw" asks for E, which is not there, and E is a MID-OPEN mouth
+        # -- so it must land on C. The old ladder sent every missing real shape to B, which put
+        # a mid-open vowel on the teeth-together cell; clamping instead would put it on the
+        # wide-open D. This vowel is the one that distinguishes all three answers, which is why
+        # it is here and "oo" is not: a missing F lands on B under the old rule and the new one
+        # alike, so it proves nothing.
+        #
+        # With six cells none of this is reachable at all: the engine never returns G or H, so
+        # X->A is the only fold a six-cell strip can exercise.
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "l0.mouth": str(strip4), "l0.shapes": 4.0}})
+        await asyncio.sleep(1.5)
+        hue, px = await rest_then(wavs["aw"])
+        seen["fold_aw_4cell"] = (nearest_shape(hue), hue, px)
+
+        # ---- rest is not a closure, on a strip where they are different cells ----
+        #
+        # Nine cells gives X a hue of its own. At six, rest folds onto the closed A and the two
+        # are indistinguishable by colour, which is why "Closed-mouth gap" was the one control
+        # this file said it could not cover.
+        #
+        # No timing race: rather than catching a short gap, the gap is made long and the control
+        # is made longer. Three seconds of silence is rest at the shipped 200 ms and is still a
+        # closure at 5000 ms. Ignored, both read X.
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "l0.mouth": str(strip9), "l0.shapes": 9.0}})
+        await asyncio.sleep(1.5)
+        for name, closure in (("default", 200.0), ("long", 5000.0)):
+            await set_mouth("mouth.closure_ms", closure)
+            # speak first, then stop: a mouth that has never heard speech rests rather than
+            # closing, so without this both readings would be X whatever the setting says
+            await c.request("SetInputSettings", {"inputName": "voice", "inputSettings": {
+                "local_file": str(wavs["ah"])}})
+            await c.request("TriggerMediaInputAction", {
+                "inputName": "voice",
+                "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"})
+            await asyncio.sleep(2.0)
+            await c.request("SetInputSettings", {"inputName": "voice", "inputSettings": {
+                "local_file": str(wavs["silence"])}})
+            await c.request("TriggerMediaInputAction", {
+                "inputName": "voice",
+                "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"})
+            await asyncio.sleep(3.0)
+            hue, px = dominant_hue(await shoot(c, "mouth"))
+            seen[f"gap_{name}"] = (nearest_shape(hue), hue, px)
+        await set_mouth("mouth.closure_ms", 200.0)
+        await c.request("SetInputSettings", {"inputName": "mouth", "inputSettings": {
+            "l0.mouth": str(strip), "l0.shapes": 6.0}})
+        await asyncio.sleep(1.5)
+
         # And the pack's OWN art, once, because nothing else here looks at it any more. Not by
         # colour -- that is the coupling this file just got rid of -- but it has to draw
         # something: "" means the pack's own image, and a strip that failed to load draws
@@ -384,7 +443,7 @@ def main() -> int:
         wavs = {}
         # the same formants tests/test_viseme.c uses, and the shape each one should draw
         for name, (f1, f2, f3) in {"ee": (240, 2400, 2900), "ah": (850, 1610, 2600),
-                                   "oo": (250, 595, 2400)}.items():
+                                   "oo": (250, 595, 2400), "aw": (360, 640, 2400)}.items():
             wavs[name] = scratch / f"{name}.wav"
             write_wav(wavs[name], render_vowel(f1, f2, f3))
 
@@ -402,6 +461,10 @@ def main() -> int:
                   render_vowel(240, 2400, 2900, secs=3.0) + render_vowel(250, 595, 2400, secs=3.0))
         strip = scratch / "probe-strip.png"
         make_probe_strip(strip)
+        strip4 = scratch / "probe-strip-4.png"
+        make_probe_strip(strip4, cells=4)
+        strip9 = scratch / "probe-strip-9.png"
+        make_probe_strip(strip9, cells=9)
         wavs["silence"] = scratch / "silence.wav"
         with wave.open(str(wavs["silence"]), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
@@ -418,14 +481,14 @@ def main() -> int:
             stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
         try:
             proof.wait_for_port(proof.PORT, proof.BOOT_TIMEOUT)
-            seen = asyncio.run(drive(pack_id, wavs, strip))
+            seen = asyncio.run(drive(pack_id, wavs, strip, strip4, strip9))
         finally:
             proof.terminate_process_group(p)
     finally:
         shutil.rmtree(cfg, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
-    want = {"silence": "A", "ee": "B", "ah": "D", "oo": "F", "hiss": "B"}
+    want = {"silence": "A", "ee": "B", "ah": "D", "oo": "F", "hiss": "B", "aw": "E"}
     for key, expect in want.items():
         got, hue, px = seen.get(key, (None, None, 0))
         check(f"{key} draws shape {expect}", got == expect,
@@ -436,7 +499,8 @@ def main() -> int:
     # Only the cells picked by hue belong here. pack_art and the two stretch readings carry no
     # shape at all, and counting their None as a distinct value would let a mouth stuck on one
     # cell satisfy the very check written to catch that.
-    skip = ("pack_art", "stretch_loud", "stretch_quiet")
+    skip = ("pack_art", "stretch_loud", "stretch_quiet", "fold_aw_4cell",
+            "gap_default", "gap_long")
     shapes = {k: v[0] for k, v in seen.items() if k not in skip}
     check("the shape actually changes with the audio", len(set(shapes.values())) >= 3,
           f"{shapes} -- a mouth stuck on one shape renders perfectly well and is the failure "
@@ -472,6 +536,19 @@ def main() -> int:
     check("it does not narrow as it closes", lw > 0 and abs(lw - qw) <= max(3, lw * 0.04),
           f"drawn width {lw}px on a vowel against {qw}px in silence -- a jaw closing does not "
           f"pull the corners of the mouth in")
+
+    got, hue, px = seen.get("fold_aw_4cell", (None, None, 0))
+    check("a missing shape folds by aperture, not by index", got == "C",
+          f"\"aw\" asks for E on a four-cell strip that stops at D -> {got} "
+          f"(hue {hue if hue is None else round(hue)}); B is where the old index ladder sent "
+          f"every missing shape, D is where clamping would send it")
+
+    gd = seen.get("gap_default", (None, None, 0))[0]
+    gl = seen.get("gap_long", (None, None, 0))[0]
+    check("the closed-mouth gap decides rest from closure", gd == "X" and gl == "A",
+          f"three seconds of silence after speech: shipped 200 ms -> {gd} (rest), 5000 ms -> "
+          f"{gl} (still a closure); want X then A, and two X's would mean the setting never "
+          f"reached the engine")
 
     got, hue, px = seen.get("oo_biased", (None, None, 0))
     check("the jaw bias re-opens the mouth", got == "D",
