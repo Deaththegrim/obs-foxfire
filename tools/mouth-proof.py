@@ -10,12 +10,28 @@ So the placeholder strip gives each shape a DIFFERENT HUE, and this plays vowels
 published formants and reads the hue back off the frame. The hue says which cell was drawn, which
 is the one thing no other test here can see.
 
-ARMED by mutating the SHADER, which is the half nothing else covers:
+It also checks the Mouth controls in the properties panel. Those are ENGINE state, not shader
+uniforms, so no render can show whether the panel is wired to the engine or to nothing -- the
+mouth looks equally correct either way. Each is checked by making it change a shape already
+known from the sweep above.
 
-    control (everything wired up)             5/5 passed
-    mouth stuck on the first cell             1/5   -- only "silence draws A" survives, which is
+WHAT THIS DOES NOT COVER, of the four controls: only "Silence threshold" and "Minimum shape
+time" are here. "Closed-mouth gap" chooses between rest and a closure, and the placeholder strip
+folds rest onto the closed cell, so both land on the same hue and no colour can tell them apart.
+"Mouth close speed" moves `mouth_open`, which changes no cell index. Nor is the `uses_mouth()`
+half covered -- obs-websocket cannot enumerate a source's properties, so whether the group
+APPEARS is unproven here; what is proven is that the settings reach the classifier.
+
+ARMED by mutation -- every number below was measured by running it, not predicted:
+
+    control (everything wired up)             7/7 passed
+    mouth stuck on the first cell             2/7   -- the survivors are "silence draws A" and the
+                                                       gate check, which both want A anyway:
                                                        exactly the false pass this file is for
-    rest folds to the wrong shape             4/5
+    rest folds to the wrong shape             5/7
+    mouth settings never reach the engine     5/7
+    hold wired to the release field           6/7
+    uses_mouth() forced false                 7/7   -- UNARMED, as stated above
 
     tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
 """
@@ -59,7 +75,7 @@ def check(name, ok, detail):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
 
 
-def synth_vowel(path: Path, f1: float, f2: float, f3: float, secs: float = 6.0, f0: float = 120.0):
+def render_vowel(f1: float, f2: float, f3: float, secs: float = 6.0, f0: float = 120.0):
     """A vowel: glottal pulses through three formant resonators, then normalised.
 
     The same source-filter model tests/test_viseme.c uses, for the same reason -- the right answer
@@ -89,11 +105,15 @@ def synth_vowel(path: Path, f1: float, f2: float, f3: float, secs: float = 6.0, 
             x = y
         out[i] = x
     mx = max(abs(v) for v in out) or 1.0
+    return [v / mx * 0.3 for v in out]
+
+
+def write_wav(path: Path, samples):
     with wave.open(str(path), "w") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(SR)
-        w.writeframes(b"".join(struct.pack("<h", int(v / mx * 0.3 * 32000)) for v in out))
+        w.writeframes(b"".join(struct.pack("<h", int(v * 32000)) for v in samples))
 
 
 async def shoot(c, name):
@@ -177,6 +197,43 @@ async def drive(pack_id: str, wavs: dict, scratch: Path):
             await asyncio.sleep(3.0)
             hue, px = dominant_hue(await shoot(c, "mouth"))
             seen[vowel] = (nearest_shape(hue), hue, px)
+
+        async def set_mouth(key, value):
+            await c.request("SetInputSettings",
+                            {"inputName": "mouth", "inputSettings": {key: value}})
+
+        async def rest_then(path, settle=3.0):
+            """Silence long enough to reach rest, then this file from the top.
+
+            The silence is not padding. Coming out of rest is deliberately immediate, so this
+            is what makes the first voiced frame choose a shape rather than inherit whatever
+            the previous clip left up.
+            """
+            for f in (wavs["silence"], path):
+                await c.request("SetInputSettings", {"inputName": "voice", "inputSettings": {
+                    "local_file": str(f)}})
+                await c.request("TriggerMediaInputAction", {
+                    "inputName": "voice",
+                    "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART"})
+                await asyncio.sleep(2.5 if f is wavs["silence"] else settle)
+            return dominant_hue(await shoot(c, "mouth"))
+
+        # GATE, at the top of its own slider range: the test tone sits near 0.08, so a mouth
+        # that reads the setting stops answering the audio at all and falls back to rest.
+        await set_mouth("mouth.gate", 0.3)
+        hue, px = await rest_then(wavs["ah"])
+        seen["gated"] = (nearest_shape(hue), hue, px)
+        await set_mouth("mouth.gate", 0.04)
+
+        # HOLD: one file, "ee" running straight into "oo". At the shipped hold the mouth has
+        # moved to F by a second into the second vowel; held for eight seconds it is still on
+        # B, the shape the FIRST vowel chose. Same audio both times -- only the setting differs.
+        hue, px = await rest_then(wavs["ee_oo"], settle=4.5)
+        seen["ee_oo_free"] = (nearest_shape(hue), hue, px)
+        await set_mouth("mouth.hold_ms", 8000.0)
+        hue, px = await rest_then(wavs["ee_oo"], settle=4.5)
+        seen["ee_oo_held"] = (nearest_shape(hue), hue, px)
+        await set_mouth("mouth.hold_ms", 80.0)
     finally:
         await ws.close()
     return seen
@@ -203,7 +260,15 @@ def main() -> int:
         for name, (f1, f2, f3) in {"ee": (240, 2400, 2900), "ah": (850, 1610, 2600),
                                    "oo": (250, 595, 2400)}.items():
             wavs[name] = scratch / f"{name}.wav"
-            synth_vowel(wavs[name], f1, f2, f3)
+            write_wav(wavs[name], render_vowel(f1, f2, f3))
+
+        # "ee" running straight into "oo" with NO gap between them. The gap is the point: a
+        # silence long enough to reach the mouth resets it to rest, and coming out of rest is
+        # deliberately immediate, which bypasses the hold entirely. Switching files to change
+        # vowel would therefore pass whether the hold works or not.
+        wavs["ee_oo"] = scratch / "ee_oo.wav"
+        write_wav(wavs["ee_oo"],
+                  render_vowel(240, 2400, 2900, secs=3.0) + render_vowel(250, 595, 2400, secs=3.0))
         wavs["silence"] = scratch / "silence.wav"
         with wave.open(str(wavs["silence"]), "w") as w:
             w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR)
@@ -239,6 +304,19 @@ def main() -> int:
     check("the shape actually changes with the audio", len(set(shapes.values())) >= 3,
           f"{shapes} -- a mouth stuck on one shape renders perfectly well and is the failure "
           f"this whole file exists to catch")
+
+    # The two Mouth controls whose effect is visible in WHICH CELL is drawn. Nothing else can
+    # see these: they are engine state, not shader uniforms, so every render looks correct
+    # whether the panel is wired to the engine or to nothing.
+    got, hue, px = seen.get("gated", (None, None, 0))
+    check("raising the silence threshold silences the mouth", got == "A",
+          f"a tone at ~0.08 under a gate of 0.3 -> {got} (hue {hue if hue is None else round(hue)}); "
+          f"D would mean the setting never reached the engine")
+    free = seen.get("ee_oo_free", (None, None, 0))[0]
+    held = seen.get("ee_oo_held", (None, None, 0))[0]
+    check("the hold time keeps a shape up", free == "F" and held == "B",
+          f"same audio, ee running into oo: shipped hold -> {free}, hold 8000 ms -> {held} "
+          f"(want F then B)")
 
     print(f"\nmouth proof: {len(CHECKS) - len(FAILS)}/{len(CHECKS)} passed")
     if not CHECKS:

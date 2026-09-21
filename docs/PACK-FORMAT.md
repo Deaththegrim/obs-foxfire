@@ -422,6 +422,22 @@ mouth registered in the same place in every cell, transparent background. The en
 bound image's pixel dimensions as `mouth_size`, so a shader can work out one cell's aspect and
 avoid squashing every mouth by the number of cells.
 
+### The Mouth controls
+
+A preset that declares either builtin also gets a **Mouth** group in the properties panel, added
+by the engine rather than by the pack. Nothing here is a shader uniform — these four are the
+timing the classifier runs on, and they describe the voice and the microphone rather than the art:
+
+| Control | Default | What it does |
+| --- | --- | --- |
+| Silence threshold | 0.04 | Below this the mouth stops answering. Breath, a fan and a keyboard all have energy; a mouth that answers them looks possessed. A quiet talker needs it lower. |
+| Closed-mouth gap (ms) | 200 | A gap **shorter** than this is a stop consonant — the closure in P, B, M — and the mouth shuts. Longer, and the speaker has stopped, so the mouth rests. |
+| Minimum shape time (ms) | 80 | How long a shape stays up once chosen. The number that decides whether this reads as speech or as flapping; roughly the length of a spoken phoneme. |
+| Mouth close speed (ms) | 120 | How fast `mouth_open` falls. Opening is immediate either way — a mouth that lags the attack of a word looks dubbed. |
+
+They are **not** keyed per layer, so switching preset keeps them: a streamer who dialled a mouth
+in to their own voice should not have to do it again to try different art.
+
 ## The shared controls: Placement and Response
 
 Every Foxfire shader that **draws a shape** carries the same block of controls, with the same

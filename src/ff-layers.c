@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stddef.h>
 
 /* Uniform names the engine feeds every frame. They are never exposed as properties, and a pack
    that declares one gets the engine's value, not an author-editable knob. */
@@ -22,6 +23,57 @@ static bool is_builtin(const char *n)
 	for (int i = 0; BUILTINS[i]; i++)
 		if (!strcmp(BUILTINS[i], n))
 			return true;
+	return false;
+}
+
+/* ------------------------------------------------------------------ mouth timing
+
+   The four numbers that decide whether lipsync reads as speech are engine state, not shader
+   uniforms: nothing in a pack declares them, so without this they were whatever
+   ff_viseme_defaults said and could only be changed by rebuilding the plugin. They describe the
+   VOICE and the microphone -- a quiet talker needs a lower gate, a fast one a shorter hold -- so
+   they are the settings most likely to need moving, and were the only ones with no way to move
+   them.
+
+   ONE TABLE, THREE READERS. The property, its default and the value the engine runs on all come
+   from here. Written out three times instead, a control can exist in the panel and be read into
+   nothing, which looks exactly like a knob that does not work. */
+struct mouth_ctl {
+	const char *key;  /* not "l<n>.<name>", so is_layer_key() leaves these alone: switching
+	                     preset must not discard a mouth that was tuned to a voice */
+	const char *text; /* locale key */
+	size_t off;       /* field in struct ff_viseme_params. An offset rather than four branches:
+	                     a branch can be written against the wrong field and still compile. */
+	double min, max, step;
+};
+static const struct mouth_ctl MOUTH_CTLS[] = {
+	{"mouth.gate", "Foxfire.Mouth.Gate", offsetof(struct ff_viseme_params, gate), 0.0, 0.3, 0.005},
+	{"mouth.closure_ms", "Foxfire.Mouth.Closure", offsetof(struct ff_viseme_params, closure_ms), 40.0, 600.0,
+	 10.0},
+	{"mouth.hold_ms", "Foxfire.Mouth.Hold", offsetof(struct ff_viseme_params, hold_ms), 0.0, 250.0, 5.0},
+	{"mouth.release_ms", "Foxfire.Mouth.Release", offsetof(struct ff_viseme_params, release_ms), 0.0, 500.0,
+	 10.0},
+};
+#define MOUTH_NCTLS (sizeof MOUTH_CTLS / sizeof MOUTH_CTLS[0])
+
+static float *mouth_field(struct ff_viseme_params *p, size_t off)
+{
+	return (float *)((char *)p + off);
+}
+
+/* True only when some layer actually reads a mouth builtin. Every other preset is a visualizer
+   with no mouth in it, and four controls about lipsync in a spectrum analyser's panel are four
+   controls that do nothing. */
+static bool uses_mouth(const struct ff_renderer *r)
+{
+	for (size_t i = 0; i < r->nlayers; i++) {
+		const struct ff_layer *L = &r->layers[i];
+		for (size_t k = 0; k < L->nparams; k++) {
+			const char *n = L->params[k].name;
+			if (!strcmp(n, "viseme") || !strcmp(n, "mouth_open"))
+				return true;
+		}
+	}
 	return false;
 }
 
@@ -1147,6 +1199,20 @@ void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props)
 				add_param_property(ctx.g[gi].props, p, key, label);
 		}
 	}
+
+	/* Last, and under a key no pack group can produce: group_index() builds "grp.<sanitised>",
+	   and sanitise() turns a '.' into '_', so "grp.ff.mouth" is unreachable from a pack. A
+	   collision there would put the engine's controls and a pack's into one box under whichever
+	   label was added first. */
+	if (uses_mouth(r)) {
+		obs_properties_t *sub = obs_properties_create();
+		obs_properties_add_group(props, "grp.ff.mouth", obs_module_text("Foxfire.Mouth.Group"),
+					 OBS_GROUP_NORMAL, sub);
+		for (size_t i = 0; i < MOUTH_NCTLS; i++)
+			obs_properties_add_float_slider(sub, MOUTH_CTLS[i].key,
+							obs_module_text(MOUTH_CTLS[i].text), MOUTH_CTLS[i].min,
+							MOUTH_CTLS[i].max, MOUTH_CTLS[i].step);
+	}
 }
 
 void ff_renderer_set_defaults(struct ff_renderer *r, obs_data_t *settings)
@@ -1196,12 +1262,36 @@ void ff_renderer_set_defaults(struct ff_renderer *r, obs_data_t *settings)
 			}
 		}
 	}
+
+	/* From ff_viseme_defaults, never from a second list of numbers here: two lists of the same
+	   defaults drift, and the panel would then open showing a value the engine is not using. */
+	if (uses_mouth(r)) {
+		struct ff_viseme_params d;
+		ff_viseme_defaults(&d);
+		for (size_t i = 0; i < MOUTH_NCTLS; i++)
+			obs_data_set_default_double(settings, MOUTH_CTLS[i].key,
+						    (double)*mouth_field(&d, MOUTH_CTLS[i].off));
+	}
 }
 
 void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 {
 	if (!r || !settings)
 		return;
+
+	/* Unconditionally, and rebuilt from the defaults each time: a control the viewer has not
+	   touched has no user value, and reading it would hand the engine a 0. Zero is a real
+	   setting for three of these four -- gate 0 answers the room, hold 0 flaps every frame --
+	   so "missing" must not silently become "zero". Restore Defaults clears the key, and this
+	   is what puts the default back. */
+	struct ff_viseme_params m;
+	ff_viseme_defaults(&m);
+	for (size_t i = 0; i < MOUTH_NCTLS; i++)
+		if (obs_data_has_user_value(settings, MOUTH_CTLS[i].key))
+			*mouth_field(&m, MOUTH_CTLS[i].off) =
+				(float)obs_data_get_double(settings, MOUTH_CTLS[i].key);
+	r->viseme_params = m;
+
 	for (size_t i = 0; i < r->nlayers; i++) {
 		struct ff_layer *L = &r->layers[i];
 		for (size_t k = 0; k < L->nparams; k++) {
