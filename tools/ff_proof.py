@@ -430,10 +430,14 @@ async def run(c):
     # Check both that pack was refused AND that the reason was symlinks (not min_engine)
     check("symlink-zip install refused: pack not added", "evilpack" not in ids_after_attack,
           f"{len(ids_after_attack)} pack(s): {ids_after_attack}")
-    settings = (await c.request("GetInputSettings", {"inputName": "ff"}))["inputSettings"]
-    install_msg = settings.get("install_msg", "")
-    check("symlink-zip refused for symlink (not min_engine)", "symlink" in install_msg.lower(),
-          f"install_msg={install_msg!r}, must mention symlinks")
+    # There used to be a check here asserting the refusal REASON by reading "install_msg" out of
+    # GetInputSettings. It could never pass: install_msg is an instance field surfaced as a
+    # read-only info property (src/ff-props.c add_status_lines, key "status.install"), never a
+    # setting, so the read always returned "". That is the mirror of a test that cannot fail --
+    # a gate permanently red for a reason unrelated to the thing it names.
+    # The reason IS asserted, in tools/proof.py: "pack install: zip contains a symlink entry,
+    # refused:" is in ALLOWED_WARNING_TEXTS and that list is now checked for having FIRED, so a
+    # refusal for the wrong reason fails the run there.
     check("symlink-zip install: victim directory outside packs/ survives", canary.exists(),
           f"{canary} exists={canary.exists()}")
 

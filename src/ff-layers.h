@@ -31,7 +31,16 @@ struct ff_param {
 	bool has_range;
 	float def[4];         /* live value: preset default, then the user's setting if there is one */
 	float preset_def[4];  /* the pristine preset value; what "Restore Defaults" must come back to */
-	gs_image_file_t *tex; /* TEXTURE params only, from a <string path="..."> annotation */
+	gs_image_file_t *tex;     /* TEXTURE params only: whatever is currently bound */
+	char tex_pack[512];       /* the pack's own asset, from <string path="...">; "" if none */
+	char tex_user[512];       /* the file the VIEWER picked; "" if none. Wins over tex_pack. */
+	bool tex_user_allowed;    /* the shader opted in with <bool user = true;> */
+	char list[512];           /* optional <string list = "Name=value;Name=value";>: renders the
+	                             knob as a named dropdown instead of a bare number, so a pack can
+	                             say "Kick" rather than making the viewer know it means 60 Hz */
+	gs_eparam_t *tex_size_ep; /* optional sibling "<name>_size" float2, fed the pixel dimensions:
+	                             a shader cannot ask a texture its size (GetDimensions does not
+	                             compile here), and a viewer-supplied image can be any aspect. */
 	bool builtin;
 };
 
@@ -53,6 +62,8 @@ struct ff_renderer {
 	gs_texture_t *blank; /* 1x1 transparent; stands in for a NULL input so `image` is never NULL */
 	uint32_t width, height;
 	float time;
+	char pack_dir[512]; /* kept so a texture can be re-resolved after load, when the viewer
+	                       picks a different file and only the renderer is in scope */
 	uint32_t rng; /* xorshift32 state; per renderer so two instances do not move in lockstep */
 	float rand_instance;
 	int64_t frames_rendered;

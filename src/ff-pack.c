@@ -377,8 +377,13 @@ static bool path_is_symlink(const char *path)
 		return true;
 	}
 	DWORD attrs = GetFileAttributesW(w);
+	DWORD gle = (attrs == INVALID_FILE_ATTRIBUTES) ? GetLastError() : 0;
 	bfree(w);
 	if (attrs == INVALID_FILE_ATTRIBUTES) {
+		/* the twin of the POSIX ENOENT case below: "not there" is the normal state of the
+		   stale-temp slot, not an inability to tell */
+		if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND)
+			return false;
 		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (GetFileAttributesW failed)",
 			 path);
 		return true;
@@ -391,6 +396,13 @@ static bool path_is_symlink(const char *path)
 	struct stat st;
 	if (lstat(path, &st) != 0) {
 		int err = errno;
+		/* ENOENT is not a failure to determine anything -- it says the path is not there,
+		   which is the ordinary state of the stale-temp slot on almost every install. Failing
+		   closed here made a guard fire during completely normal operation and put a warning
+		   in the log on every clean run. Anything else (EACCES on a traversal component,
+		   ELOOP, ENAMETOOLONG) genuinely means "cannot tell", and that still fails closed. */
+		if (err == ENOENT)
+			return false;
 		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (lstat failed: %s)",
 			 path, strerror(err));
 		return true;

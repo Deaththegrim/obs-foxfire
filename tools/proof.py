@@ -104,6 +104,12 @@ ALLOWED_WARNING_TEXTS = (
     # line here would mean the entry no longer fires, not that the log got quieter.
     "pack install: zip contains a symlink entry, refused:",
     "install '/tmp/ff-symlink-attack.zip': refused: zip must not contain symlinks",
+    # the second attack zip: same defence, driven through the CLEANUP path (its manifest declares
+    # an impossible min_engine so extraction is attempted and then torn down). Listed separately
+    # rather than loosening the two entries above to a shared substring: the full path is a
+    # deliberate fail-loud coupling, so renaming either fixture breaks the run instead of quietly
+    # matching something else.
+    "install '/tmp/ff-symlink-cleanup-test.zip': refused: zip must not contain symlinks",
 )
 
 
@@ -397,7 +403,10 @@ async def run(args) -> int:
 
     env = dict(os.environ, XDG_CONFIG_HOME=str(cfg_root))
     proc = subprocess.Popen(
-        ["xvfb-run", "-a", "-s", f"-screen 0 {SCREEN}", "obs", "--minimize-to-tray"],
+        ["xvfb-run", "-a", "-s", f"-screen 0 {SCREEN}", "obs", "--multi", "--minimize-to-tray"],
+        # --multi: without it a second OBS opens a "already running" warning dialog;
+        # under Xvfb nobody can click it, so the process hangs to the boot timeout and
+        # never writes a log -- indistinguishable from a crash.
         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
 
     report = {"obs": None, "checks_armed": 0, "presets_inspected": 0, "presets": [],

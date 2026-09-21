@@ -104,6 +104,8 @@ static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
 				set_field(p->label, sizeof p->label, s);
 			else if (!strcmp(ai.name, "group"))
 				set_field(p->group, sizeof p->group, s);
+			else if (!strcmp(ai.name, "list"))
+				set_field(p->list, sizeof p->list, s);
 		} else if (ai.type == GS_SHADER_PARAM_FLOAT) {
 			void *v = default_val_of_size(a, sizeof(float));
 			if (!v)
@@ -142,6 +144,59 @@ static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
 
 /* The default value of a texture2d param is unusable, so packs name their textures with a string
    annotation: uniform texture2d ink <string path="textures/ink.png";>; */
+static void free_texture(struct ff_param *p)
+{
+	if (!p->tex)
+		return;
+	gs_image_file_free(p->tex);
+	bfree(p->tex);
+	p->tex = NULL;
+}
+
+/* Loads one absolute file into p->tex. Graphics context required. */
+static bool load_texture_file(struct ff_param *p, const char *full)
+{
+	p->tex = bzalloc(sizeof(gs_image_file_t));
+	gs_image_file_init(p->tex, full);
+	gs_image_file_init_texture(p->tex);
+	if (p->tex->loaded)
+		return true;
+	free_texture(p);
+	return false;
+}
+
+/* Binds whichever image should be showing: the viewer's pick if they made one, otherwise the
+   pack's own asset. Graphics context required; called at load and again whenever the viewer
+   changes the file.
+
+   The two paths are deliberately judged by DIFFERENT rules, and that asymmetry is the point.
+   A pack-relative path is content the pack author wrote, so it goes through ff_rel_ok -- the
+   same rule as a manifest path -- because a pack must never be able to reach outside itself.
+   The viewer's path is absolute by construction: they chose it in a file dialog, on their own
+   machine, pointing at their own file. Running ff_rel_ok over it would refuse every legitimate
+   choice, which is a guard failing correct work rather than preventing anything. */
+static void ff_param_bind_texture(struct ff_param *p, const char *pack_dir)
+{
+	free_texture(p);
+
+	if (p->tex_user[0]) {
+		if (load_texture_file(p, p->tex_user))
+			return;
+		obs_log(LOG_WARNING, "image '%s' could not be loaded; using the pack's own art",
+			p->tex_user);
+		/* fall through to the pack asset rather than rendering nothing: a viewer who picks
+		   a file OBS cannot read still gets the preset they paid for */
+	}
+
+	if (!p->tex_pack[0])
+		return;
+	struct dstr full = {0};
+	dstr_printf(&full, "%s/%s", pack_dir, p->tex_pack);
+	if (!load_texture_file(p, full.array))
+		obs_log(LOG_WARNING, "texture '%s' failed to load", full.array);
+	dstr_free(&full);
+}
+
 static void load_texture_param(struct ff_param *p, const char *pack_dir)
 {
 	size_t n = gs_param_get_num_annotations(p->ep);
@@ -149,6 +204,14 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 		gs_eparam_t *a = gs_param_get_annotation_by_idx(p->ep, i);
 		struct gs_effect_param_info ai;
 		gs_effect_get_param_info(a, &ai);
+		if (ai.type == GS_SHADER_PARAM_BOOL && !strcmp(ai.name, "user")) {
+			void *v = default_val_of_size(a, sizeof(bool));
+			if (v) {
+				p->tex_user_allowed = *(bool *)v;
+				bfree(v);
+			}
+			continue;
+		}
 		if (ai.type != GS_SHADER_PARAM_STRING || strcmp(ai.name, "path"))
 			continue;
 		char rel[512];
@@ -162,20 +225,9 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 			obs_log(LOG_WARNING, "texture path '%s' refused", rel);
 			continue;
 		}
-		struct dstr full = {0};
-		dstr_printf(&full, "%s/%s", pack_dir, rel);
-		p->tex = bzalloc(sizeof(gs_image_file_t));
-		gs_image_file_init(p->tex, full.array);
-		gs_image_file_init_texture(p->tex);
-		if (!p->tex->loaded) {
-			obs_log(LOG_WARNING, "texture '%s' failed to load", full.array);
-			gs_image_file_free(p->tex);
-			bfree(p->tex);
-			p->tex = NULL;
-		}
-		dstr_free(&full);
-		return;
+		set_field(p->tex_pack, sizeof p->tex_pack, rel);
 	}
+	ff_param_bind_texture(p, pack_dir);
 }
 
 /* A preset override must match the shape of the uniform it names. The brief's unconditional
@@ -303,8 +355,20 @@ static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const str
 			continue;
 		read_annotations(ep, p);
 		read_param_default(p, def, preset->id, idx);
-		if (info.type == GS_SHADER_PARAM_TEXTURE)
+		if (info.type == GS_SHADER_PARAM_TEXTURE) {
 			load_texture_param(p, pack->dir);
+			/* "<name>_size" is fed the image's pixel dimensions if the shader declares it.
+			   float2 is not user-editable, so this never shows up as a stray control. */
+			char sz[96];
+			snprintf(sz, sizeof sz, "%s_size", info.name);
+			gs_eparam_t *sep = gs_effect_get_param_by_name(L->effect, sz);
+			if (sep) {
+				struct gs_effect_param_info si;
+				gs_effect_get_param_info(sep, &si);
+				if (si.type == GS_SHADER_PARAM_VEC2)
+					p->tex_size_ep = sep;
+			}
+		}
 	}
 	dstr_free(&path);
 }
@@ -314,10 +378,7 @@ static void unload_layers(struct ff_renderer *r)
 	for (size_t i = 0; i < FF_MAX_LAYERS; i++) {
 		struct ff_layer *L = &r->layers[i];
 		for (size_t k = 0; k < L->nparams; k++) {
-			if (L->params[k].tex) {
-				gs_image_file_free(L->params[k].tex);
-				bfree(L->params[k].tex);
-			}
+			free_texture(&L->params[k]);
 		}
 		bfree(L->params);
 		if (L->effect)
@@ -379,6 +440,8 @@ void ff_renderer_destroy(struct ff_renderer *r)
 
 void ff_renderer_load(struct ff_renderer *r, const struct ff_pack *pack, const struct ff_preset *preset)
 {
+	if (r && pack)
+		set_field(r->pack_dir, sizeof r->pack_dir, pack->dir);
 	if (!r)
 		return;
 	unload_layers(r);
@@ -462,6 +525,13 @@ static void set_params(struct ff_renderer *r, struct ff_layer *L)
 		case GS_SHADER_PARAM_TEXTURE:
 			/* an unbound texture2d would sample NULL, which is undefined on both backends */
 			gs_effect_set_texture(p->ep, p->tex ? p->tex->texture : r->blank);
+			if (p->tex_size_ep) {
+				/* 1x1 for the blank stand-in, so a shader dividing by it cannot divide
+				   by zero when no image is bound */
+				struct vec2 sz = {.x = p->tex ? (float)p->tex->cx : 1.f,
+						  .y = p->tex ? (float)p->tex->cy : 1.f};
+				gs_effect_set_vec2(p->tex_size_ep, &sz);
+			}
 			break;
 		default:
 			break;
@@ -625,9 +695,48 @@ static void unpack_color(uint32_t c, float v[4])
 	v[3] = (float)((c >> 24) & 0xFF) / 255.f;
 }
 
+/* "Name=value;Name=value" -> a dropdown of named numbers. Entries that do not parse are skipped
+   with a warning rather than silently dropped: a typo in a pack's annotation would otherwise show
+   up as a short list nobody can explain. Returns false if nothing usable was found, so the caller
+   can fall back to the ordinary slider instead of leaving an empty combo box. */
+static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
+{
+	obs_property_t *list =
+		obs_properties_add_list(grp, key, label, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_FLOAT);
+	size_t added = 0;
+	char buf[512];
+	set_field(buf, sizeof buf, p->list);
+	char *save = NULL;
+	for (char *tok = strtok_r(buf, ";", &save); tok; tok = strtok_r(NULL, ";", &save)) {
+		while (*tok == ' ')
+			tok++;
+		char *eq = strchr(tok, '=');
+		if (!eq || eq == tok) {
+			obs_log(LOG_WARNING, "param '%s': list entry '%s' has no Name=value", p->name, tok);
+			continue;
+		}
+		*eq = '\0';
+		char *endp = NULL;
+		double v = strtod(eq + 1, &endp);
+		if (endp == eq + 1) {
+			obs_log(LOG_WARNING, "param '%s': list entry '%s' has no number", p->name, tok);
+			continue;
+		}
+		obs_property_list_add_float(list, tok, v);
+		added++;
+	}
+	if (added)
+		return true;
+	obs_property_set_visible(list, false); /* an empty combo would be a dead control */
+	return false;
+}
+
 static void add_param_property(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
 {
 	float step = p->step > 0.f ? p->step : 0.01f;
+	if (p->list[0] && (p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT) &&
+	    add_named_list(grp, p, key, label))
+		return;
 	switch (p->type) {
 	case GS_SHADER_PARAM_FLOAT:
 		if (p->has_range)
@@ -651,8 +760,13 @@ static void add_param_property(obs_properties_t *grp, const struct ff_param *p, 
 	case GS_SHADER_PARAM_VEC4:
 		obs_properties_add_color_alpha(grp, key, label);
 		break;
+	case GS_SHADER_PARAM_TEXTURE:
+		/* only reached when the shader opted in -- is_exposed() gates it */
+		obs_properties_add_path(grp, key, label, OBS_PATH_FILE,
+					"Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*.*)", NULL);
+		break;
 	default:
-		/* TEXTURE, VEC2/VEC3, STRING and the matrix types are not user-editable */
+		/* VEC2/VEC3, STRING and the matrix types are not user-editable */
 		break;
 	}
 }
@@ -662,7 +776,8 @@ static bool is_exposed(const struct ff_param *p)
 	if (p->builtin)
 		return false;
 	return p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT || p->type == GS_SHADER_PARAM_BOOL ||
-	       p->type == GS_SHADER_PARAM_VEC4;
+	       p->type == GS_SHADER_PARAM_VEC4 ||
+	       (p->type == GS_SHADER_PARAM_TEXTURE && p->tex_user_allowed);
 }
 
 /* The render loop skips a layer that failed to load -- compile failure, or a compiled effect
@@ -735,6 +850,9 @@ void ff_renderer_set_defaults(struct ff_renderer *r, obs_data_t *settings)
 			case GS_SHADER_PARAM_VEC4:
 				obs_data_set_default_int(settings, key, (long long)pack_color(p->preset_def));
 				break;
+			case GS_SHADER_PARAM_TEXTURE:
+				obs_data_set_default_string(settings, key, ""); /* "" = the pack's own art */
+				break;
 			default:
 				break;
 			}
@@ -758,6 +876,12 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 				/* untouched, or cleared by Restore Defaults: put the preset's own value
 				   back. Skipping would leave the last user value in p->def forever. */
 				memcpy(p->def, p->preset_def, sizeof p->def);
+				/* the same reasoning for an image: Restore Defaults has to give the
+				   pack's own art back, not leave the viewer's last file bound */
+				if (p->type == GS_SHADER_PARAM_TEXTURE && p->tex_user[0]) {
+					p->tex_user[0] = '\0';
+					ff_param_bind_texture(p, r->pack_dir);
+				}
 				continue;
 			}
 			switch (p->type) {
@@ -773,6 +897,19 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 			case GS_SHADER_PARAM_VEC4:
 				unpack_color((uint32_t)obs_data_get_int(settings, key), p->def);
 				break;
+			case GS_SHADER_PARAM_TEXTURE: {
+				/* Reload only when the path actually changed. update() runs on every
+				   settings touch -- re-decoding the image each time would stall the UI
+				   thread on a large PNG for no reason. */
+				const char *want = obs_data_get_string(settings, key);
+				if (!want)
+					want = "";
+				if (strcmp(want, p->tex_user) != 0) {
+					set_field(p->tex_user, sizeof p->tex_user, want);
+					ff_param_bind_texture(p, r->pack_dir);
+				}
+				break;
+			}
 			default:
 				break;
 			}
