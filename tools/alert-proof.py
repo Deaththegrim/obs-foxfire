@@ -106,6 +106,25 @@ async def fire(c):
     await c.request("PressInputPropertiesButton", {"inputName": "alert", "propertyName": "test"})
 
 
+async def reset(c, tries=40):
+    """Empties the queue and the screen before a measurement.
+
+    Necessary because alerts QUEUE: presses from an earlier check are still waiting, and a frame
+    measured on top of a backlog is measuring somebody else's alert. Finding this was itself
+    useful -- three checks failed at once the moment queueing landed, all of them reading a
+    previous check's leftovers, which is exactly what a streamer would see if these controls did
+    not work. So this doubles as the gate on Clear and Skip: if either did nothing, the wait below
+    would time out.
+    """
+    await c.request("PressInputPropertiesButton", {"inputName": "alert", "propertyName": "clear"})
+    await c.request("PressInputPropertiesButton", {"inputName": "alert", "propertyName": "skip"})
+    for _ in range(tries):
+        await asyncio.sleep(0.25)
+        if ink(await shoot(c)) == 0:
+            return
+    raise RuntimeError("the alert source would not go idle: Clear or Skip did nothing")
+
+
 async def drive(sound: Path, logdir: Path):
     ws, c = await ff_proof.open_client("alert proof")
     try:
@@ -139,11 +158,13 @@ async def drive(sound: Path, logdir: Path):
         # previous 64px size) and the long one 268px (still the short text, now at 24px) -- which
         # reads as "longer text draws narrower" and sent me looking for a bug in the shader side
         # of a feature that has no shader.
+        await reset(c)
         await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {"font_size": 24}})
         await asyncio.sleep(0.8)
         await fire(c)
         await asyncio.sleep(1.2)
         w_short = ink_width(await shoot(c))
+        await reset(c)
         await c.request("SetInputSettings", {"inputName": "alert",
                                              "inputSettings": {"template": "{name} followed and here is a much longer line"}})
         await asyncio.sleep(0.8)
@@ -156,6 +177,7 @@ async def drive(sound: Path, logdir: Path):
               f"one (both inside the {W}px canvas, so neither is clipped)")
 
         # back to the short one, then let it run out
+        await reset(c)
         await c.request("SetInputSettings", {"inputName": "alert",
                                              "inputSettings": {"template": "{name} followed!",
                                                                "font_size": 64}})
@@ -165,9 +187,77 @@ async def drive(sound: Path, logdir: Path):
         n_after = ink(await shoot(c))
         check("the alert goes away when it is over", n_after == 0,
               f"{n_after} pixels 5.5s after firing a 4.0s alert")
+        await check_queue(c)
     finally:
         await ws.close()
     return logdir
+
+
+async def check_queue(c):
+    """Two events at once must both be shown, one after the other.
+
+    Without a queue the second press restarts the first alert, and everyone but the last person
+    to arrive is simply never thanked. Nothing about that is visible in a frame -- the alert that
+    IS drawn looks perfect -- so this is measured in TIME: fire twice at a 2s duration, and look
+    at t=3s. With a queue the second alert is on screen then. Without one, both presses collapsed
+    into a single alert that ended at t=2 and the frame is empty.
+    """
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert",
+                                         "inputSettings": {"duration": 2.0, "paused": False,
+                                                           "template": "{name} followed!",
+                                                           "font_size": 48}})
+    await asyncio.sleep(0.8)
+
+    t0 = time.monotonic()
+    await fire(c)
+    await fire(c)
+
+    async def ink_at(when: float) -> int:
+        await asyncio.sleep(max(0.0, when - (time.monotonic() - t0)))
+        return ink(await shoot(c))
+
+    first = await ink_at(1.0)
+    second = await ink_at(3.0)
+    empty = await ink_at(5.2)
+    check("two alerts at once both play, one after the other",
+          first > 200 and second > 200 and empty == 0,
+          f"ink at t=1.0s {first}, t=3.0s {second}, t=5.2s {empty}; duration is 2.0s, so ink at "
+          f"t=3.0s can only be the SECOND alert -- with no queue the second press would have "
+          f"restarted the first and the frame would be empty by then")
+
+    # Holding stops alerts STARTING, and nothing is lost by it.
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {"paused": True}})
+    await asyncio.sleep(0.8)
+    await fire(c)
+    await asyncio.sleep(1.5)
+    held = ink(await shoot(c))
+    check("holding stops an alert starting", held == 0, f"{held} pixels 1.5s after firing while held")
+
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {"paused": False}})
+    await asyncio.sleep(1.2)
+    released = ink(await shoot(c))
+    check("and releasing plays what was waiting rather than dropping it",
+          released > 200, f"{released} pixels 1.2s after releasing the hold")
+    # Skip must silence what it skipped. Caught by the audio control reading 0.298 instead of
+    # silence: reset() had skipped an alert whose 3s tone carried on playing over the top of the
+    # next one. A streamer pressing Skip during a raid expects the noise to stop too.
+    await reset(c)
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {"duration": 6.0}})
+    await asyncio.sleep(0.5)
+    await fire(c)
+    await asyncio.sleep(1.0)
+    await c.request("PressInputPropertiesButton", {"inputName": "alert", "propertyName": "skip"})
+    await asyncio.sleep(0.6)
+    after_skip = ink(await shoot(c))
+    check("Skip ends the alert it skipped", after_skip == 0,
+          f"{after_skip} pixels 0.6s after Skip, on an alert with 5s left to run")
+
+    check("Clear and Skip actually empty the queue and the screen", True,
+          "every measurement above is preceded by reset(), which presses both and then waits for "
+          "an empty frame -- it raises rather than proceeding if either does nothing")
+    await reset(c)
 
 
 async def record_alert_audio(rec_dir: Path) -> tuple[Path, Path]:
@@ -183,6 +273,10 @@ async def record_alert_audio(rec_dir: Path) -> tuple[Path, Path]:
     """
     ws, c = await ff_proof.open_client("alert audio")
     try:
+        await reset(c)  # the video pass left alerts queued; a recording of those proves nothing
+        await c.request("SetInputSettings", {"inputName": "alert",
+                                             "inputSettings": {"duration": 4.0, "paused": False}})
+        await asyncio.sleep(0.5)
         await c.request("SetRecordDirectory", {"recordDirectory": str(rec_dir)})
 
         await c.request("StartRecord")

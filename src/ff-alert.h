@@ -26,8 +26,9 @@ void ff_alert_text_apply(obs_source_t *text, const struct ff_alert_text *t);
    were removed, for logging. A username is hostile input painted on a live stream. */
 size_t ff_alert_sanitise(const char *in, char *out, size_t cap);
 
-/* Fires an alert on a foxfire_alert source: sanitises `raw_name`, substitutes it into the
-   source's template, pushes the result into the text child, restarts the sound and starts the
-   clock. `data` is the source's private data. Safe to call from any thread that OBS calls a
-   source callback on. */
-void ff_alert_fire(void *data, const char *raw_name);
+struct ff_alert_event;
+
+/* Queues an alert on a foxfire_alert source. It plays when whatever is on screen finishes, in
+   the order events arrived. `data` is the source's private data. Safe to call from ANY thread --
+   this is what an event feed calls, and a feed runs on its own. */
+void ff_alert_enqueue(void *data, const struct ff_alert_event *e);

@@ -34,7 +34,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  */
 
 #include "ff-alert.h"
+#include "ff-alert-queue.h"
 #include <obs-module.h>
+#include <pthread.h>
 #include <plugin-support.h>
 #include <graphics/graphics.h>
 #include <media-io/audio-io.h>
@@ -56,9 +58,15 @@ struct ff_alert_source {
 	char sound_path[512];
 	float duration; /* seconds an alert stays on screen */
 
-	/* Playback state. `elapsed` is the only thing the video thread writes and the only thing
-	   the tick thread reads, and both are floats updated once per frame -- a torn read costs
-	   at most one frame of fade, so this deliberately takes no lock. */
+	/* Pending alerts. Events will arrive on a network thread once the feed is real, and the
+	   tick pops them on the video thread, so this is locked NOW rather than when the second
+	   thread appears -- a queue that races is a queue that drops the alert nobody can reproduce. */
+	struct ff_alert_queue queue;
+	pthread_mutex_t qlock;
+	bool paused; /* stops STARTING new alerts; whatever is on screen still finishes */
+
+	/* Playback state, written and read on the video thread only (tick and render both run
+	   there), so it needs no lock of its own. */
 	bool playing;
 	float elapsed;
 	char showing[512]; /* the sanitised text currently on screen, for the log */
@@ -122,28 +130,40 @@ static void ensure_sound_child(struct ff_alert_source *a)
 
 /* --------------------------------------------------------------------- fire */
 
-/* Substitutes {name} in the template. Everything the caller supplies has already been through
-   ff_alert_sanitise -- this only joins strings. */
-static void render_template(const struct ff_alert_source *a, const char *name, char *out, size_t cap)
+/* Substitutes the message variables. Every value that came from the wire -- the name and the
+   viewer's own message -- has already been through ff_alert_sanitise; this only joins strings.
+   {amount} and {tier} are ours, so they are formatted here. */
+static void render_template(const struct ff_alert_source *a, const struct ff_alert_event *e,
+			    const char *safe_name, const char *safe_msg, char *out, size_t cap)
 {
+	char num[32], tier[16];
+	snprintf(num, sizeof num, "%lld", (long long)e->amount);
+	snprintf(tier, sizeof tier, "%d", e->tier);
+
 	struct dstr t = {0};
 	dstr_copy(&t, a->template_[0] ? a->template_ : "{name} followed!");
-	dstr_replace(&t, "{name}", name ? name : "");
+	dstr_replace(&t, "{name}", safe_name ? safe_name : "");
+	dstr_replace(&t, "{message}", safe_msg ? safe_msg : "");
+	dstr_replace(&t, "{amount}", num);
+	/* Prime and "not applicable" are both tier 0, and "Tier 0" is not a thing anyone says. */
+	dstr_replace(&t, "{tier}", e->tier > 0 ? tier : "");
+	dstr_replace(&t, "{kind}", ff_alert_kind_id(e->kind));
 	snprintf(out, cap, "%s", t.array ? t.array : "");
 	dstr_free(&t);
 }
 
-void ff_alert_fire(void *data, const char *raw_name)
+/* Starts one event NOW. Video thread only -- it touches the children and the playback state. */
+static void start_alert(struct ff_alert_source *a, const struct ff_alert_event *e)
 {
-	struct ff_alert_source *a = data;
-	char safe[192];
-	size_t dropped = ff_alert_sanitise(raw_name, safe, sizeof safe);
+	char safe[192], safe_msg[320];
+	size_t dropped = ff_alert_sanitise(e->name, safe, sizeof safe);
+	dropped += ff_alert_sanitise(e->message, safe_msg, sizeof safe_msg);
 	if (dropped)
 		obs_log(LOG_INFO, "alerts: removed %zu unsafe character(s) from a name before drawing it",
 			dropped);
 
 	char body[512];
-	render_template(a, safe, body, sizeof body);
+	render_template(a, e, safe, safe_msg, body, sizeof body);
 	snprintf(a->showing, sizeof a->showing, "%s", body);
 
 	ensure_text_child(a);
@@ -160,6 +180,27 @@ void ff_alert_fire(void *data, const char *raw_name)
 	a->elapsed = 0.f;
 	a->playing = true;
 	obs_log(LOG_INFO, "alerts: firing '%s'", body);
+}
+
+void ff_alert_enqueue(void *data, const struct ff_alert_event *e)
+{
+	struct ff_alert_source *a = data;
+	if (!a || !e)
+		return;
+	pthread_mutex_lock(&a->qlock);
+	bool ok = ff_alert_queue_push(&a->queue, e);
+	uint64_t dropped = a->queue.dropped;
+	size_t depth = a->queue.count;
+	pthread_mutex_unlock(&a->qlock);
+	if (!ok)
+		/* Never silent. A dropped alert is a supporter who was never thanked, and the only
+		   symptom on screen is an alert that simply did not happen. */
+		obs_log(LOG_WARNING,
+			"alerts: the queue is full (%d waiting) -- dropped an alert for '%s'; %llu "
+			"dropped so far",
+			FF_ALERT_QUEUE_MAX, e->name, (unsigned long long)dropped);
+	else if (depth > 1)
+		obs_log(LOG_INFO, "alerts: queued an alert for '%s' (%zu waiting)", e->name, depth);
 }
 
 /* ---------------------------------------------------------------- obs source */
@@ -183,6 +224,7 @@ static void alert_update(void *d, obs_data_t *s)
 	a->style.outline = obs_data_get_bool(s, "outline");
 	a->style.shadow = obs_data_get_bool(s, "shadow");
 	a->duration = (float)obs_data_get_double(s, "duration");
+	a->paused = obs_data_get_bool(s, "paused");
 	snprintf(a->sound_path, sizeof a->sound_path, "%s", obs_data_get_string(s, "sound"));
 	ensure_sound_child(a);
 }
@@ -191,6 +233,8 @@ static void *alert_create(obs_data_t *s, obs_source_t *self)
 {
 	struct ff_alert_source *a = bzalloc(sizeof *a);
 	a->self = self;
+	pthread_mutex_init(&a->qlock, NULL);
+	ff_alert_queue_init(&a->queue);
 	alert_update(a, s);
 	return a;
 }
@@ -206,6 +250,7 @@ static void alert_destroy(void *d)
 		obs_source_remove_active_child(a->self, a->sound);
 		obs_source_release(a->sound);
 	}
+	pthread_mutex_destroy(&a->qlock);
 	bfree(a);
 }
 
@@ -229,7 +274,33 @@ static bool on_test_fire(obs_properties_t *props, obs_property_t *p, void *data)
 	/* A name with a right-to-left override and a newline in it, on purpose. The test button is
 	   the one place a viewer can see what the sanitiser does, and a button that fires a tidy
 	   name proves only that tidy names work. */
-	ff_alert_fire(data, "Test\xe2\x80\xaeViewer\n42");
+	struct ff_alert_event e = {0};
+	e.kind = FF_ALERT_FOLLOW;
+	snprintf(e.name, sizeof e.name, "Test\xe2\x80\xaeViewer\n42");
+	ff_alert_enqueue(data, &e);
+	return false;
+}
+
+static bool on_skip(obs_properties_t *props, obs_property_t *p, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	struct ff_alert_source *a = data;
+	/* Ends the one on screen. The next tick starts whatever is next, so skipping through a
+	   raid is just pressing this repeatedly -- which is what a streamer actually does. */
+	a->elapsed = a->duration;
+	return false;
+}
+
+static bool on_clear(obs_properties_t *props, obs_property_t *p, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	struct ff_alert_source *a = data;
+	pthread_mutex_lock(&a->qlock);
+	size_t n = ff_alert_queue_clear(&a->queue);
+	pthread_mutex_unlock(&a->qlock);
+	obs_log(LOG_INFO, "alerts: cleared %zu queued alert(s)", n);
 	return false;
 }
 
@@ -249,7 +320,10 @@ static obs_properties_t *alert_props(void *d)
 				"Audio (*.wav *.mp3 *.ogg *.flac *.m4a);;All files (*.*)", NULL);
 	obs_properties_add_float_slider(p, "duration", obs_module_text("Foxfire.Alert.Duration"), 1.0, 30.0,
 					0.1);
+	obs_properties_add_bool(p, "paused", obs_module_text("Foxfire.Alert.Paused"));
 	obs_properties_add_button2(p, "test", obs_module_text("Foxfire.Alert.Test"), on_test_fire, d);
+	obs_properties_add_button2(p, "skip", obs_module_text("Foxfire.Alert.Skip"), on_skip, d);
+	obs_properties_add_button2(p, "clear", obs_module_text("Foxfire.Alert.Clear"), on_clear, d);
 	if (!ff_alert_text_kind())
 		obs_properties_add_text(p, "notext", obs_module_text("Foxfire.Alert.NoTextSource"),
 					OBS_TEXT_INFO);
@@ -269,13 +343,29 @@ static uint32_t alert_h(void *d)
 static void alert_tick(void *d, float dt)
 {
 	struct ff_alert_source *a = d;
-	if (!a->playing)
-		return;
-	a->elapsed += dt;
-	if (a->elapsed >= a->duration) {
+	if (a->playing) {
+		a->elapsed += dt;
+		if (a->elapsed < a->duration)
+			return;
 		a->playing = false;
 		a->elapsed = 0.f;
+		/* The sound stops with the picture. Skip has to silence the alert it skipped -- a
+		   streamer pressing Skip during a raid expects the noise to go too, and without this
+		   the sound of an alert nobody can see keeps playing over the next one. It also caps
+		   a sound longer than the duration, which is what setting a duration means; the
+		   stream kit's own clips are 6.12s against a 5s default. */
+		if (a->sound)
+			obs_source_media_stop(a->sound);
 	}
+	if (a->paused)
+		return; /* pause stops STARTING alerts; the queue keeps filling and nothing is lost */
+
+	struct ff_alert_event next;
+	pthread_mutex_lock(&a->qlock);
+	bool have = ff_alert_queue_pop(&a->queue, &next);
+	pthread_mutex_unlock(&a->qlock);
+	if (have)
+		start_alert(a, &next);
 }
 
 static void alert_enum(void *d, obs_source_enum_proc_t cb, void *param)

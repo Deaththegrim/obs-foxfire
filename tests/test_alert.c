@@ -21,6 +21,7 @@
 
 #include "ff-test.h"
 #include <ff-alert.h>
+#include <ff-alert-queue.h>
 #include <obs-module.h>
 #include <string.h>
 
@@ -30,6 +31,129 @@
 obs_module_t *obs_current_module(void)
 {
 	return NULL;
+}
+
+/* The queue is where a raid either works or loses people.
+ *
+ * Alerts arrive in bursts and each takes seconds to play, so "show it now" is never the whole
+ * story -- without a queue the second event of a raid overwrites the first while it is still on
+ * screen, and everyone but the last person to arrive is simply never shown. None of that is
+ * visible in a frame: the alert that IS drawn looks perfect.
+ *
+ * ARMED: numbers in the commit that introduced it.
+ */
+static void check_queue(void)
+{
+	struct ff_alert_queue q;
+	struct ff_alert_event e, got;
+
+	ff_alert_queue_init(&q);
+	CHECK(q.count == 0 && q.dropped == 0);
+	CHECK(!ff_alert_queue_pop(&q, &got)); /* empty pops report empty, they do not invent an event */
+
+	/* FIFO: the person who arrived first is shown first. */
+	for (int i = 0; i < 5; i++) {
+		memset(&e, 0, sizeof e);
+		e.kind = FF_ALERT_FOLLOW;
+		snprintf(e.name, sizeof e.name, "viewer%d", i);
+		CHECK(ff_alert_queue_push(&q, &e));
+	}
+	CHECK(q.count == 5);
+	for (int i = 0; i < 5; i++) {
+		char want[32];
+		snprintf(want, sizeof want, "viewer%d", i);
+		CHECK(ff_alert_queue_pop(&q, &got));
+		CHECK(!strcmp(got.name, want));
+	}
+	CHECK(q.count == 0);
+	CHECK(!ff_alert_queue_pop(&q, &got));
+
+	/* The event is COPIED in, not referenced: whatever produced it is long gone by the time it
+	   is drawn. */
+	memset(&e, 0, sizeof e);
+	e.kind = FF_ALERT_BITS;
+	e.amount = 500;
+	e.tier = 3;
+	snprintf(e.name, sizeof e.name, "generous");
+	snprintf(e.message, sizeof e.message, "have some bits");
+	CHECK(ff_alert_queue_push(&q, &e));
+	memset(&e, 0xAB, sizeof e); /* scribble over the caller's copy */
+	CHECK(ff_alert_queue_pop(&q, &got));
+	CHECK(got.kind == FF_ALERT_BITS && got.amount == 500 && got.tier == 3);
+	CHECK(!strcmp(got.name, "generous") && !strcmp(got.message, "have some bits"));
+
+	/* Overflow drops the NEWEST and says how many. The people already waiting asked first;
+	   discarding the front would play a raid out of order with its earliest supporters gone. */
+	ff_alert_queue_init(&q);
+	for (int i = 0; i < FF_ALERT_QUEUE_MAX; i++) {
+		memset(&e, 0, sizeof e);
+		snprintf(e.name, sizeof e.name, "n%d", i);
+		CHECK(ff_alert_queue_push(&q, &e));
+	}
+	memset(&e, 0, sizeof e);
+	snprintf(e.name, sizeof e.name, "overflow");
+	CHECK(!ff_alert_queue_push(&q, &e));
+	CHECK(q.dropped == 1);
+	CHECK(q.count == FF_ALERT_QUEUE_MAX);
+	CHECK(ff_alert_queue_pop(&q, &got));
+	CHECK(!strcmp(got.name, "n0")); /* the oldest survived; the newest was the one refused */
+
+	/* The ring wraps without losing order -- the bug a plain array with a moving tail hides
+	   until exactly the capacity-th event. */
+	ff_alert_queue_init(&q);
+	for (int round = 0; round < 3; round++) {
+		for (int i = 0; i < FF_ALERT_QUEUE_MAX; i++) {
+			memset(&e, 0, sizeof e);
+			snprintf(e.name, sizeof e.name, "r%dn%d", round, i);
+			CHECK(ff_alert_queue_push(&q, &e));
+		}
+		for (int i = 0; i < FF_ALERT_QUEUE_MAX; i++) {
+			char want[32];
+			snprintf(want, sizeof want, "r%dn%d", round, i);
+			CHECK(ff_alert_queue_pop(&q, &got));
+			CHECK(!strcmp(got.name, want));
+		}
+	}
+
+	/* Clearing says how many it threw away, for the streamer thirty alerts deep in a raid. */
+	ff_alert_queue_init(&q);
+	for (int i = 0; i < 7; i++) {
+		memset(&e, 0, sizeof e);
+		CHECK(ff_alert_queue_push(&q, &e));
+	}
+	CHECK(ff_alert_queue_clear(&q) == 7);
+	CHECK(q.count == 0);
+	CHECK(ff_alert_queue_clear(&q) == 0);
+	/* a cleared queue is still usable, not wedged */
+	CHECK(ff_alert_queue_push(&q, &e));
+	CHECK(ff_alert_queue_pop(&q, &got));
+
+	/* NULLs are refused rather than dereferenced: these come from an event feed. */
+	CHECK(!ff_alert_queue_push(NULL, &e));
+	CHECK(!ff_alert_queue_push(&q, NULL));
+	CHECK(!ff_alert_queue_pop(NULL, &got));
+	CHECK(!ff_alert_queue_pop(&q, NULL));
+	CHECK(ff_alert_queue_clear(NULL) == 0);
+
+	/* Kind ids round-trip, and an unknown one is REFUSED rather than defaulting -- a kind that
+	   silently became "follow" would show the wrong alert for a real event. */
+	for (int i = 0; i < FF_ALERT_KIND_COUNT; i++) {
+		enum ff_alert_kind k;
+		const char *id = ff_alert_kind_id((enum ff_alert_kind)i);
+		CHECK(strcmp(id, "unknown") != 0); /* every declared kind has a real id */
+		CHECK(ff_alert_kind_parse(id, &k));
+		CHECK(k == (enum ff_alert_kind)i);
+	}
+	{
+		enum ff_alert_kind k = FF_ALERT_RAID;
+		CHECK(!ff_alert_kind_parse("nonsense", &k));
+		CHECK(k == FF_ALERT_RAID); /* left alone on failure */
+		CHECK(!ff_alert_kind_parse("", &k));
+		CHECK(!ff_alert_kind_parse(NULL, &k));
+		CHECK(!ff_alert_kind_parse("FOLLOW", &k)); /* ids are lower case, exactly */
+	}
+	CHECK(!strcmp(ff_alert_kind_id((enum ff_alert_kind)999), "unknown"));
+	CHECK(!strcmp(ff_alert_kind_id((enum ff_alert_kind)-1), "unknown"));
 }
 
 static const char *san(const char *in, char *buf, size_t cap, size_t *removed)
@@ -139,5 +263,6 @@ int main(void)
 	CHECK(ff_alert_sanitise("anything", one, sizeof one) == 0 && one[0] == '\0');
 	CHECK(ff_alert_sanitise("anything", b, 0) == 0);
 
+	check_queue();
 	FF_TEST_MAIN_END();
 }

@@ -14,7 +14,7 @@ endforeach()
 # ff-alert.c belongs to the ALERTS plugin, not to the shared core -- nothing else needs it, and
 # putting it in core would link a text-source lookup into the visualizer for no reason. So this
 # one test compiles it directly, the same way test_pack used to compile ff-pack.c.
-add_executable(test_alert test_alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert.c)
+add_executable(test_alert test_alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c)
 target_link_libraries(test_alert PRIVATE ff-core)
 add_test(NAME alert COMMAND test_alert)
 target_link_libraries(test_handoff PRIVATE pthread)
