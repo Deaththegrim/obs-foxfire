@@ -175,6 +175,20 @@ async def drive(pack_id: str, presets: list[dict], tone: Path):
                 "sceneName": "pl", "inputName": name, "inputKind": "foxfire_visualizer",
                 "inputSettings": {"pack": pack_id, "preset": pr["id"], "width": W, "height": H,
                                   "audio_mode": 1, "audio_source": "tone"}})
+            # PIN THE SHAPE. A preset that reads the mouth builtins changes what it DRAWS with
+            # the audio, and every check below compares two screenshots taken at different
+            # moments -- so a moving subject is measured as a moving control. Reproduced: the
+            # strip preset reported "Size shrinks the shape: width 102px at size 1.0, 108px at
+            # 0.5", which is a real failure of a shader that is correct. Off the tone it draws
+            # 216px and 108px, exactly half. The mouth had simply changed shape between the two
+            # shots, and a closed mouth is wider than a puckered one.
+            #
+            # Raising the noise gate past anything the tone can reach rests the mouth on one
+            # shape for the whole measurement. It is set on every preset, because it costs
+            # nothing on a shader with no mouth in it -- ff_renderer_apply_settings reads these
+            # whether or not any layer asks for them.
+            await c.request("SetInputSettings", {
+                "inputName": name, "inputSettings": {"mouth.gate": 1.0}})
             await asyncio.sleep(1.5)
             inspected.append(pr["id"])
 
