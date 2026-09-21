@@ -66,6 +66,18 @@ jobs:
         if: hashFiles('../foxfire/packs/basics/effects/bars.effect') != ''
         run: tools/check-placement.py ../foxfire/packs
 
+      - name: Mouth art is registered
+        # Every cell of a mouth strip must sit on the same anchor: the engine swaps them frame to
+        # frame, so drift reads as the mouth sliding around the face while the character talks.
+        # No renderer is involved, which is why this runs before anything boots OBS -- and it is
+        # the one gate that will still matter when the art is redrawn, because generated art
+        # (six image generations, or frames pulled out of a video model) is exactly where the
+        # drift comes from.
+        if: hashFiles('../foxfire/packs/mouth/art/mouth-strip.png') != ''
+        run: |
+          python3 ../foxfire/tools/check-mouth-strip.py ../foxfire/packs/mouth/art/mouth-strip.png
+          python3 ../foxfire/tools/check-mouth-strip.py ../foxfire/packs/mouth/art/mouth-strip-ink.png
+
       - name: Pack controls actually move the picture
         # A control that exists in the properties panel and changes nothing is this project's
         # most common defect, and no "does it render" check can see it. Skipped when the packs

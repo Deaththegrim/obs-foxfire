@@ -427,6 +427,26 @@ mouth registered in the same place in every cell, transparent background. The en
 bound image's pixel dimensions as `mouth_size`, so a shader can work out one cell's aspect and
 avoid squashing every mouth by the number of cells.
 
+**Registration is the requirement that bites.** The engine swaps cells frame to frame, so any
+drift in where the mouth sits between them reads as the mouth sliding around the face while the
+character talks — and six cells that each look right in a contact sheet will still slide. It is
+also the thing generated art gets wrong: six image generations are six independent mouths, and
+frames pulled from a video model drift as the head moves. Measure it instead of judging by eye:
+
+```
+tools/check-mouth-strip.py art/mouth-strip.png            # reports drift per cell
+tools/check-mouth-strip.py --fix out.png raw.png          # aligns them
+tools/check-mouth-strip.py A.png B.png C.png D.png E.png F.png
+```
+
+It anchors on the mouth **corners**, which sit on the line where the lips meet and stay put while
+the jaw works — not the bounding box or the centroid, both of which move down as the mouth opens.
+Anchoring on either would call a correct strip broken and then "fix" it by shoving every open
+shape upward.
+
+`tools/make-mouth-strip.py` draws the examples the pack ships (`--style flat`, `--style ink`) and
+a registration template to draw over (`--style guide`).
+
 ### The Mouth controls
 
 A preset that declares either builtin also gets a **Mouth** group in the properties panel, added
