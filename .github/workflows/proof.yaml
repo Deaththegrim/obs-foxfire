@@ -38,6 +38,13 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/gradient-proof.py --plugin-build .
+      - name: Each plugin loads, and loads on its own
+        # Foxfire ships as separate plugins so nobody has to install all of it. "Installable on
+        # its own" is a claim, and a plugin that builds but never loads looks identical in a
+        # build log -- so this boots OBS three times: both installed, each one alone.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/plugin-split-proof.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

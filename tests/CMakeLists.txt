@@ -1,43 +1,26 @@
-add_library(ff-core STATIC
-  ${CMAKE_SOURCE_DIR}/src/ff-analysis.c
-  ${CMAKE_SOURCE_DIR}/src/ff-handoff.c
-  ${CMAKE_SOURCE_DIR}/src/ff-licence.c
-  ${CMAKE_SOURCE_DIR}/vendor/kissfft/kiss_fft.c
-  ${CMAKE_SOURCE_DIR}/vendor/kissfft/kiss_fftr.c
-  ${CMAKE_SOURCE_DIR}/vendor/monocypher/monocypher.c
-  ${CMAKE_SOURCE_DIR}/vendor/monocypher/monocypher-ed25519.c)
-# Vendored third-party sources trip -Wsign-compare under this project's -Werror;
-# scoped to the vendor files only, never to our own sources.
-set_source_files_properties(
-  ${CMAKE_SOURCE_DIR}/vendor/kissfft/kiss_fft.c ${CMAKE_SOURCE_DIR}/vendor/kissfft/kiss_fftr.c
-  ${CMAKE_SOURCE_DIR}/vendor/monocypher/monocypher.c ${CMAKE_SOURCE_DIR}/vendor/monocypher/monocypher-ed25519.c
-  PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare"
-)
-target_include_directories(ff-core PUBLIC ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/vendor/kissfft ${CMAKE_SOURCE_DIR}/vendor/monocypher)
-target_compile_definitions(ff-core PUBLIC kiss_fft_scalar=float)
-target_link_libraries(ff-core PUBLIC m)
-foreach(t analysis handoff licence)
+# The tests link the PRODUCTION ff-core, not a copy of its source list.
+#
+# There used to be a second ff-core defined here with its own enumeration of the shared sources.
+# Two lists of the same thing drift: this one had no ff-pack.c or ff-layers.c, so test_pack had to
+# compile ff-pack.c a second time with different flags, and anything added to the plugin's core
+# was invisible to the tests until somebody noticed. One definition, in the top-level
+# CMakeLists.txt, linked here.
+foreach(t analysis handoff licence pack)
   add_executable(test_${t} test_${t}.c)
   target_link_libraries(test_${t} PRIVATE ff-core)
   add_test(NAME ${t} COMMAND test_${t})
 endforeach()
-target_link_libraries(test_handoff PRIVATE pthread)
 
-# ff-pack.c cannot join ff-core: it needs libobs (obs_data, the os_* file helpers) and
-# plugin-support's obs_log. Link those in for this one test rather than leaving the symlink
-# guard with no gate of its own -- see the header comment in test_pack.c.
-add_executable(test_pack test_pack.c ${CMAKE_SOURCE_DIR}/src/ff-pack.c)
-target_link_libraries(test_pack PRIVATE ff-core plugin-support OBS::libobs)
-target_include_directories(test_pack PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME pack COMMAND test_pack)
-set_tests_properties(pack PROPERTIES SKIP_RETURN_CODE 77)
-
-# ff-alert.c needs libobs (obs_data, obs_get_source_output_flags) and plugin-support's obs_log,
-# so it cannot join ff-core either. Same treatment as test_pack.
+# ff-alert.c belongs to the ALERTS plugin, not to the shared core -- nothing else needs it, and
+# putting it in core would link a text-source lookup into the visualizer for no reason. So this
+# one test compiles it directly, the same way test_pack used to compile ff-pack.c.
 add_executable(test_alert test_alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert.c)
-target_link_libraries(test_alert PRIVATE ff-core plugin-support OBS::libobs)
-target_include_directories(test_alert PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test_alert PRIVATE ff-core)
 add_test(NAME alert COMMAND test_alert)
+target_link_libraries(test_handoff PRIVATE pthread)
+# test_pack builds and tears down real directories and symlinks; on Windows creating a link needs
+# a privileged account, so it reports 77 (skip) there rather than a pass that inspected nothing.
+set_tests_properties(pack PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(verify_cli verify_cli.c)
 target_link_libraries(verify_cli PRIVATE ff-core)

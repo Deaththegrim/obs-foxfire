@@ -17,6 +17,14 @@ echo "sandbox: $sb"
 # starting. Under Xvfb nobody can click it, so the websocket port never opens and the proof
 # fails with a bare ConnectionRefusedError that says nothing about the real cause. This bites
 # whenever the developer happens to have their own OBS open, which is most of the time.
+# Never connect to a previous run's dying OBS: every proof here uses the same fixed port, so a
+# lingering instance would answer instead and the run would report on the wrong build. The Python
+# harnesses call proof.wait_for_port_free() for the same reason.
+for _ in $(seq 1 60); do
+	python3 -c "import socket,sys; s=socket.socket(); sys.exit(0 if s.connect_ex(('127.0.0.1',$port)) else 1)" && break
+	sleep 0.5
+done
+
 XDG_CONFIG_HOME="$sb" xvfb-run -a -s "-screen 0 1280x720x24" obs --multi --minimize-to-tray \
 	>"$sb/obs-stdout.txt" 2>&1 &
 obspid=$!

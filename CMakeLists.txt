@@ -41,13 +41,30 @@ if(ENABLE_QT)
   )
 endif()
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c)
-
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-  src/ff-analysis.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c src/ff-props.c src/ff-source.c src/ff-filter.c src/ff-alert.c
+# --- ff-core: everything every Foxfire plugin needs -------------------------------------------
+#
+# Foxfire ships as SEVERAL plugins so nobody has to install all of it to use one part. They share
+# a codebase and this is where the shared part lives: pack loading, licence verification, the
+# audio analysis and the layer renderer.
+#
+# STATIC, not SHARED, and that matters. ff-pack.c calls obs_module_config_path(), which expands to
+# obs_current_module() -- a symbol OBS_DECLARE_MODULE() defines separately inside each plugin. A
+# static library is linked into each plugin and resolves that symbol per plugin, so every one of
+# them gets its own module identity. A shared library would have to pick one.
+#
+# Licence verification belongs here and NOWHERE ELSE. It has to produce bytes identical to what
+# packforge signs, and tools/licence-interop.py exists to catch that drifting; a second copy would
+# double the surface that gate has to cover.
+add_library(ff-core STATIC
+  src/ff-analysis.c src/ff-handoff.c src/ff-licence.c src/ff-audio.c src/ff-pack.c src/ff-layers.c
   vendor/kissfft/kiss_fft.c vendor/kissfft/kiss_fftr.c vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c)
-target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE src vendor/kissfft vendor/monocypher)
-target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE kiss_fft_scalar=float)
+target_include_directories(ff-core PUBLIC src vendor/kissfft vendor/monocypher)
+target_compile_definitions(ff-core PUBLIC kiss_fft_scalar=float)
+target_link_libraries(ff-core PUBLIC OBS::libobs m)  # m: the analysis is all sinf/powf/log10f
+if(TARGET plugin-support)
+  target_link_libraries(ff-core PUBLIC plugin-support)
+endif()
+set_property(TARGET ff-core PROPERTY POSITION_INDEPENDENT_CODE ON)
 # Vendored third-party sources trip -Wsign-compare under this project's -Werror;
 # scoped to the vendor files only, never to our own sources.
 set_source_files_properties(
@@ -55,6 +72,20 @@ set_source_files_properties(
   vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c
   PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare"
 )
+
+# --- obs-foxfire: the visualizer source and the effects filter ---------------------------------
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+  src/plugin-main.c src/ff-props.c src/ff-source.c src/ff-filter.c)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ff-core)
+
+# --- obs-foxfire-alerts: the alerts engine, installable on its own -----------------------------
+# Its own .so, its own entry in OBS's plugin list, its own enable/disable. A streamer who wants
+# alerts installs this one and nothing else; it still reads the same packs directory (see
+# ff_shared_config_path) so packs are not split across plugins.
+add_library(obs-foxfire-alerts MODULE)
+target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c)
+target_link_libraries(obs-foxfire-alerts PRIVATE ff-core)
+set_target_properties_plugin(obs-foxfire-alerts PROPERTIES OUTPUT_NAME obs-foxfire-alerts)
 option(FOXFIRE_BUILD_TESTS "Build ff unit tests" OFF)
 if(FOXFIRE_BUILD_TESTS)
   enable_testing()

@@ -177,6 +177,33 @@ def wait_for_port(port: int, timeout: float) -> None:
     raise TimeoutError(f"obs-websocket never opened port {port} within {timeout:.0f}s")
 
 
+def wait_for_port_free(port: int, timeout: float = 30.0) -> None:
+    """Blocks until nothing is listening on `port`. Call BEFORE launching OBS.
+
+    Every proof in this directory uses the same fixed port, so running two in sequence races: the
+    previous OBS can still be shutting down with its socket open, wait_for_port() sees an open
+    port immediately, and the new harness connects to the DYING instance. That fails as a request
+    timing out several steps later -- "CreateScene returns", say -- which reads as a defect in
+    whatever the proof was testing rather than as the wrong OBS answering. Worse, it could just as
+    easily have succeeded against the old process and reported on a plugin build that was not the
+    one under test.
+
+    Waiting is better than picking a random port per run: a fixed port is what the sandbox config
+    file written next to it declares, and two harnesses genuinely should not run at once."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        s = socket.socket()
+        try:
+            if s.connect_ex(("127.0.0.1", port)) != 0:
+                return
+        finally:
+            s.close()
+        time.sleep(0.5)
+    raise TimeoutError(
+        f"port {port} is still in use after {timeout:.0f}s -- another OBS is running on it, and "
+        f"connecting would test THAT one instead of the build under test")
+
+
 def analyse(png_bytes: bytes) -> tuple[float, float]:
     """(nonblank_ratio, dominant_hue): same 'lit' definition as ff_proof.Shot (alpha>8), plus a
     max(rgb)>8 floor so a fully-opaque-but-black frame does not count as lit. hue is the mean lit
@@ -410,6 +437,7 @@ async def run(args) -> int:
         install_pack(probe_dir, obs_cfg)
 
     env = dict(os.environ, XDG_CONFIG_HOME=str(cfg_root))
+    wait_for_port_free(PORT)  # never connect to a previous run's dying OBS
     proc = subprocess.Popen(
         ["xvfb-run", "-a", "-s", f"-screen 0 {SCREEN}", "obs", "--multi", "--minimize-to-tray"],
         # --multi: without it a second OBS opens a "already running" warning dialog;

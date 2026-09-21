@@ -226,6 +226,7 @@ def main() -> int:
         proof.write_ws_config(obs_cfg)
         proof.install_plugin(repo, obs_cfg)
         proof.install_pack(build_pack(scratch), obs_cfg)
+        proof.wait_for_port_free(proof.PORT)  # never connect to a previous run's dying OBS
         p = subprocess.Popen(
             ["xvfb-run", "-a", "-s", f"-screen 0 {proof.SCREEN}", "obs", "--multi", "--minimize-to-tray"],
             env=dict(os.environ, XDG_CONFIG_HOME=str(cfg)), stdout=subprocess.DEVNULL,
