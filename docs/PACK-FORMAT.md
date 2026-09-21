@@ -455,9 +455,16 @@ frame is which shape, and answering that by eye is the same judgement that puts 
 hand-aligned art. So it gets measured:
 
 ```
+# 1. render, 2. cut the backgrounds off, then:
 tools/pick-mouth-frames.py --out raw.png close/*.png pucker/*.png
 tools/check-mouth-strip.py --fix strip.png raw.png
 ```
+
+**Cut the background off before measuring.** The strip has to be transparent anyway — an opaque
+one draws a rectangle over the character's face — so this step happens either way; it just has to
+happen first, because nothing can find where the lips end in a frame that is opaque everywhere.
+Measured rather than refused, an opaque clip reports every frame as equally wide and the rounded
+shapes become unfindable; the picker exits 2 and names the first offending frame instead.
 
 **Start the render from an open mouth**, showing teeth and tongue. A shut mouth has no interior,
 so a model starting there invents one — differently each time. Every other shape is a subset of
