@@ -37,6 +37,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ff-alert-queue.h"
 #include "ff-layers.h"
 #include "ff-pack.h"
+#include "ff-twitch.h"
+
 #include <obs-module.h>
 #include <pthread.h>
 #include <plugin-support.h>
@@ -95,6 +97,10 @@ struct ff_alert_source {
 	   thread appears -- a queue that races is a queue that drops the alert nobody can reproduce. */
 	struct ff_alert_queue queue;
 	pthread_mutex_t qlock;
+	/* The live feed. It owns a thread, so it is created last and destroyed FIRST -- its worker
+	   calls ff_alert_enqueue, which touches the queue and the per-kind switches below. */
+	struct ff_twitch *twitch;
+
 	bool paused;                 /* stops STARTING new alerts; whatever is on screen still finishes */
 	enum ff_alert_kind test_kind; /* which kind the test button fires */
 
@@ -319,6 +325,10 @@ static void alert_update(void *d, obs_data_t *s)
 		a->test_kind = tk;
 	snprintf(a->sound_path, sizeof a->sound_path, "%s", obs_data_get_string(s, "sound"));
 	ensure_sound_child(a);
+	if (a->twitch) {
+		ff_twitch_set_client_id(a->twitch, obs_data_get_string(s, "twitch_client_id"));
+		ff_twitch_set_enabled(a->twitch, obs_data_get_bool(s, "twitch_enabled"));
+	}
 }
 
 static void *alert_create(obs_data_t *s, obs_source_t *self)
@@ -332,6 +342,15 @@ static void *alert_create(obs_data_t *s, obs_source_t *self)
 	obs_leave_graphics();
 	ff_packs_scan(&a->packs);
 	alert_update(a, s);
+	/* Last: the worker can call ff_alert_enqueue the moment it exists, and everything that
+	   touches -- the queue, its lock, the per-kind switches -- has to be set up by then. */
+	char *cfg = obs_module_config_path("packs");
+	a->twitch = ff_twitch_create(ff_alert_enqueue, a, cfg);
+	bfree(cfg);
+	if (a->twitch) {
+		ff_twitch_set_client_id(a->twitch, obs_data_get_string(s, "twitch_client_id"));
+		ff_twitch_set_enabled(a->twitch, obs_data_get_bool(s, "twitch_enabled"));
+	}
 	return a;
 }
 
@@ -348,6 +367,12 @@ static void alert_destroy(void *d)
 	}
 	pthread_mutex_destroy(&a->qlock);
 	obs_enter_graphics();
+	/* FIRST, and before anything it might touch: the worker thread calls ff_alert_enqueue,
+	   which locks a->qlock and reads a->kinds. Destroying those out from under a running
+	   thread is a crash that only happens when a stream ends while an alert is arriving. */
+	ff_twitch_destroy(a->twitch);
+	a->twitch = NULL;
+
 	ff_renderer_destroy(a->renderer);
 	obs_leave_graphics();
 	ff_packs_free(&a->packs);
@@ -384,6 +409,9 @@ static void alert_defaults(obs_data_t *s)
 				tmpl = KIND_DEFAULTS[i].tmpl;
 		obs_data_set_default_string(s, key, tmpl);
 	}
+	/* OFF by default. Connecting to someone's Twitch account is not something a source should
+	   start doing because it was added to a scene. */
+	obs_data_set_default_bool(s, "twitch_enabled", false);
 	obs_data_set_default_int(s, "width", 800);
 	obs_data_set_default_int(s, "height", 240);
 	obs_data_set_default_string(s, "font_face", "Sans Serif");
@@ -393,6 +421,60 @@ static void alert_defaults(obs_data_t *s)
 	obs_data_set_default_bool(s, "shadow", true);
 	obs_data_set_default_double(s, "duration", 5.0);
 	obs_data_set_default_string(s, "test_kind", "follow");
+}
+
+static bool on_twitch_connect(obs_properties_t *props, obs_property_t *p, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	struct ff_alert_source *a = data;
+	if (a && a->twitch)
+		ff_twitch_sign_in(a->twitch);
+	/* true: rebuild the page so the code appears without the streamer having to close and
+	   reopen properties. The code arrives on the worker thread a moment later, so the status
+	   line is what actually carries it -- see add_twitch_status. */
+	return true;
+}
+
+static bool on_twitch_sign_out(obs_properties_t *props, obs_property_t *p, void *data)
+{
+	UNUSED_PARAMETER(props);
+	UNUSED_PARAMETER(p);
+	struct ff_alert_source *a = data;
+	if (a && a->twitch)
+		ff_twitch_sign_out(a->twitch);
+	return true;
+}
+
+/* The connection's state, as a line the streamer can act on.
+ *
+ * This is the whole user interface of the feed, so it says what to DO, not what happened: the
+ * code to type while signing in, which alert types were refused, and that a sign-in has expired
+ * rather than "error 401". The alternative is a support message that says "it stopped working". */
+static void add_twitch_status(struct ff_alert_source *a, obs_properties_t *p)
+{
+	obs_properties_t *g = obs_properties_create();
+	obs_properties_add_text(g, "twitch_client_id", obs_module_text("Foxfire.Twitch.ClientId"),
+				OBS_TEXT_DEFAULT);
+	obs_properties_add_bool(g, "twitch_enabled", obs_module_text("Foxfire.Twitch.Enabled"));
+	obs_properties_add_button2(g, "twitch_connect", obs_module_text("Foxfire.Twitch.Connect"),
+				   on_twitch_connect, a);
+	obs_properties_add_button2(g, "twitch_signout", obs_module_text("Foxfire.Twitch.SignOut"),
+				   on_twitch_sign_out, a);
+
+	char line[512] = {0}, code[32] = {0}, url[256] = {0};
+	enum ff_twitch_state st = ff_twitch_status(a ? a->twitch : NULL, line, sizeof line, code,
+						   sizeof code, url, sizeof url);
+	obs_property_t *info = obs_properties_add_text(g, "twitch_status", line, OBS_TEXT_INFO);
+	/* An error has to LOOK like one. A red line is the difference between a streamer noticing
+	   their sign-in expired and finding out from a viewer asking why nobody got thanked. */
+	obs_property_text_set_info_type(info,
+					st == FF_TWS_FAILED ? OBS_TEXT_INFO_ERROR
+							    : (st == FF_TWS_RETRYING
+								       ? OBS_TEXT_INFO_WARNING
+								       : OBS_TEXT_INFO_NORMAL));
+	obs_properties_add_group(p, "twitch", obs_module_text("Foxfire.Twitch.Group"),
+				 OBS_GROUP_NORMAL, g);
 }
 
 static bool on_test_fire(obs_properties_t *props, obs_property_t *p, void *data)
@@ -515,6 +597,8 @@ static obs_properties_t *alert_props(void *d)
 		snprintf(label, sizeof label, "Foxfire.Alert.Kind.%s", id);
 		obs_properties_add_group(p, key, obs_module_text(label), OBS_GROUP_NORMAL, g);
 	}
+
+	add_twitch_status(a, p);
 
 	obs_properties_add_bool(p, "paused", obs_module_text("Foxfire.Alert.Paused"));
 	obs_property_t *tk = obs_properties_add_list(p, "test_kind", obs_module_text("Foxfire.Alert.TestKind"),

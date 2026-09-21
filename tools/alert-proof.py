@@ -229,9 +229,43 @@ async def drive(sound: Path, logdir: Path):
         await check_queue(c)
         await check_art(c)
         await check_kinds(c)
+        await check_twitch_off(c)
     finally:
         await ws.close()
     return logdir
+
+
+async def check_twitch_off(c):
+    """Ticking the Twitch box without signing in must be a quiet no-op.
+
+    The feed runs on its own thread inside the source, and the state that matters is the one
+    nobody sets up deliberately: a streamer ticks the box, has not signed in, and expects to be
+    told so. The failure modes are both invisible from the UI -- a worker that hammers Twitch
+    every time round its loop, or one that draws something that is not a real alert -- and both
+    would be discovered by someone else.
+
+    This does NOT prove the connection works. Nothing offline can: that needs a real account and
+    a real stream, and it is the one part of this plugin still unproven.
+    """
+    await reset(c)
+    before = ink(await shoot(c))
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {
+        "twitch_enabled": True, "twitch_client_id": ""}})
+    await asyncio.sleep(4.0)
+    after = ink(await shoot(c))
+    check("enabling Twitch with no sign-in draws nothing",
+          after == 0 and before == 0,
+          f"{before} pixels before, {after} after 4s enabled -- an alert nobody sent is worse "
+          f"than no alert")
+    # Still answering: a worker that deadlocked or wedged the source shows up here rather than as
+    # a timeout ten steps later with an unrelated name on it.
+    r = await c.request("GetInputSettings", {"inputName": "alert"})
+    check("the source is still responsive with the feed enabled",
+          r["inputSettings"].get("twitch_enabled") is True,
+          "a wedged worker thread looks like an unrelated timeout further down")
+    await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {
+        "twitch_enabled": False}})
+    await asyncio.sleep(0.5)
 
 
 async def check_kinds(c):
