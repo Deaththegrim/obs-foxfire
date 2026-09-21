@@ -163,8 +163,16 @@ enum ff_viseme ff_viseme_classify(const struct ff_frame *f)
 	 *
 	 * The thresholds satisfy TWO anchors, which is the only reason to trust them. The vowels
 	 * above fix what is CORRECT: they are built from published formants, so a shape that comes
-	 * out wrong there is wrong. Real speech fixes what is BALANCED -- measured over 638 voiced
-	 * frames of recorded voice:
+	 * out wrong there is wrong. Real speech fixes what is BALANCED.
+	 *
+	 * THE SECOND ANCHOR CANNOT BE RE-CHECKED. The distribution below was measured once against
+	 * a recording that is no longer anywhere on the machine it was measured on, and nothing
+	 * here reproduces it. Treat the numbers as the reason these thresholds are what they are,
+	 * not as something that has been verified since. tests/calibrate_cli.c is the tool for
+	 * redoing it properly against a named recording -- and see the note in ff-viseme.h about
+	 * what else that would settle.
+	 *
+	 * Measured over 638 voiced frames of recorded voice:
 	 *
 	 *     openness   5% 0.281  25% 0.392  50% 0.469  75% 0.521  90% 0.564  99% 0.630
 	 *     frontness  5% 0.104  25% 0.212  50% 0.292  75% 0.358  90% 0.425  99% 0.612

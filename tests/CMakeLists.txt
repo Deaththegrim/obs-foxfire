@@ -36,6 +36,12 @@ set_tests_properties(pack PROPERTIES SKIP_RETURN_CODE 77)
 add_executable(verify_cli verify_cli.c)
 target_link_libraries(verify_cli PRIVATE ff-core)
 
+# Not a test: there is no corpus in the repo to run it against, and a test that skips when its
+# input is missing is a test that passes having inspected nothing. It is built so that pointing
+# it at a voice is one command rather than a scratch program written again each time.
+add_executable(calibrate_cli calibrate_cli.c)
+target_link_libraries(calibrate_cli PRIVATE ff-core)
+
 # Python signs, C verifies. The unit tests above sign and verify with the same
 # Monocypher code, so only this can catch a divergence from python-cryptography,
 # which is what packforge mints real licences with. Skips (77) when the
