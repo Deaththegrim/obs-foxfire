@@ -39,9 +39,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
      - the pack rescan is slow (readdir, a JSON parse and an Ed25519 verify per pack) and runs
        WITHOUT the lock into a fresh list, which is swapped in under the lock and the displaced
        list freed after -- see refresh_packs();
-     - the lock IS held across ff_renderer_load + ff_renderer_apply_settings. Both are fast, and
-       there is no correct way to let the UI walk a layer array that is being freed, so the
-       properties thread waits out a preset load.
+     - the lock IS held across ff_renderer_load + ff_renderer_apply_settings. There is no correct
+       way to let the UI walk a layer array that is being freed, so the properties thread waits
+       out a preset load. It is NOT unconditionally quick any more: apply_settings decodes every
+       bound image from disk, so a viewer who picks a large PNG stalls the properties thread for
+       as long as that decode takes. Acceptable because it is bounded by one file and happens on
+       an explicit user action, but do not add anything slower under this lock without moving
+       the work out the way refresh_packs() does.
 
    Lock order is state_lock -> graphics, and nothing takes state_lock while holding the graphics
    context (ff_instance_render does not touch it). ff_audio's conn_lock and libobs's sources_mutex
@@ -90,8 +94,8 @@ static void fmt_text(char *out, size_t cap, const char *key, const char *a, cons
 	dstr_free(&t);
 }
 
-/* Local time, not UTC: a renewal date is something the user compares against their own calendar,
-   and "renews 2027-01-01" reading a day early in Australia would be a support ticket. */
+/* Local time, not UTC: this date is the entitlement cut-off the user compares against their own
+   calendar, and it reading a day early in Australia would be a support ticket. */
 static void fmt_date(int64_t t, char *out, size_t cap)
 {
 	time_t tt = (time_t)t;
@@ -190,7 +194,10 @@ static void licence_sentence(const struct ff_pack *pk, char *out, size_t cap)
 	dstr_free(&t);
 }
 
-/* Spec §2/§3.8: expired or invalid (including missing) loads ZERO layers; grace loads normally. */
+/* A pack someone is not entitled to loads ZERO layers rather than degrading to shader defaults.
+   NEWER means the pack post-dates what they paid for; INVALID covers a missing, unreadable or
+   unverifiable licence; NONE should be unreachable and is refused anyway. Nothing renders
+   partially -- see ff-licence.h for why there is no expiry state to be lenient about. */
 static bool licence_blocks(const struct ff_pack *pk)
 {
 	if (!pk || !pk->licensed)
@@ -389,9 +396,9 @@ static void add_licence_line(struct ff_instance *in, obs_properties_t *props)
 		return; /* no pack to describe; the Status line already says which one is missing */
 	char line[320];
 	licence_sentence(pk, line, sizeof line);
-	enum obs_text_info_type type = licence_blocks(pk)                                    ? OBS_TEXT_INFO_ERROR
-				       : (pk->licensed && pk->licence.state == FF_LIC_NEWER) ? OBS_TEXT_INFO_WARNING
-											     : OBS_TEXT_INFO_NORMAL;
+	/* Every state licence_blocks() names renders nothing, so there is no middle tier to show:
+	   a warning colour next to a black frame would read as "still working". */
+	enum obs_text_info_type type = licence_blocks(pk) ? OBS_TEXT_INFO_ERROR : OBS_TEXT_INFO_NORMAL;
 	add_info(props, "licence", line, type);
 }
 

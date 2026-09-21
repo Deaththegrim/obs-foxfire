@@ -11,6 +11,11 @@ struct ff_param_override {
 	char name[64];
 	float v[4];
 	int is_color;
+	char str[512]; /* a STRING value, empty when the entry was not one. Only meaningful for a
+	                  texture param, where it selects which of the pack's images this preset
+	                  uses -- so one shader can serve a whole pack of art instead of being
+	                  copied once per image. */
+	int is_str;
 }; /* preset "params" entries */
 struct ff_layer_def {
 	char effect_path[512];
@@ -57,6 +62,13 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap);
 /* true when a path is safe to join to a pack dir: relative, no "..", no backslash, no colon.
    Callers must ALSO confirm the file exists inside the pack -- this judges the name, not the inode. */
 bool ff_rel_ok(const char *p);
+
+/* Loads ONE pack directory (its pack.json, presets and licence) and appends it to `l`, or
+   appends a refusal reason to l->errors and returns false. Exported for unit testing: the
+   manifest refusals are the gate on shipping a paid pack, and reaching them through
+   ff_packs_scan() would mean writing into the module's own data or config directory.
+   Does not call obs_current_module(). */
+bool ff_pack_load_dir(struct ff_pack_list *l, const char *dir);
 
 /* recursively remove a directory, including symlinks and their targets (does not follow links).
    Exported for unit testing; returns false on any failure, and logs warnings for each failure. */

@@ -5,7 +5,6 @@
 #include <util/pipe.h> /* os_process_pipe_ and os_process_args_ functions live here, not util/platform.h */
 #include <string.h>
 #include <stdio.h>
-#include <time.h>
 #include <errno.h>
 #ifdef _WIN32
 #include <process.h>
@@ -148,6 +147,10 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 					o->v[0] = (float)obs_data_item_get_double(it);
 				} else if (obs_data_item_gettype(it) == OBS_DATA_BOOLEAN) {
 					o->v[0] = obs_data_item_get_bool(it) ? 1.f : 0.f;
+				} else if (obs_data_item_gettype(it) == OBS_DATA_STRING) {
+					const char *sv = obs_data_item_get_string(it);
+					snprintf(o->str, sizeof o->str, "%s", sv ? sv : "");
+					o->is_str = 1;
 				}
 			}
 			obs_data_release(params);
@@ -160,7 +163,7 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 	return true;
 }
 
-static bool load_pack_dir(struct ff_pack_list *l, const char *dir)
+bool ff_pack_load_dir(struct ff_pack_list *l, const char *dir)
 {
 	struct dstr mp = {0};
 	dstr_printf(&mp, "%s/pack.json", dir);
@@ -181,8 +184,42 @@ static bool load_pack_dir(struct ff_pack_list *l, const char *dir)
 	snprintf(pk.id, sizeof pk.id, "%s", obs_data_get_string(m, "id"));
 	snprintf(pk.name, sizeof pk.name, "%s", obs_data_get_string(m, "name"));
 	snprintf(pk.version, sizeof pk.version, "%s", obs_data_get_string(m, "version"));
+	/* obs_data_get_bool returns FALSE for a string or a number, so "licensed": "true" or
+	   "licensed": 1 ships a paid pack as free with no licence check and no message. Measured
+	   against libobs, not assumed. Refuse the wrong type rather than guess the intent. */
+	obs_data_item_t *lic_it = obs_data_item_byname(m, "licensed");
+	if (lic_it && obs_data_item_gettype(lic_it) != OBS_DATA_BOOLEAN) {
+		add_error(l, dir, "licensed must be true or false, not a string or a number");
+		obs_data_item_release(&lic_it);
+		obs_data_release(m);
+		return false;
+	}
+	obs_data_item_release(&lic_it);
 	pk.licensed = obs_data_get_bool(m, "licensed");
+
+	/* `released` decides whether a licence unlocks this pack (released <= entitled_through).
+	   obs_data_get_int returns 0 for a MISSING key, a JSON string, a bool, null and an array
+	   alike -- and 0 precedes every entitlement, so each of those silently unlocks a paid pack.
+	   Absent and present-but-unusable must therefore not share a verdict: absent is deliberate
+	   back-compat for free packs, unusable is an author error and gets named. packforge refuses
+	   a licensed pack without a real date at authoring time; this is the engine-side twin, for
+	   packs that did not come from packforge. */
+	obs_data_item_t *rel_it = obs_data_item_byname(m, "released");
+	if (rel_it && obs_data_item_gettype(rel_it) != OBS_DATA_NUMBER) {
+		add_error(l, dir, "released must be a number of unix seconds");
+		obs_data_item_release(&rel_it);
+		obs_data_release(m);
+		return false;
+	}
+	obs_data_item_release(&rel_it);
 	pk.released = (int64_t)obs_data_get_int(m, "released"); /* absent -> 0 -> always entitled */
+	if (pk.licensed && pk.released <= 0) {
+		add_error(l, dir,
+			  "a licensed pack must declare a real 'released' date; without one every "
+			  "licence unlocks it");
+		obs_data_release(m);
+		return false;
+	}
 	if (!id_ok(pk.id)) {
 		add_error(l, dir, "id must be [a-z0-9-]");
 		obs_data_release(m);
@@ -270,7 +307,7 @@ static void scan_dir(struct ff_pack_list *l, const char *root)
 			continue;
 		struct dstr p = {0};
 		dstr_printf(&p, "%s/%s", root, e->d_name);
-		load_pack_dir(l, p.array);
+		ff_pack_load_dir(l, p.array);
 		dstr_free(&p);
 	}
 	os_closedir(d);
@@ -742,7 +779,7 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 
 	struct ff_pack_list check;
 	memset(&check, 0, sizeof check);
-	bool ok = load_pack_dir(&check, pack_src.array);
+	bool ok = ff_pack_load_dir(&check, pack_src.array);
 	if (!ok) {
 		snprintf(msg, cap, "%s", check.nerrors ? check.errors[0] : "pack failed validation");
 		ff_packs_free(&check);

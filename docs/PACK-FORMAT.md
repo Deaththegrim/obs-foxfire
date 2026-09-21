@@ -22,7 +22,8 @@ each place that happened is called out below.
 
 ```json
 { "format": 1, "id": "ember", "name": "Ember", "version": "1.0.0", "author": "KitsuneStudio",
-  "min_engine": "1.0.0", "licensed": true, "kinds": ["visualizer", "effects", "overlay"],
+  "min_engine": "1.0.0", "licensed": true, "released": 1758412800,
+  "kinds": ["visualizer", "effects", "overlay"],
   "presets": [ { "id": "ember-bars", "name": "Ember Bars", "kind": "visualizer",
                  "thumb": "thumbs/ember-bars.png", "heavy": false,
                  "layers": [ { "effect": "effects/bars.effect",
@@ -114,6 +115,54 @@ Either way, the referenced file must exist inside the pack directory — a textu
 logs a warning and leaves that parameter unbound (sampling a 1x1 transparent placeholder); it does
 not fail the whole layer, preset, or pack.
 
+## Letting a viewer supply their own image: the `user` annotation
+
+Add `bool user = true;` to a texture uniform and the properties panel offers a file picker for it,
+so a viewer can point the parameter at their own logo or art instead of the pack's:
+
+```hlsl
+uniform texture2d logo <string path = "art/logo.png"; bool user = true; string label = "Logo";>;
+uniform float2 logo_size;   // fed automatically, see below
+```
+
+The `path` annotation is still required — it is what renders when the picker is empty, and what
+the engine falls back to if the chosen file cannot be read (with a warning naming the file). A
+texture with `user` but no `path` has nothing to show and is refused like any other unbound one.
+
+**The annotation must be a `bool`.** `int user = 1;` or `string user = "true";` compiles fine and
+is simply not recognised, so the picker never appears and the pack otherwise builds, loads and
+renders — the engine logs a warning naming the parameter rather than letting the feature vanish
+silently.
+
+**Feed the shader the image's dimensions.** A shader cannot ask a texture its own size on the
+OpenGL backend (`GetDimensions` does not compile there), so if you declare a `float2` uniform
+named `<texture name>_size` the engine writes the bound image's pixel dimensions into it every
+frame — the pack's own art, or the viewer's file, whichever is in use. Without it a 3:1 banner is
+drawn squashed into whatever proportions the pack art happened to have. Declaring `<name>_size` as
+anything other than `float2` is warned about and not fed, which would leave a shader dividing by
+zero.
+
+Animated GIFs are deliberately not offered by the picker: the engine binds a still frame and
+nothing ticks the animation, so one would appear permanently frozen on frame 0.
+
+## Named choices for a number: the `list` annotation
+
+`string list = "Kick=60;Snare=200;Voice=1000";` turns a float uniform into a dropdown of named
+values instead of a slider:
+
+```hlsl
+uniform float pulse_hz <string label = "Pulse on"; string list = "Kick=60;Snare=200;Voice=1000";> = 60.0;
+```
+
+Entries are `Name=number`, separated by `;`. Entries that are malformed, non-numeric or empty are
+dropped with a warning; if *none* parse, no dropdown is created and the parameter keeps its normal
+slider rather than losing its control entirely. Numbers are parsed locale-independently, so
+`1000.5` means the same thing on a machine whose locale writes decimals with a comma.
+
+The annotation is read through a 256-byte buffer, so a longer string is cut — and a cut landing
+mid-number turns `Snare=200` into `Snare=2`, which parses cleanly as the *wrong value*. The engine
+warns when it sees a string at that limit; keep lists comfortably under it.
+
 ## Layer and preset bounds
 
 - A preset needs **1 to 8 layers** (`FF_MAX_LAYERS` in `src/ff-pack.h`). 0 or 9+ layers refuses the
@@ -175,23 +224,45 @@ any other manifest error (see "How a bad manifest fails" above).
 A preset's `thumb` field is optional — omit it, or leave it `""`, and the engine skips validating it
 entirely. Set it and it's checked exactly like an effect path (see Refused paths, above).
 
-## Licensed packs: a broken licence loads zero layers, not a degraded pack
+## Licensed packs: `released`, and a broken licence loads zero layers
 
 This is the single most consequential behaviour in this document for anyone shipping a *paid* pack,
 so it gets its own section rather than a footnote.
 
-Set `"licensed": true` and the engine looks for `licence.json` next to `pack.json` at load time. If
-that file is **missing, unreadable, fails signature verification, or has expired past its grace
-period**, the engine does not degrade gracefully and does not fall back to the shader defaults — it
-loads that pack with **zero layers**. Every preset in it renders nothing at all: a transparent
-source, a no-op filter, with a reason shown in the properties panel (source status / info line) but
-no visual output whatsoever. The exact same pack with `"licensed": false` renders completely
-normally. This was measured directly, not inferred from reading the gating code.
+**A pack someone bought never stops working.** There is no expiry, no grace period and no clock
+check anywhere in the load path — a licence is not a lease. What a licence carries is
+`entitled_through`, the last moment the buyer was paying, and what a pack carries is `released`,
+the moment that *version of the pack* was published. The whole model is one comparison:
 
-The states that block are checked in `src/ff-props.c` (`licence_blocks()`): `EXPIRED`, `INVALID`
-(includes "the file doesn't exist"), and `NONE` (declared `licensed: true` but no licence was ever
-read for it) all zero the layers out. `OK` and `GRACE` (expired but still inside the renewal grace
-window) do **not** block — those still render, `GRACE` with a warning shown alongside.
+```
+released <= entitled_through   ->  it renders
+released >  entitled_through   ->  it does not
+```
+
+So a buyer keeps every pack that existed while they were subscribed, forever, offline, on a
+machine whose clock is wrong — and a pack we publish *after* they stopped paying does not open.
+Nothing they already had is ever taken away.
+
+**`released` is mandatory for a licensed pack and there is no safe default.** It is a Unix
+timestamp in seconds. `0`, a missing key, a quoted string like `"1758412800"`, a boolean, a list —
+all of those read back as `0` through libobs's `obs_data_get_int`, and `0 <= entitled_through` is
+true for every licence ever issued, so each one would silently unlock a paid pack for anybody.
+The engine therefore refuses the pack outright if `licensed` is true and `released` is missing,
+the wrong type, or not greater than zero. `packforge` refuses to build or ship such a pack for the
+same reason. A pack with `"licensed": false` may omit `released` entirely.
+
+If `licence.json` is **missing, unreadable, or fails signature verification**, or if the pack
+post-dates what the buyer paid for, the engine does not degrade gracefully and does not fall back
+to the shader defaults — it loads that pack with **zero layers**. Every preset in it renders
+nothing at all: a transparent source, a no-op filter, with a reason shown in the properties panel
+(source status / info line) but no visual output whatsoever. The exact same pack with
+`"licensed": false` renders completely normally. This was measured directly, not inferred from
+reading the gating code.
+
+The states that block are checked in `src/ff-props.c` (`licence_blocks()`): `NEWER` (the licence
+verifies, but `released` is past `entitled_through`), `INVALID` (includes "the file doesn't
+exist"), and `NONE` (declared `licensed: true` but no licence was ever read for it) all zero the
+layers out. Only `OK` renders. There is no intermediate tier that renders with a warning.
 
 The practical upshot for packaging a paid pack: ship it with `licensed: false` while you're testing
 render output, and only flip it to `true` once `licence.json` is in place and verified — a paid pack

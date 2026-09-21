@@ -8,11 +8,20 @@ This drives the built verify_cli with real python-cryptography signatures across
 every licence state, every tamper, and every JSON whitespace style a licence file
 might reach a buyer in.
 
-Usage: licence-interop.py <path to verify_cli>
+It signs with PACKFORGE'S OWN canonical() when packforge can be found, not with a
+copy of it. A local reimplementation would keep passing after packforge changed the
+byte layout it signs, which is the exact failure this gate exists to catch: every
+licence already sold would stop verifying and this would stay green. The local copy
+is kept only as a second opinion -- the two are compared byte-for-byte and a
+disagreement fails -- and the run prints which implementation actually signed.
+
+Usage: licence-interop.py <path to verify_cli> [path to the foxfire repo]
+       (or set FF_PACKFORGE to that path)
 Exit:  0 all checks passed, 1 a check failed, 77 skipped (ctest SKIP_RETURN_CODE).
 """
 import base64
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -26,7 +35,7 @@ except ImportError:
     print("SKIP: python-cryptography is not installed")
     sys.exit(77)
 
-if len(sys.argv) != 2:
+if not 2 <= len(sys.argv) <= 3:
     sys.exit(__doc__)
 CLI = Path(sys.argv[1])
 if not CLI.exists():
@@ -34,7 +43,7 @@ if not CLI.exists():
     sys.exit(77)
 
 
-def canonical(discord_id, pack_id, licence_id, issued, entitled_through):
+def reference_canonical(discord_id, pack_id, licence_id, issued, entitled_through):
     """Byte-for-byte what ff_licence_canonical() builds: sorted keys, no spaces."""
     return json.dumps(
         {
@@ -47,6 +56,40 @@ def canonical(discord_id, pack_id, licence_id, issued, entitled_through):
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
+
+
+def find_packforge():
+    """The foxfire repo, if it is anywhere we can reasonably look. Explicit argument or
+    FF_PACKFORGE first, then the sibling checkout, which is how both repos sit on disk."""
+    for cand in [
+        sys.argv[2] if len(sys.argv) == 3 else None,
+        os.environ.get("FF_PACKFORGE"),
+        Path(__file__).resolve().parents[2] / "foxfire",
+    ]:
+        if cand and (Path(cand) / "packforge" / "licence.py").is_file():
+            return Path(cand).resolve()
+    return None
+
+
+def load_canonical():
+    """Returns (callable, where it came from). Finding packforge and then failing to import
+    it is an ERROR, not a reason to quietly fall back -- a fallback there would restore
+    exactly the blind spot this is meant to remove."""
+    root = find_packforge()
+    if root is None:
+        return reference_canonical, "LOCAL COPY ONLY -- packforge was not found, so a change to its byte layout would NOT be caught here"
+    sys.path.insert(0, str(root))
+    from packforge.licence import canonical as pf_canonical  # noqa: E402
+
+    probe = dict(discord_id="1", pack_id="p", licence_id="l", issued=2, entitled_through=3)
+    mine, theirs = reference_canonical(**probe), pf_canonical(**probe)
+    if mine != theirs:
+        print(f"FAIL canonical layouts disagree:\n  packforge: {theirs!r}\n  reference: {mine!r}")
+        sys.exit(1)
+    return pf_canonical, f"packforge at {root}"
+
+
+canonical, CANONICAL_SOURCE = load_canonical()
 
 
 def main():
@@ -145,6 +188,7 @@ def main():
     )
 
     print()
+    print(f"signed with: {CANONICAL_SOURCE}")
     if failures:
         print(f"{len(failures)} INTEROP CHECK(S) FAILED")
         for f in failures:

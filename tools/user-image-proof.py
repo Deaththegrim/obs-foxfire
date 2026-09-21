@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Proves a viewer-supplied image really replaces a pack's art, at the right shape.
+"""Proves a viewer-supplied image really replaces a pack's art, and that `list` annotations
+become the dropdown they promise.
 
 Self-contained: it generates its own pack, its own pack art and its own stand-in for the file a
 viewer would pick, so nothing here depends on art that ships in the repository. The two images
@@ -11,6 +12,16 @@ Four states, all measured:
   2. a file picked               -> that image, AT ITS OWN ASPECT
   3. the setting cleared         -> the pack's art back
   4. a path that cannot be read  -> the pack's art, and a warning naming the file
+
+And three for the `string list` annotation, which turns a float into a dropdown of named values.
+It gets its own checks because the first implementation produced NO CONTROL AT ALL for these
+parameters -- libobs refuses a duplicate property key, so the intended "fall back to a slider"
+path was unreachable and the viewer simply lost the knob, with nothing logged. A proof that only
+looked at pixels could never see that: the shader renders identically either way.
+
+  5. a good list      -> a dropdown carrying exactly the named values
+  6. a partly-bad list-> a dropdown of the entries that DID parse, the bad ones dropped
+  7. an all-bad list  -> no dropdown, and the parameter keeps its ordinary slider
 
 Why the aspect check matters more than "did the picture change": a shader cannot ask a texture
 its own size on the OpenGL backend (GetDimensions does not compile; see
@@ -52,6 +63,9 @@ uniform float2 uv_size;
 uniform texture2d art <string path = "art/pack.png"; bool user = true; string label="Art";>;
 uniform float2 art_size;
 uniform float scale <string label="Size"; float minimum=0.05; float maximum=1.0; float step=0.01;> = 0.5;
+uniform float pulse_hz <string label="React to"; string list = "Kick=60;Snare=200;Voice=3500";> = 60.0;
+uniform float partly <string label="Partly"; string list = "Good=1;;broken;AlsoGood=2;Nope=abc;=5";> = 1.0;
+uniform float allbad <string label="All bad"; string list = "broken;also broken;Nope=abc";> = 1.0;
 sampler_state linSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 struct VertData { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 VertData VSDefault(VertData v) { VertData o; o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj); o.uv = v.uv; return o; }
@@ -66,7 +80,8 @@ float4 PSDraw(VertData v) : TARGET
 \tfloat inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
 \tfloat4 c = art.Sample(linSampler, uv);
 \tfloat a = c.a * inside;
-\treturn float4(1.0, 1.0, 1.0, a);
+\tfloat keep = step(0.0, pulse_hz + partly + allbad);
+\treturn float4(1.0, 1.0, 1.0, a * keep);
 }
 technique Draw { pass { vertex_shader = VSDefault(v); pixel_shader = PSDraw(v); } }
 """
@@ -131,6 +146,47 @@ async def wait_ready(c, timeout=60.0):
     raise RuntimeError(f"OBS never became ready: {last!r}")
 
 
+async def list_items(c, prop: str):
+    """The dropdown's entries as [(name, value)], or the request's failure text.
+
+    Asking libobs is the real trigger path -- GetInputPropertiesListPropertyItems is exactly what
+    the properties panel calls to draw the control. The failure text matters as much as the
+    success: "this property is not a list" and "there is no such property" are the difference
+    between a slider and a control the viewer has lost, and both would otherwise read as a bare
+    None."""
+    try:
+        r = await c.request("GetInputPropertiesListPropertyItems",
+                            {"inputName": "ff", "propertyName": prop})
+    except Exception as e:  # noqa: BLE001 -- the failure IS the observation here
+        return str(e)
+    return [(it["itemName"], it["itemValue"]) for it in r["propertyItems"]]
+
+
+async def check_lists(c):
+    good = await list_items(c, "l0.pulse_hz")
+    check("a `list` annotation produces a dropdown of exactly its named values",
+          good == [("Kick", 60.0), ("Snare", 200.0), ("Voice", 3500.0)], f"items={good}")
+
+    partly = await list_items(c, "l0.partly")
+    check("entries that do not parse are dropped and the rest still appear",
+          partly == [("Good", 1.0), ("AlsoGood", 2.0)],
+          f"items={partly} (an empty entry, a bare word, a non-numeric value and a nameless "
+          f"entry were all offered alongside two good ones)")
+
+    # Two references, measured in the same run rather than assumed: a float that never had a
+    # `list` annotation (so definitely a slider) and a name no parameter has (so definitely
+    # absent). The all-bad case has to look like the first and not the second.
+    slider = await list_items(c, "l0.scale")
+    missing = await list_items(c, "l0.no_such_param")
+    allbad = await list_items(c, "l0.allbad")
+    print(f"       reference -- a plain slider: {slider}")
+    print(f"       reference -- absent entirely: {missing}")
+    check("a list where nothing parses leaves the ordinary slider, not a missing control",
+          isinstance(allbad, str) and isinstance(slider, str) and isinstance(missing, str)
+          and slider != missing and allbad == slider,
+          f"allbad={allbad!r}")
+
+
 async def drive(userart: Path):
     ws, c = await ff_proof.open_client("user image proof")
     try:
@@ -167,6 +223,8 @@ async def drive(userart: Path):
         miss_ar = art_aspect(await shoot(c, "ff"))
         check("an unreadable file falls back to the pack's art instead of blanking",
               miss_ar is not None and abs(miss_ar - 1.0) < 0.2, f"aspect={miss_ar}")
+
+        await check_lists(c)
     finally:
         await ws.close()
 

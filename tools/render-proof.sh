@@ -13,7 +13,11 @@ printf '[General]\nFirstRun=true\nConfirmOnExit=false\n' > "$sb/obs-studio/user.
 "$here/install-local.sh" "$sb/obs-studio" >/dev/null
 echo "sandbox: $sb"
 
-XDG_CONFIG_HOME="$sb" xvfb-run -a -s "-screen 0 1280x720x24" obs --minimize-to-tray \
+# --multi: without it, a second OBS opens an "already running" warning dialog instead of
+# starting. Under Xvfb nobody can click it, so the websocket port never opens and the proof
+# fails with a bare ConnectionRefusedError that says nothing about the real cause. This bites
+# whenever the developer happens to have their own OBS open, which is most of the time.
+XDG_CONFIG_HOME="$sb" xvfb-run -a -s "-screen 0 1280x720x24" obs --multi --minimize-to-tray \
 	>"$sb/obs-stdout.txt" 2>&1 &
 obspid=$!
 for _ in $(seq 1 40); do

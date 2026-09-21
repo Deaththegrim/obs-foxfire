@@ -97,15 +97,30 @@ static void read_annotations(gs_eparam_t *ep, struct ff_param *p)
 		struct gs_effect_param_info ai;
 		gs_effect_get_param_info(a, &ai);
 		if (ai.type == GS_SHADER_PARAM_STRING) {
-			char s[256];
+			/* sized to the largest field it feeds (p->list), so the only cap an author
+			   can hit is that field's own -- a smaller staging buffer would silently cut
+			   a list that the struct had room for */
+			char s[sizeof p->list];
 			if (!default_val_str(a, s, sizeof s))
 				continue;
 			if (!strcmp(ai.name, "label"))
 				set_field(p->label, sizeof p->label, s);
 			else if (!strcmp(ai.name, "group"))
 				set_field(p->group, sizeof p->group, s);
-			else if (!strcmp(ai.name, "list"))
+			else if (!strcmp(ai.name, "list")) {
+				/* A cut landing mid-number turns "Snare=200" into "Snare=2", which
+				   parses cleanly as a WRONG VALUE rather than being dropped, so the
+				   author has to be told. The packs we ship sit around 130 characters,
+				   well under this, so a warning here means something really is too
+				   long rather than flagging ordinary authoring. */
+				if (strlen(s) >= sizeof s - 1)
+					obs_log(LOG_WARNING,
+						"param '%s': the 'list' annotation is too long and was cut "
+						"at %d characters; entries past the cut are missing and the "
+						"one it lands in may carry a truncated number",
+						p->name, (int)(sizeof s - 1));
 				set_field(p->list, sizeof p->list, s);
+			}
 		} else if (ai.type == GS_SHADER_PARAM_FLOAT) {
 			void *v = default_val_of_size(a, sizeof(float));
 			if (!v)
@@ -159,7 +174,12 @@ static bool load_texture_file(struct ff_param *p, const char *full)
 	p->tex = bzalloc(sizeof(gs_image_file_t));
 	gs_image_file_init(p->tex, full);
 	gs_image_file_init_texture(p->tex);
-	if (p->tex->loaded)
+	/* `loaded` only means the CPU DECODE worked -- libobs sets it from !!texture_data, and
+	   gs_image_file_init_texture leaves it alone when gs_texture_create fails (an image past the
+	   backend's maximum dimension, or VRAM exhaustion). Checking `loaded` alone therefore returns
+	   success with texture == NULL, the fallback never fires, nothing is logged, and set_params
+	   binds NULL -- the exact thing its own comment says must never happen. */
+	if (p->tex->loaded && p->tex->texture)
 		return true;
 	free_texture(p);
 	return false;
@@ -204,6 +224,16 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 		gs_eparam_t *a = gs_param_get_annotation_by_idx(p->ep, i);
 		struct gs_effect_param_info ai;
 		gs_effect_get_param_info(a, &ai);
+		if (!strcmp(ai.name, "user") && ai.type != GS_SHADER_PARAM_BOOL) {
+			/* <int user = 1;> or <string user = "true";> otherwise falls through silently:
+			   the picker never appears, the pack builds, loads and renders, and the
+			   headline feature is just absent with nothing in the log. */
+			obs_log(LOG_WARNING,
+				"param '%s': the 'user' annotation must be a bool (<bool user = true;>); "
+				"it is declared otherwise, so no file picker will be offered",
+				p->name);
+			continue;
+		}
 		if (ai.type == GS_SHADER_PARAM_BOOL && !strcmp(ai.name, "user")) {
 			void *v = default_val_of_size(a, sizeof(bool));
 			if (v) {
@@ -225,7 +255,9 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 			obs_log(LOG_WARNING, "texture path '%s' refused", rel);
 			continue;
 		}
-		set_field(p->tex_pack, sizeof p->tex_pack, rel);
+		/* the preset's choice wins: apply_override ran first and may already have set this */
+		if (!p->tex_pack[0])
+			set_field(p->tex_pack, sizeof p->tex_pack, rel);
 	}
 	ff_param_bind_texture(p, pack_dir);
 }
@@ -239,6 +271,23 @@ static void apply_override(struct ff_param *p, const struct ff_param_override *o
 	bool colour = o->is_color != 0;
 	bool scalar = p->type == GS_SHADER_PARAM_FLOAT || p->type == GS_SHADER_PARAM_INT ||
 		      p->type == GS_SHADER_PARAM_BOOL;
+	if (o->is_str) {
+		/* A string only means anything for a texture: it picks which of the pack's images this
+		   preset draws. Judged by ff_rel_ok exactly like the shader's own <string path=...>
+		   annotation -- a preset is pack-authored content, so it must not be able to reach
+		   outside the pack any more than the shader can. */
+		if (p->type != GS_SHADER_PARAM_TEXTURE)
+			obs_log(LOG_WARNING,
+				"preset '%s' layer %d: param '%s' was given a string, which only means "
+				"something for a texture; using the shader default",
+				preset_id, (int)layer_idx, p->name);
+		else if (!ff_rel_ok(o->str))
+			obs_log(LOG_WARNING, "preset '%s' layer %d: texture path '%s' refused",
+				preset_id, (int)layer_idx, o->str);
+		else
+			set_field(p->tex_pack, sizeof p->tex_pack, o->str);
+		return;
+	}
 	if (colour && p->type == GS_SHADER_PARAM_VEC4)
 		memcpy(p->def, o->v, sizeof p->def);
 	else if (!colour && scalar)
@@ -367,6 +416,15 @@ static void load_layer(struct ff_layer *L, const struct ff_pack *pack, const str
 				gs_effect_get_param_info(sep, &si);
 				if (si.type == GS_SHADER_PARAM_VEC2)
 					p->tex_size_ep = sep;
+				else
+					/* found but the wrong type -- float2 vs float4 compiles fine and
+					   then never receives the size, so a shader dividing by it
+					   divides by zero. Silence here looks identical to a shader that
+					   simply did not ask for the size. */
+					obs_log(LOG_WARNING,
+						"layer %d: '%s' must be float2 to receive the image size; "
+						"it is declared otherwise and will not be fed",
+						(int)idx, sz);
 			}
 		}
 	}
@@ -699,15 +757,28 @@ static void unpack_color(uint32_t c, float v[4])
    with a warning rather than silently dropped: a typo in a pack's annotation would otherwise show
    up as a short list nobody can explain. Returns false if nothing usable was found, so the caller
    can fall back to the ordinary slider instead of leaving an empty combo box. */
+#define FF_LIST_MAX 32
+
+/* Parse FIRST, create the property only if something usable came out.
+   The previous version created the list up front and, when every entry was malformed, hid it and
+   returned false so the caller could fall back to a slider. That fallback was unreachable: the
+   hidden property still occupies `key`, and libobs refuses a duplicate (has_prop -> contains_prop
+   walks the topmost parent and recurses through groups), so obs_properties_add_float_slider
+   returned NULL and the viewer got NO CONTROL AT ALL -- with nothing in the log but libobs's own
+   generic "Property 'x' exists". Verified against libobs, not assumed. */
 static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
 {
-	obs_property_t *list =
-		obs_properties_add_list(grp, key, label, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_FLOAT);
+	struct {
+		char name[96];
+		double value;
+	} items[FF_LIST_MAX];
 	size_t added = 0;
-	char buf[512];
+
+	char buf[sizeof p->list];
 	set_field(buf, sizeof buf, p->list);
 	char *save = NULL;
-	for (char *tok = strtok_r(buf, ";", &save); tok; tok = strtok_r(NULL, ";", &save)) {
+	for (char *tok = strtok_r(buf, ";", &save); tok && added < FF_LIST_MAX;
+	     tok = strtok_r(NULL, ";", &save)) {
 		while (*tok == ' ')
 			tok++;
 		char *eq = strchr(tok, '=');
@@ -715,20 +786,55 @@ static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, cons
 			obs_log(LOG_WARNING, "param '%s': list entry '%s' has no Name=value", p->name, tok);
 			continue;
 		}
+		/* the whole entry, kept before the split: cutting at '=' first and then logging `tok`
+		   printed the NAME while claiming it had no number, hiding the offending text */
+		char whole[128];
+		set_field(whole, sizeof whole, tok);
 		*eq = '\0';
+		const char *num = eq + 1;
 		char *endp = NULL;
-		double v = strtod(eq + 1, &endp);
-		if (endp == eq + 1) {
-			obs_log(LOG_WARNING, "param '%s': list entry '%s' has no number", p->name, tok);
+		double v = os_strtod(num); /* locale-independent: plain strtod reads "0.5" as 0 under a
+					      comma-decimal LC_NUMERIC, and the endp check would not fire */
+		(void)endp;
+		/* os_strtod gives no end pointer, so validate the text itself rather than trusting a
+		   silent 0: reject anything that is not a number, and anything with trailing junk. */
+		const char *q = num;
+		while (*q == ' ')
+			q++;
+		if (*q == '+' || *q == '-')
+			q++;
+		bool digits = false;
+		while ((*q >= '0' && *q <= '9') || *q == '.') {
+			if (*q != '.')
+				digits = true;
+			q++;
+		}
+		if (*q == 'e' || *q == 'E') {
+			q++;
+			if (*q == '+' || *q == '-')
+				q++;
+			while (*q >= '0' && *q <= '9')
+				q++;
+		}
+		while (*q == ' ')
+			q++;
+		if (!digits || *q) {
+			obs_log(LOG_WARNING, "param '%s': list entry '%s' is not a plain number", p->name,
+				whole);
 			continue;
 		}
-		obs_property_list_add_float(list, tok, v);
+		set_field(items[added].name, sizeof items[added].name, tok);
+		items[added].value = v;
 		added++;
 	}
-	if (added)
-		return true;
-	obs_property_set_visible(list, false); /* an empty combo would be a dead control */
-	return false;
+	if (!added)
+		return false; /* nothing created, so the caller's ordinary control is free to use `key` */
+
+	obs_property_t *list =
+		obs_properties_add_list(grp, key, label, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_FLOAT);
+	for (size_t i = 0; i < added; i++)
+		obs_property_list_add_float(list, items[i].name, items[i].value);
+	return true;
 }
 
 static void add_param_property(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
@@ -763,7 +869,11 @@ static void add_param_property(obs_properties_t *grp, const struct ff_param *p, 
 	case GS_SHADER_PARAM_TEXTURE:
 		/* only reached when the shader opted in -- is_exposed() gates it */
 		obs_properties_add_path(grp, key, label, OBS_PATH_FILE,
-					"Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*.*)", NULL);
+					/* no *.gif: gs_image_file_t can animate one, but only if the host
+					   calls gs_image_file_tick + update_texture every frame, and nothing
+					   here does. Offering it would hand back a frozen frame 0 with no
+					   explanation -- worse than not offering it. */
+					"Images (*.png *.jpg *.jpeg *.bmp *.webp);;All files (*.*)", NULL);
 		break;
 	default:
 		/* VEC2/VEC3, STRING and the matrix types are not user-editable */
