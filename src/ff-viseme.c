@@ -91,17 +91,52 @@ static struct band_split split_bands(const struct ff_frame *f)
 	return s;
 }
 
-float ff_viseme_frication(const struct ff_frame *f)
+static float frication_of(struct band_split s)
 {
-	struct band_split s = split_bands(f);
 	float total = s.voiced + s.high;
 	if (total <= 0.0001f)
 		return 0.0f;
 	return s.high / total;
 }
 
+float ff_viseme_frication(const struct ff_frame *f)
+{
+	return frication_of(split_bands(f));
+}
+
+/* The two vowel features, exposed for the same reason as ff_viseme_frication: a caller that
+   cannot see the feature can only check the shape that came out, and "ee" is B whether it was
+   heard as a vowel or as a hiss. They exist as functions rather than as four constants because
+   the alternative is every caller keeping its own copy of the windows -- which is exactly what
+   split_bands() was introduced to stop one level down. */
+float ff_viseme_openness(const struct ff_frame *f)
+{
+	float lo = band_sum(f, 180.0f, 450.0f);
+	float hi = band_sum(f, 450.0f, 1100.0f);
+	return hi / (lo + hi + 1e-6f);
+}
+
+float ff_viseme_frontness(const struct ff_frame *f)
+{
+	float front = band_sum(f, 1800.0f, 3000.0f);
+	float back = band_sum(f, 550.0f, 1300.0f);
+	return front / (front + back + 1e-6f);
+}
+
 enum ff_viseme ff_viseme_classify(const struct ff_frame *f, float jaw_bias)
 {
+	/* Clamped here rather than trusted from the slider, because the slider is not the only
+	   way in: mouth-proof.py sets hold_ms to 8000 over obs-websocket against a maximum of 250,
+	   which is the whole mechanism of one of its checks, so the same door is open for this.
+	   Unbounded, a bias past about +-0.5 moves a threshold outside the range openness occupies
+	   at all and the mouth sticks on one shape forever, which reads to a streamer as "the
+	   lipsync is broken" rather than as a setting being wrong. ff-analysis.c floors
+	   beat_sensitivity at the point of use for the same reason. */
+	if (jaw_bias < -FF_VIS_JAW_BIAS_MAX)
+		jaw_bias = -FF_VIS_JAW_BIAS_MAX;
+	if (jaw_bias > FF_VIS_JAW_BIAS_MAX)
+		jaw_bias = FF_VIS_JAW_BIAS_MAX;
+
 	/* Voiced energy only. Everything above ~3.5 kHz is sibilance and room noise, and below
 	   ~180 Hz is the fundamental and whatever the desk is resting on; neither says anything
 	   about the shape of the mouth. */
@@ -126,25 +161,25 @@ enum ff_viseme ff_viseme_classify(const struct ff_frame *f, float jaw_bias)
 	 * ORDER MATTERS the other way too: the check above used to ask only about 180-3500 Hz, so
 	 * a bright /s/ with little below 3.5 kHz fell out as X, rest. Rest is what the mouth does
 	 * when the speaker has STOPPED. */
-	if (high > FF_VIS_FRICATION * (voiced + high))
+	if (frication_of(sp) > FF_VIS_FRICATION)
 		return FF_VIS_B;
 
 	if (voiced <= 0.0001f)
 		return FF_VIS_X;
 
+	float openness = ff_viseme_openness(f);
+	float frontness = ff_viseme_frontness(f);
+
 	/* JAW: where the energy sits inside F1's range. The low half of the range is a closed jaw
 	   ("ee", "oo" at 240-250 Hz), the top is wide open ("ah" at 850). A ratio rather than a
-	   peak, because a peak needs to be told which formant it found and a ratio does not. */
-	float f1_low = band_sum(f, 180.0f, 450.0f);
-	float f1_high = band_sum(f, 450.0f, 1100.0f);
-	float openness = f1_high / (f1_low + f1_high + 1e-6f);
+	   peak, because a peak needs to be told which formant it found and a ratio does not.
+	   Computed by ff_viseme_openness, not here: tests/calibrate_cli.c had its own copy of
+	   these four windows, and a tool whose whole job is reporting whether a threshold is
+	   balanced against the classifier's feature must not be measuring a different feature. */
 
 	/* FRONT vs BACK: F2 is up at 2300-2400 Hz for front vowels and down at ~600 Hz for back,
 	   rounded ones. The gap is enormous, which is what makes this robust at 10% band spacing.
 	   The low window starts above F1's range so a wide-open "ah" does not read as rounded. */
-	float front = band_sum(f, 1800.0f, 3000.0f);
-	float back = band_sum(f, 550.0f, 1300.0f);
-	float frontness = front / (front + back + 1e-6f);
 
 	/* The boundaries below are MEASURED, not chosen: each vowel was synthesised at its
 	   published formants, pushed through this engine's own analysis, and the two features

@@ -168,6 +168,11 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
  * the room the mouth will actually run in. Do not "fix" these by re-running them against the
  * five-formant model -- that would be swapping one unvalidated fixture for another. */
 
+/* How far the jaw trim may go. Defined beside the thresholds it shifts, and used BOTH by the
+   panel slider and by the clamp in ff_viseme_classify, so the bound the classifier enforces and
+   the bound the panel offers cannot drift apart. */
+#define FF_VIS_JAW_BIAS_MAX 0.15f
+
 /* jaw open enough to be a wide mouth */
 #define FF_VIS_OPEN_WIDE 0.56f
 /* jaw open at all, as opposed to nearly closed */
@@ -184,6 +189,13 @@ float ff_viseme_band_hz(int i);
    out cannot tell a threshold that is wrong from a feature that is wrong, and "ee" classifies as
    B whether it was heard as a vowel or as a hiss. */
 float ff_viseme_frication(const struct ff_frame *f);
+
+/* The two vowel features, on the same terms: the jaw axis and the front/back axis this frame,
+   each compared against the thresholds above. A caller measuring a distribution must read these
+   rather than re-summing the bands, or it ends up reporting one feature's percentiles against
+   another feature's thresholds and nothing says so. */
+float ff_viseme_openness(const struct ff_frame *f);
+float ff_viseme_frontness(const struct ff_frame *f);
 
 /* What the classifier would say with no timing applied: the raw shape for this frame. Exposed so
    a test can check the CLASSIFICATION and the HOLD separately -- together they hide each other.

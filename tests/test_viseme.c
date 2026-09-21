@@ -19,6 +19,29 @@
  *     silence does not close the mouth               103 checks,  1 failed
  *     band layout off by an octave                   103 checks, 12 failed
  *
+ * for the timings, which a reviewer panel found were exercised only at their defaults -- both
+ * outcomes of the closure split fired, but replacing p->closure_ms with a literal 200 left
+ * everything green, and `openness` was read by no check at all so the whole release smoother
+ * could be replaced with `s->openness = f->level;` (at 276 checks):
+ *
+ *     release_ms ignored, openness follows level     276 checks,  2 failed
+ *     the dt/release clamp removed                   276 checks,  1 failed
+ *     release_ms <= 0 falls through to the smoother  276 checks,  2 failed
+ *     closure_ms ignored (a literal 200)             276 checks,  1 failed
+ *     no immediate attack out of a CLOSURE           276 checks,  1 failed
+ *     jaw bias lower clamp removed                   276 checks,  1 failed
+ *     jaw bias upper clamp removed                   276 checks,  0 failed  <- see below
+ *
+ * The last row is honest rather than fixed. At the clamped +0.15 the wide-open line sits at
+ * 0.41 and every vowel this file can synthesise is above it -- the lowest, "ee", measures
+ * 0.4159 -- so a check on the positive side reads D at both the clamped and the unclamped value
+ * and agrees for the wrong reason. Downward there is room and that half is armed.
+ *
+ * "no immediate attack out of a CLOSURE" is the one worth reading twice: a voiced frame never
+ * once followed an A in any fixture, because every closure here was followed by more silence.
+ * Deleting `|| s->current == FF_VIS_A` left all 250 checks green, and that branch is what makes
+ * a /p/ open on time instead of waiting out an 80 ms hold.
+ *
  * for the jaw bias (at 250 checks):
  *
  *     bias ignored in the classifier                 250 checks,  4 failed
@@ -293,6 +316,28 @@ int main(void)
 	CHECK(ff_viseme_classify(&f, 0.05f) == FF_VIS_D);  /* + opens: crosses the wide line */
 	CHECK(ff_viseme_classify(&f, -0.10f) == FF_VIS_B); /* - closes: falls under the jaw line */
 
+	/* The bias is CLAMPED where it is used, not merely bounded by the slider. Settings arrive
+	   over obs-websocket and out of hand-edited scene JSON, and mouth-proof.py already pushes
+	   hold_ms to 8000 against a maximum of 250 by that route. Unclamped, a bias past about
+	   +-0.5 puts a threshold outside the range openness occupies and the mouth sticks on one
+	   shape with no diagnostic. */
+	{
+		/* Armed on the NEGATIVE side only, and the reason is worth writing down: at the
+		   clamped +0.15 the wide-open line sits at 0.41, and every vowel this file can
+		   synthesise is above it (the lowest, "ee", measures 0.4159). So a positive check
+		   reads D at both the clamped and the unclamped value and agrees for the wrong
+		   reason -- which is exactly what the first version of this did, written against
+		   "eh", and it passed with the clamp deleted.
+		   Downward there is room: "ae" at 0.776 is still D at -0.15 (the line moves to
+		   0.71) and is NOT D unclamped at -5.0. */
+		struct ff_frame cf;
+		synth_vowel(buf, SR, 110.0f, 850, 1610, 2600);
+		CHECK(last_frame(buf, SR, &cf));
+		CHECK(ff_viseme_classify(&cf, -FF_VIS_JAW_BIAS_MAX) == FF_VIS_D);
+		CHECK(ff_viseme_classify(&cf, -5.0f) == FF_VIS_D);
+		CHECK(ff_viseme_classify(&cf, 5.0f) == ff_viseme_classify(&cf, FF_VIS_JAW_BIAS_MAX));
+	}
+
 	/* The sign, stated as a property rather than as three examples: raising the bias can only
 	   ever move a frame toward a MORE open shape, never back. Checked across the whole vowel
 	   set so it cannot pass on one lucky frame. */
@@ -432,6 +477,129 @@ int main(void)
 	}
 	fprintf(stderr, "      frication down to quarter level: vowel <= %.4f, /s/ >= %.4f\n", quiet_v,
 		quiet_f);
+
+	/* ---- the timings, driven off their defaults ---- */
+
+	/* release_ms was observed by NOTHING before this. `openness` is never read by any other
+	   check here, and mouth-proof's two readings of it are taken after a three-second settle
+	   against a slider that stops at 500 ms, so the decay has finished either way. Replacing
+	   the whole smoother with `s->openness = f->level;` passed every check in both files.
+	   Pure arithmetic, so it is checked as arithmetic: k = dt/release, applied once. */
+	{
+		struct ff_viseme_state rs;
+		struct ff_viseme_params rp;
+		ff_viseme_defaults(&rp);
+		ff_viseme_init(&rs);
+		synth_vowel(buf, SR, 110.0f, 850, 1610, 2600);
+		CHECK(last_frame(buf, SR, &f)); /* loud */
+		struct ff_frame hush;
+		memset(buf, 0, sizeof buf);
+		CHECK(last_frame(buf, SR, &hush));
+
+		rs.openness = 1.0f;
+		rp.release_ms = 100.0f;
+		ff_viseme_update(&rs, &hush, 50.0f, &rp); /* k = 0.5 */
+		CHECK(fabsf(rs.openness - 0.5f) < 1e-4f);
+
+		rs.openness = 1.0f;
+		rp.release_ms = 400.0f;
+		ff_viseme_update(&rs, &hush, 50.0f, &rp); /* k = 0.125 */
+		CHECK(fabsf(rs.openness - 0.875f) < 1e-4f);
+
+		/* dt past the release time: the k clamp, which no fixture reached because every
+		   other update here uses 16 ms against a default of 120 */
+		rs.openness = 1.0f;
+		rp.release_ms = 20.0f;
+		ff_viseme_update(&rs, &hush, 50.0f, &rp);
+		CHECK(rs.openness == 0.0f);
+
+		/* and zero, which the slider's own minimum offers */
+		rs.openness = 1.0f;
+		rp.release_ms = 0.0f;
+		ff_viseme_update(&rs, &hush, 16.0f, &rp);
+		CHECK(rs.openness == 0.0f);
+
+		/* release 0 AND a zero-length frame. Without the explicit branch this is 0/0, and
+		   the smoother becomes openness += (target - openness) * NaN -- a mouth that is
+		   NaN open for the rest of the session. The clamp does not save it: NaN > 1.0 is
+		   false, so nothing clamps. Removing the branch passes every other check here,
+		   because every other one has a dt. */
+		rs.openness = 1.0f;
+		rp.release_ms = 0.0f;
+		ff_viseme_update(&rs, &hush, 0.0f, &rp);
+		CHECK(rs.openness == rs.openness); /* i.e. not NaN */
+		CHECK(rs.openness == 0.0f);
+
+		/* rising is immediate whatever the release says -- a mouth that lags the attack of
+		   a word looks dubbed */
+		rp.release_ms = 500.0f;
+		rs.openness = 0.0f;
+		ff_viseme_update(&rs, &f, 16.0f, &rp);
+		CHECK(rs.openness == f.level);
+	}
+
+	/* closure_ms: both OUTCOMES were exercised, the SETTING was not. Replacing p->closure_ms
+	   with the literal 200.0f left every check green -- which is verbatim the mutation the jaw
+	   bias was armed against three sections up. The lesson had been applied to one control. */
+	{
+		struct ff_viseme_state cs;
+		struct ff_viseme_params cp;
+		struct ff_frame hush;
+		ff_viseme_defaults(&cp);
+		synth_vowel(buf, SR, 110.0f, 850, 1610, 2600);
+		CHECK(last_frame(buf, SR, &f));
+		memset(buf, 0, sizeof buf);
+		CHECK(last_frame(buf, SR, &hush));
+
+		cp.closure_ms = 50.0f;
+		ff_viseme_init(&cs);
+		ff_viseme_update(&cs, &f, 16.0f, &cp); /* speak, so the mouth has something to shut */
+		ff_viseme_update(&cs, &hush, 16.0f, &cp);
+		CHECK(cs.current == FF_VIS_A); /* 16 ms is a closure at 50 */
+		ff_viseme_update(&cs, &hush, 16.0f, &cp);
+		ff_viseme_update(&cs, &hush, 16.0f, &cp);
+		ff_viseme_update(&cs, &hush, 16.0f, &cp); /* 64 ms: past 50, so the speaker stopped */
+		CHECK(cs.current == FF_VIS_X);
+
+		/* the same four frames at the shipped 200 ms are still a closure */
+		ff_viseme_defaults(&cp);
+		ff_viseme_init(&cs);
+		ff_viseme_update(&cs, &f, 16.0f, &cp);
+		for (int i = 0; i < 4; i++)
+			ff_viseme_update(&cs, &hush, 16.0f, &cp);
+		CHECK(cs.current == FF_VIS_A);
+	}
+
+	/* The STOP RELEASE: the first voiced frame after a closure is already the new shape, with
+	   no hold to wait out. A voiced frame never once followed an A in any fixture -- every
+	   closure here was followed by more silence -- so deleting `|| s->current == FF_VIS_A`
+	   from the immediate-attack test left all 250 checks green. That branch is what makes a
+	   /p/ open on time; without it the mouth waits 80 ms after every stop, which is the
+	   dubbed look the immediate path exists to prevent. */
+	{
+		struct ff_viseme_state ps;
+		struct ff_viseme_params pp;
+		struct ff_frame hush;
+		ff_viseme_defaults(&pp);
+		ff_viseme_init(&ps);
+		synth_vowel(buf, SR, 110.0f, 240, 2400, 2900); /* "ee" -> B */
+		CHECK(last_frame(buf, SR, &f));
+		memset(buf, 0, sizeof buf);
+		CHECK(last_frame(buf, SR, &hush));
+		synth_vowel(buf, SR, 110.0f, 850, 1610, 2600); /* "ae" -> D */
+		struct ff_frame wide;
+		CHECK(last_frame(buf, SR, &wide));
+
+		CHECK(ff_viseme_update(&ps, &f, 16.0f, &pp) == FF_VIS_B);
+		CHECK(ff_viseme_update(&ps, &hush, 16.0f, &pp) == FF_VIS_A); /* the closure */
+		/* one frame later, and a DIFFERENT shape: no hold, no waiting */
+		CHECK(ff_viseme_update(&ps, &wide, 16.0f, &pp) == FF_VIS_D);
+	}
+
+	/* the frication accessor's own silence guard, which the classifier's guard hides */
+	memset(buf, 0, sizeof buf);
+	CHECK(last_frame(buf, SR, &f));
+	CHECK(ff_viseme_frication(&f) == 0.0f);
 
 	/* silence is rest, not a guess */
 	memset(buf, 0, sizeof buf);

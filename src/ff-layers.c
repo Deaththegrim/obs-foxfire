@@ -28,7 +28,7 @@ static bool is_builtin(const char *n)
 
 /* ------------------------------------------------------------------ mouth timing
 
-   The four numbers that decide whether lipsync reads as speech are engine state, not shader
+   The five numbers that decide whether lipsync reads as speech are engine state, not shader
    uniforms: nothing in a pack declares them, so without this they were whatever
    ff_viseme_defaults said and could only be changed by rebuilding the plugin. They describe the
    VOICE and the microphone -- a quiet talker needs a lower gate, a fast one a shorter hold -- so
@@ -42,8 +42,11 @@ struct mouth_ctl {
 	const char *key;  /* not "l<n>.<name>", so is_layer_key() leaves these alone: switching
 	                     preset must not discard a mouth that was tuned to a voice */
 	const char *text; /* locale key */
-	size_t off;       /* field in struct ff_viseme_params. An offset rather than four branches:
-	                     a branch can be written against the wrong field and still compile. */
+	size_t off;       /* field in struct ff_viseme_params. What this buys is ADJACENCY -- the
+	                     settings key and the field it writes sit on one line, where a reader
+	                     can see a mismatch. It is not a compile-time check: an offsetof row
+	                     can be written against the wrong field and compile just as happily as
+	                     a branch can. The _Static_assert below is the only part checked. */
 	double min, max, step;
 };
 static const struct mouth_ctl MOUTH_CTLS[] = {
@@ -53,11 +56,27 @@ static const struct mouth_ctl MOUTH_CTLS[] = {
 	{"mouth.hold_ms", "Foxfire.Mouth.Hold", offsetof(struct ff_viseme_params, hold_ms), 0.0, 250.0, 5.0},
 	{"mouth.release_ms", "Foxfire.Mouth.Release", offsetof(struct ff_viseme_params, release_ms), 0.0, 500.0,
 	 10.0},
-	/* +-0.15 covers the 0.156 spread measured between real recordings; wider than that and the
-	   trim would push one of the two thresholds past the other. */
-	{"mouth.jaw_bias", "Foxfire.Mouth.Jaw", offsetof(struct ff_viseme_params, jaw_bias), -0.15, 0.15, 0.005},
+	/* +-0.15 is the order of the 0.156 spread measured between real recordings. It is NOT
+	   about the two thresholds crossing -- they are shifted by the same bias, so their 0.08
+	   separation is rigid and they cannot cross at any value. What a bound is for here is
+	   keeping the trim inside the range openness actually occupies: past about +-0.5 one
+	   threshold leaves that range entirely and the mouth sticks on one shape with no
+	   diagnostic. Clamped in ff_viseme_classify, because a slider is not a guard -- settings
+	   arrive over obs-websocket and out of hand-edited scene JSON too. */
+	{"mouth.jaw_bias", "Foxfire.Mouth.Jaw", offsetof(struct ff_viseme_params, jaw_bias), -FF_VIS_JAW_BIAS_MAX,
+	 FF_VIS_JAW_BIAS_MAX, 0.005},
 };
 #define MOUTH_NCTLS (sizeof MOUTH_CTLS / sizeof MOUTH_CTLS[0])
+
+/* The table's real invariant, which nothing else states: every float in ff_viseme_params has a
+   row here, and mouth_field() only ever reaches floats. Both halves fail silently otherwise -- a
+   field added with no row takes its default forever and has no control, which is the exact
+   defect this table exists to prevent, in the one direction the table does not cover; and a
+   non-float field with a row would have its bytes written through a float*.
+   All five fields are float and none of them pads, so this is exactly 20 bytes today. */
+_Static_assert(sizeof(struct ff_viseme_params) == MOUTH_NCTLS * sizeof(float),
+	       "every float in ff_viseme_params needs a row in MOUTH_CTLS, and mouth_field() "
+	       "only reaches floats");
 
 static float *mouth_field(struct ff_viseme_params *p, size_t off)
 {
@@ -1284,7 +1303,8 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 
 	/* Unconditionally, and rebuilt from the defaults each time: a control the viewer has not
 	   touched has no user value, and reading it would hand the engine a 0. Zero is a real
-	   setting for three of these four -- gate 0 answers the room, hold 0 flaps every frame --
+	   setting for four of these five -- gate 0 answers the room, hold 0 flaps every frame,
+	   jaw bias 0 is the untrimmed default --
 	   so "missing" must not silently become "zero". Restore Defaults clears the key, and this
 	   is what puts the default back. */
 	struct ff_viseme_params m;
