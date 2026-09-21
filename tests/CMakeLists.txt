@@ -19,6 +19,13 @@ add_executable(test_alert test_alert.c ${CMAKE_SOURCE_DIR}/src/ff-alert.c ${CMAK
 add_executable(test_ws test_ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c)
 target_link_libraries(test_ws PRIVATE ff-core)
 add_test(NAME ws COMMAND test_ws)
+
+# The connection layer takes its socket as two function pointers, so this links no transport at
+# all -- the whole read loop is driven from a scripted buffer.
+add_executable(test_ws_conn test_ws_conn.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c)
+target_link_libraries(test_ws_conn PRIVATE ff-core)
+add_test(NAME ws_conn COMMAND test_ws_conn)
 target_link_libraries(test_alert PRIVATE ff-core)
 add_test(NAME alert COMMAND test_alert)
 target_link_libraries(test_handoff PRIVATE pthread)

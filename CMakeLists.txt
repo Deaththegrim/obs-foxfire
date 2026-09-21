@@ -83,7 +83,7 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ff-core)
 # alerts installs this one and nothing else; it still reads the same packs directory (see
 # ff_shared_config_path) so packs are not split across plugins.
 add_library(obs-foxfire-alerts MODULE)
-target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c src/ff-alert-source.c src/ff-alert-queue.c src/ff-ws.c)
+target_sources(obs-foxfire-alerts PRIVATE src/alerts-main.c src/ff-alert.c src/ff-alert-source.c src/ff-alert-queue.c src/ff-ws.c src/ff-ws-conn.c)
 target_link_libraries(obs-foxfire-alerts PRIVATE ff-core)
 set_target_properties_plugin(obs-foxfire-alerts PROPERTIES OUTPUT_NAME obs-foxfire-alerts)
 option(FOXFIRE_BUILD_TESTS "Build ff unit tests" OFF)
