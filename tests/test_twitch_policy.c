@@ -9,6 +9,7 @@
 
 #include "ff-test.h"
 #include <ff-twitch.h>
+#include <string.h>
 #include <obs-module.h>
 
 /* OBS_DECLARE_MODULE() defines these inside the plugin. Neither function under test touches
@@ -84,16 +85,49 @@ int main(void)
 	/* a clock that went backwards must not fire the watchdog either */
 	CHECK(!ff_twitch_is_stale(now + 500, 10, now));
 
+	/* ---- the locale placeholders, which are NOT printf ----
+	 *
+	 * obs_module_text is stubbed above to return the key, so these drive ff_twitch_format with
+	 * the real strings rather than the real table. The point is the substitution mechanism: the
+	 * version that shipped handed these to vsnprintf, where "%1s" is width-1 "%s" and an int
+	 * argument is dereferenced as a pointer. It segfaulted on the ordinary reconnect path. */
+	char line[512];
+
+	ff_twitch_format("Reconnecting in %1s", "8", NULL, NULL, line, sizeof line);
+	CHECK(strcmp(line, "Reconnecting in 8s") == 0);
+
+	ff_twitch_format("Go to %2 and enter the code %1", "ABCD1234", "twitch.tv/activate", NULL,
+			 line, sizeof line);
+	CHECK(strcmp(line, "Go to twitch.tv/activate and enter the code ABCD1234") == 0);
+
+	/* three of them, and %3 is not confused with %1 followed by a 3 */
+	ff_twitch_format("%3: %1 of %2", "6", "7", "junkie", line, sizeof line);
+	CHECK(strcmp(line, "junkie: 6 of 7") == 0);
+
+	/* A VALUE containing a placeholder must not be substituted again. A display name is
+	   whatever someone typed, and "%2" is a perfectly ordinary thing to type. */
+	ff_twitch_format("%1 and %2", "%2", "second", NULL, line, sizeof line);
+	CHECK(strcmp(line, "%2 and second") == 0);
+
+	/* a string with no placeholders is left exactly alone */
+	ff_twitch_format("Not connected to Twitch", NULL, NULL, NULL, line, sizeof line);
+	CHECK(strcmp(line, "Not connected to Twitch") == 0);
+
+	/* an argument for a placeholder that is not there changes nothing */
+	ff_twitch_format("No placeholders", "x", "y", "z", line, sizeof line);
+	CHECK(strcmp(line, "No placeholders") == 0);
+
 	FF_TEST_MAIN_END();
 }
 
 /* Measured, each guard removed in turn, recompiled and rerun:
  *
- *     control (every guard in place)          97 checks,  0 failed
- *     backoff cap removed                     97 checks, 36 failed
- *     one-missed-keepalive allowance removed  97 checks,  3 failed
- *     keepalive <= 0 guard removed            97 checks,  2 failed
- *     last_message <= 0 guard removed         97 checks,  1 failed
+ *     control (every guard in place)          103 checks,  0 failed
+ *     backoff cap removed                     103 checks, 36 failed
+ *     one-missed-keepalive allowance removed  103 checks,  3 failed
+ *     keepalive <= 0 guard removed            103 checks,  2 failed
+ *     last_message <= 0 guard removed         103 checks,  1 failed
+ *     placeholder substitution order reversed 103 checks,  1 failed
  *
  * A sixth mutation -- removing the `attempt < 1` floor from the backoff -- changed no result at
  * all. That is not a gap in this file: the loop does not run for anything <= 1, so 0 and

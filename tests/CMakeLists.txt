@@ -62,6 +62,13 @@ add_test(NAME url COMMAND test_url)
 
 # ff-twitch.c is a thread and a socket; these two functions are neither, which is why they were
 # pulled out of it. Linked directly rather than through the plugin: the test needs no OBS.
+add_executable(test_token test_token.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+target_link_libraries(test_token PRIVATE ff-core CURL::libcurl)
+add_test(NAME token COMMAND test_token)
+
 add_executable(test_twitch_policy test_twitch_policy.c ${CMAKE_SOURCE_DIR}/src/ff-twitch.c
   ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
   ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c

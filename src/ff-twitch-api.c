@@ -44,8 +44,12 @@ size_t ff_twitch_scopes(char *out, size_t cap)
 		if (already)
 			continue;
 		int w = snprintf(out + n, cap - n, "%s%s", n ? " " : "", sc);
-		if (w <= 0 || (size_t)w >= cap - n)
-			return n;
+		if (w <= 0 || (size_t)w >= cap - n) {
+			/* A SHORTER list is the dangerous answer: the sign-in succeeds, and one
+			   alert type quietly never fires because its scope was never asked for. */
+			out[0] = 0;
+			return 0;
+		}
 		n += (size_t)w;
 	}
 	return n;
@@ -79,9 +83,13 @@ static size_t form_escape(const char *s, char *out, size_t cap)
 	return n;
 }
 
+/* `status` is 0 when the request never completed -- no DNS, no route, no TLS, a timeout. That is
+   NOT the same as Twitch answering with an error, and the caller has to be able to tell. */
 static obs_data_t *post_form(const char *url, const char *body, long *status, char *err,
 			     size_t errcap)
 {
+	if (status)
+		*status = 0;
 	const char *hdr[] = {"Content-Type: application/x-www-form-urlencoded"};
 	struct ff_http_res res;
 	if (!ff_http_request("POST", url, hdr, 1, body, &res, err, errcap))
@@ -191,6 +199,15 @@ enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *dev
 
 	enum ff_twitch_poll r;
 	const char *msg = obs_data_get_string(d, "message");
+	/* Classified on the STATUS first and the message second. These strings are human-readable
+	   text from a server we do not control: a 503 "Service temporarily unavailable" matches
+	   none of them and would be read as a hard failure, abandoning a sign-in while the streamer
+	   is still walking to their phone. A 5xx is always "try again". */
+	if (status / 100 == 5) {
+		snprintf(err, errcap, "Twitch is having trouble (%ld); still waiting", status);
+		obs_data_release(d);
+		return FF_TW_PENDING;
+	}
 	if (status / 100 == 2 && obs_data_get_string(d, "access_token")[0]) {
 		token_from(d, out);
 		r = FF_TW_GOT_TOKEN;
@@ -215,18 +232,18 @@ enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *dev
 	return r;
 }
 
-bool ff_twitch_refresh(const char *client_id, const char *refresh_token,
-		       struct ff_twitch_token *out, char *err, size_t errcap)
+enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refresh_token,
+					 struct ff_twitch_token *out, char *err, size_t errcap)
 {
 	if (!client_id || !refresh_token || !*refresh_token || !out) {
 		snprintf(err, errcap, "no refresh token stored");
-		return false;
+		return FF_REFRESH_REJECTED;
 	}
 	char esc_id[256], esc_rt[1024];
 	if (!form_escape(client_id, esc_id, sizeof esc_id) ||
 	    !form_escape(refresh_token, esc_rt, sizeof esc_rt)) {
 		snprintf(err, errcap, "the request would not fit");
-		return false;
+		return FF_REFRESH_REJECTED;
 	}
 	char url[512], body[2048];
 	snprintf(url, sizeof url, "%s/oauth2/token", ID_BASE);
@@ -234,21 +251,35 @@ bool ff_twitch_refresh(const char *client_id, const char *refresh_token,
 		 esc_id, esc_rt);
 	long status = 0;
 	obs_data_t *d = post_form(url, body, &status, err, errcap);
-	if (!d)
-		return false;
-	bool ok = false;
+	if (!d) {
+		/* status 0 means the request never completed. Treating that as a dead token is how
+		   a router reboot costs a streamer their sign-in. */
+		if (status == 0) {
+			snprintf(err, errcap, "could not reach Twitch to refresh the sign-in");
+			return FF_REFRESH_UNREACHABLE;
+		}
+		snprintf(err, errcap, "Twitch answered %ld with something that is not JSON", status);
+		return FF_REFRESH_UNREACHABLE;
+	}
+	enum ff_refresh_result r;
 	if (status / 100 == 2 && obs_data_get_string(d, "access_token")[0]) {
 		token_from(d, out);
-		ok = true;
-	} else {
+		r = FF_REFRESH_OK;
+	} else if (status / 100 == 4) {
 		/* A refresh token stops working when the streamer disconnects the app or changes
 		   their password. That is a "sign in again", not a retry, and saying so is the
-		   difference between one click and a support message. */
+		   difference between one click and a support message. Only a 4xx means this. */
 		snprintf(err, errcap, "the saved sign-in is no longer valid (%ld): %s", status,
 			 obs_data_get_string(d, "message"));
+		r = FF_REFRESH_REJECTED;
+	} else {
+		/* a 5xx, or a 2xx with no token in it: Twitch's problem, not the token's */
+		snprintf(err, errcap, "Twitch could not refresh the sign-in right now (%ld): %s",
+			 status, obs_data_get_string(d, "message"));
+		r = FF_REFRESH_UNREACHABLE;
 	}
 	obs_data_release(d);
-	return ok;
+	return r;
 }
 
 bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size_t idcap,
@@ -332,7 +363,11 @@ bool ff_twitch_subscribe(const char *client_id, const char *access, const struct
 		return false;
 	if (status)
 		*status = res.status;
-	bool ok = res.status / 100 == 2;
+	/* 409 Conflict means this exact subscription already exists -- which is what Twitch returns
+	   after a session_reconnect carried them across, and after OBS restarts inside the grace
+	   window. It is the state we wanted, so it is a success. Counting it as a refusal is how a
+	   routine reconnect turns into "Twitch refused every alert type". */
+	bool ok = res.status / 100 == 2 || res.status == 409;
 	if (!ok) {
 		obs_data_t *d = res.body ? obs_data_create_from_json(res.body) : NULL;
 		const char *msg = d ? obs_data_get_string(d, "message") : NULL;
@@ -356,8 +391,12 @@ static bool token_path(const char *module_path, char *out, size_t cap)
 bool ff_twitch_token_save(const char *module_path, const struct ff_twitch_token *t)
 {
 	char path[1024];
-	if (!t || !token_path(module_path, path, sizeof path))
+	if (!t || !token_path(module_path, path, sizeof path)) {
+		obs_log(LOG_WARNING,
+			"twitch: no usable config path for the sign-in (module path '%s')",
+			module_path ? module_path : "(null)");
 		return false;
+	}
 
 	obs_data_t *d = obs_data_create();
 	/* the ACCESS token is deliberately not stored: it lasts about four hours, and the refresh

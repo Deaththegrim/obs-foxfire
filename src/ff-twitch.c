@@ -5,6 +5,7 @@
 #include <plugin-support.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <util/dstr.h>
 #include <util/platform.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,22 +56,106 @@ struct ff_twitch {
 	char verify_url[256];
 
 	ff_twitch_event_cb cb;
+	ff_twitch_changed_cb on_change;
 	void *ctx;
 };
 
-static void set_state(struct ff_twitch *t, enum ff_twitch_state s, const char *fmt, ...)
+static const char *state_name(enum ff_twitch_state s)
+{
+	switch (s) {
+	case FF_TWS_OFF:
+		return "off";
+	case FF_TWS_SIGNING_IN:
+		return "signing in";
+	case FF_TWS_CONNECTING:
+		return "connecting";
+	case FF_TWS_LIVE:
+		return "live";
+	case FF_TWS_RETRYING:
+		return "retrying";
+	case FF_TWS_FAILED:
+		return "failed";
+	}
+	return "?";
+}
+
+static void set_line(struct ff_twitch *t, enum ff_twitch_state s, const char *line)
 {
 	pthread_mutex_lock(&t->lock);
+	bool changed = t->state != s || strcmp(t->line, line) != 0;
 	t->state = s;
-	va_list ap;
-	va_start(ap, fmt);
-	vsnprintf(t->line, sizeof t->line, fmt, ap);
-	va_end(ap);
+	snprintf(t->line, sizeof t->line, "%s", line);
 	if (s != FF_TWS_SIGNING_IN) {
 		t->code[0] = 0;
 		t->verify_url[0] = 0;
 	}
+	ff_twitch_changed_cb notify = t->on_change;
+	void *ctx = t->ctx;
 	pthread_mutex_unlock(&t->lock);
+
+	if (!changed)
+		return;
+	/* Logged, every transition, because the properties dialog is CLOSED during a stream and
+	   this is the only record that survives. "Alerts stopped an hour in" used to leave nothing
+	   in the OBS log at all -- the reason strings were written, and then thrown away. */
+	obs_log(s == FF_TWS_FAILED || s == FF_TWS_RETRYING ? LOG_WARNING : LOG_INFO,
+		"twitch: %s -- %s", state_name(s), line);
+	/* and pushed, so a panel that happens to be open updates itself rather than showing
+	   whatever was true when it was opened */
+	if (notify)
+		notify(ctx);
+}
+
+/* A printf format, and the compiler is told so.
+ *
+ * The attribute is the point of this function existing separately. Without it, gcc cannot check
+ * a format it cannot see, and the version of this file that shipped passed OBS locale strings
+ * straight to vsnprintf -- where "%1" is a VALID conversion (width 1, then whatever follows).
+ * "Reconnecting in %1s" with an int argument is width-1 "%s": it dereferences the integer as a
+ * pointer and segfaults, on the ordinary path taken every time a connection drops. Measured, not
+ * theorised: the exact call crashed with exit 139.
+ *
+ * So: this one takes literal formats with C arguments, ff_localise() below takes OBS strings with
+ * %1/%2/%3, and the two never meet. */
+__attribute__((format(printf, 3, 4))) static void set_state(struct ff_twitch *t,
+							    enum ff_twitch_state s, const char *fmt,
+							    ...)
+{
+	char line[512];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(line, sizeof line, fmt, ap);
+	va_end(ap);
+	set_line(t, s, line);
+}
+
+/* An OBS locale string, whose placeholders are %1/%2/%3 and are substituted by text replacement,
+   which is what the rest of this plugin does (see ff-layers.c). NULL arguments are skipped, so a
+   string using only %1 is fine. */
+void ff_twitch_format(const char *key, const char *a1, const char *a2, const char *a3, char *out,
+		      size_t cap)
+{
+	struct dstr text = {0};
+	dstr_copy(&text, obs_module_text(key));
+	/* Highest placeholder first. Replacing %1 before %2 means a VALUE containing "%2" would
+	   then be substituted again -- a username is hostile input, and "%2" in one is a perfectly
+	   ordinary thing for someone to type. */
+	if (a3)
+		dstr_replace(&text, "%3", a3);
+	if (a2)
+		dstr_replace(&text, "%2", a2);
+	if (a1)
+		dstr_replace(&text, "%1", a1);
+	snprintf(out, cap, "%s", text.array ? text.array : "");
+	dstr_free(&text);
+}
+
+static void set_text(struct ff_twitch *t, enum ff_twitch_state st, const char *key, const char *a1,
+		     const char *a2, const char *a3)
+{
+	char line[512];
+	ff_twitch_format(key, a1, a2, a3, line, sizeof line);
+	set_line(t, st, line);
 }
 
 enum ff_twitch_state ff_twitch_status(struct ff_twitch *t, char *line, size_t linecap, char *code,
@@ -178,8 +263,8 @@ static bool do_sign_in(struct ff_twitch *t)
 	snprintf(t->code, sizeof t->code, "%s", dev.user_code);
 	snprintf(t->verify_url, sizeof t->verify_url, "%s", dev.verify_url);
 	pthread_mutex_unlock(&t->lock);
-	set_state(t, FF_TWS_SIGNING_IN, obs_module_text("Foxfire.Twitch.EnterCode"), dev.user_code,
-		  dev.verify_url);
+	set_text(t, FF_TWS_SIGNING_IN, "Foxfire.Twitch.EnterCode", dev.user_code, dev.verify_url,
+		 NULL);
 
 	int interval = dev.interval;
 	time_t deadline = time(NULL) + (dev.expires_in > 0 ? dev.expires_in : 1800);
@@ -191,8 +276,14 @@ static bool do_sign_in(struct ff_twitch *t)
 		enum ff_twitch_poll r = ff_twitch_device_poll(cid, dev.device_code, &tok, err,
 							      sizeof err);
 		if (r == FF_TW_GOT_TOKEN) {
-			if (!ff_twitch_token_save(t->module_path, &tok))
-				obs_log(LOG_WARNING, "twitch: signed in but could not save the token");
+			if (!ff_twitch_token_save(t->module_path, &tok)) {
+				/* A sign-in we cannot store is not a sign-in. Reporting success here
+				   sent the streamer through the whole device flow and then told them
+				   they were not signed in, with one warning buried in the log. */
+				set_text(t, FF_TWS_FAILED, "Foxfire.Twitch.CannotStore", NULL, NULL,
+					 NULL);
+				return false;
+			}
 			set_state(t, FF_TWS_CONNECTING, "%s",
 				  obs_module_text("Foxfire.Twitch.SignedIn"));
 			return true;
@@ -227,17 +318,28 @@ static bool run_once(struct ff_twitch *t)
 		return false;
 	}
 	struct ff_twitch_token tok;
-	if (!ff_twitch_refresh(cid, saved.refresh, &tok, err, sizeof err)) {
-		/* The saved sign-in stopped working -- disconnected in Twitch's settings, or a
-		   password change. Retrying cannot fix it, so the token goes and the panel says
-		   sign in again rather than looping forever on RETRYING. */
+	enum ff_refresh_result rr = ff_twitch_refresh(cid, saved.refresh, &tok, err, sizeof err);
+	if (rr == FF_REFRESH_REJECTED) {
+		/* Twitch ANSWERED and said no -- disconnected in its settings, or a password
+		   change. Retrying cannot fix it, so the token goes and the panel says sign in
+		   again rather than looping forever on RETRYING. */
 		ff_twitch_token_forget(t->module_path);
 		set_state(t, FF_TWS_FAILED, "%s", err);
 		return false;
 	}
-	/* Twitch rotates the refresh token on use; keeping the old one works until it does not. */
-	if (tok.refresh[0])
-		ff_twitch_token_save(t->module_path, &tok);
+	if (rr == FF_REFRESH_UNREACHABLE) {
+		/* We could not reach Twitch. The token is probably fine, and deleting it here is
+		   how a router reboot costs someone their sign-in mid-stream -- it used to. */
+		set_state(t, FF_TWS_RETRYING, "%s", err);
+		return false;
+	}
+	/* Twitch rotates the refresh token on use and INVALIDATES the old one, so failing to store
+	   the new one leaves a dead token on disk. This session keeps working, and the next OBS
+	   start fails -- with nothing to connect the two. Said out loud now. */
+	if (tok.refresh[0] && !ff_twitch_token_save(t->module_path, &tok))
+		obs_log(LOG_WARNING,
+			"twitch: could not store the renewed sign-in; it will have to be done "
+			"again next time OBS starts");
 
 	char uid[64] = {0}, login[64] = {0};
 	if (!ff_twitch_user_id(cid, tok.access, uid, sizeof uid, login, sizeof login, err,
@@ -249,9 +351,15 @@ static bool run_once(struct ff_twitch *t)
 	char url[1024];
 	snprintf(url, sizeof url, "%s", FF_TW_URL);
 	bool ran_long = false;
+	/* OUTSIDE the session loop. EventSub carries the subscriptions across a session_reconnect,
+	   so asking for them again returns 409 Conflict for every type -- which this code reads as
+	   "Twitch refused every alert type", gives up, and stops retrying. Declared inside the loop
+	   it reset on every reconnect, and the branch written to prevent exactly that was
+	   unreachable. A guard in a branch that cannot run is not a guard. */
+	bool subscribed = false;
 
 	for (;;) { /* one pass per session; a session_reconnect starts another with a new URL */
-		set_state(t, FF_TWS_CONNECTING, obs_module_text("Foxfire.Twitch.Connecting"), login);
+		set_text(t, FF_TWS_CONNECTING, "Foxfire.Twitch.Connecting", login, NULL, NULL);
 		struct ff_net *net = ff_net_ws_open(url, err, sizeof err);
 		if (!net) {
 			set_state(t, FF_TWS_RETRYING, "%s", err);
@@ -262,7 +370,6 @@ static bool run_once(struct ff_twitch *t)
 		memset(&es, 0, sizeof es);
 		time_t last = time(NULL);
 		time_t started = last;
-		bool subscribed = false;
 		bool reconnecting = false;
 
 		while (reading(t, &t->running) && reading(t, &t->enabled)) {
@@ -273,6 +380,16 @@ static bool run_once(struct ff_twitch *t)
 				break;
 			}
 			if (r == 0) {
+				/* Before the welcome there is no keepalive interval, so the watchdog
+				   below cannot fire -- it returns false for an unknown interval on
+				   purpose. A server that completes the 101 and then says nothing
+				   would leave this cycling forever, stuck on "Connecting", with no
+				   error and no retry. */
+				if (!es.keepalive_secs && time(NULL) - started > 30) {
+					set_text(t, FF_TWS_RETRYING, "Foxfire.Twitch.NoWelcome", NULL,
+						 NULL, NULL);
+					break;
+				}
 				if (ff_twitch_is_stale(last, es.keepalive_secs, time(NULL))) {
 					set_state(t, FF_TWS_RETRYING, "%s",
 						  obs_module_text("Foxfire.Twitch.WentQuiet"));
@@ -285,8 +402,13 @@ static bool run_once(struct ff_twitch *t)
 
 			/* the payload is not NUL-terminated: it points into the read buffer */
 			char *json = malloc(m.len + 1);
-			if (!json)
+			if (!json) {
+				/* the closest thing to an empty catch block: an event arrived, was
+				   thrown away, and the session torn down with no reason recorded */
+				set_state(t, FF_TWS_RETRYING,
+					  "%s", "ran out of memory reading an event from Twitch");
 				break;
+			}
 			memcpy(json, m.payload, m.len);
 			json[m.len] = 0;
 
@@ -311,31 +433,55 @@ static bool run_once(struct ff_twitch *t)
 				}
 				subscribed = true;
 				if (!ok) {
-					set_state(t, FF_TWS_FAILED, "%s",
-						  obs_module_text("Foxfire.Twitch.NoSubs"));
+					/* RETRYING, not FAILED: the usual cause of every type being
+					   refused is a token or a network that will be fine in a
+					   minute, and FAILED stops the worker retrying for the life of
+					   the process. Only an answer that names a permission problem
+					   deserves that, and this cannot tell. */
+					set_text(t, FF_TWS_RETRYING, "Foxfire.Twitch.NoSubs", NULL,
+						 NULL, NULL);
 					ff_net_close(net);
 					return ran_long;
 				}
-				set_state(t, FF_TWS_LIVE, obs_module_text("Foxfire.Twitch.Live"), ok,
-					  (int)FF_ES_SUB_COUNT, login);
+				if (ok < (int)FF_ES_SUB_COUNT)
+					/* Some types work and some do not. Reported as its own state
+					   so the panel can colour it as a warning: a green line
+					   reading "6 of 7" is read as "working". */
+					obs_log(LOG_WARNING,
+						"twitch: only %d of %d alert types subscribed; the "
+						"ones above name what was refused",
+						ok, (int)FF_ES_SUB_COUNT);
+				char n_ok[16], n_all[16];
+				snprintf(n_ok, sizeof n_ok, "%d", ok);
+				snprintf(n_all, sizeof n_all, "%d", (int)FF_ES_SUB_COUNT);
+				set_text(t, FF_TWS_LIVE, "Foxfire.Twitch.Live", n_ok, n_all, login);
 			} else if (res == FF_ES_WELCOME) {
 				/* the welcome on a RECONNECT session: the subscriptions moved with
 				   it, so asking for them again would duplicate every alert */
-				set_state(t, FF_TWS_LIVE, obs_module_text("Foxfire.Twitch.Live"),
-					  (int)FF_ES_SUB_COUNT, (int)FF_ES_SUB_COUNT, login);
+				char n_all[16];
+				snprintf(n_all, sizeof n_all, "%d", (int)FF_ES_SUB_COUNT);
+				set_text(t, FF_TWS_LIVE, "Foxfire.Twitch.Live", n_all, n_all, login);
 			} else if (res == FF_ES_EVENT) {
 				if (t->cb)
 					t->cb(t->ctx, &ev);
 			} else if (res == FF_ES_RECONNECT) {
-				/* Thirty seconds to move, and the old connection keeps delivering
-				   until the new one is welcomed -- so this breaks out and reopens
-				   rather than tearing down first. */
+				/* Twitch gives thirty seconds to move. This closes the old
+				   connection and opens the new one, so events arriving in the
+				   changeover are lost -- a narrow window, but a real one.
+				   Overlapping the two (keep reading the old socket until the new one
+				   is welcomed) is what Twitch's own guidance describes and is NOT
+				   what happens here; saying so rather than letting the comment claim
+				   a mechanism the code does not have. */
 				snprintf(url, sizeof url, "%s", es.reconnect_url);
 				reconnecting = true;
 				break;
 			} else if (res == FF_ES_REVOKED) {
+				/* ONE subscription stopped, because one scope was withdrawn. Marking
+				   the whole integration FAILED stopped all seven alert types for a
+				   fault in one -- and contradicted the policy two branches up, where
+				   a refused subscription deliberately does not kill the rest. */
 				obs_log(LOG_WARNING, "twitch: %s", es.note);
-				set_state(t, FF_TWS_FAILED, "%s", es.note);
+				set_state(t, FF_TWS_LIVE, "%s", es.note);
 			} else if (res == FF_ES_BAD) {
 				obs_log(LOG_WARNING, "twitch: %s", es.err);
 			} else if (es.note[0]) {
@@ -372,11 +518,15 @@ static void *worker(void *arg)
 			continue;
 		}
 		pthread_mutex_lock(&t->lock);
-		bool blocked = t->state == FF_TWS_FAILED;
+		enum ff_twitch_state now = t->state;
 		pthread_mutex_unlock(&t->lock);
-		if (blocked) {
-			/* FAILED means a person has to do something. Retrying would hide that
-			   behind a spinner and burn requests for as long as OBS is open. */
+		if (now == FF_TWS_FAILED || now == FF_TWS_OFF) {
+			/* Both mean a person has to do something -- FAILED needs a fix, OFF means
+			   nobody has signed in yet. Retrying either would hide it behind a spinner.
+			   OFF was missing here: run_once returns to OFF in microseconds when there
+			   is no token, and the bottom of this loop skips the backoff for OFF too,
+			   so ticking the enable box before signing in span a core flat out for as
+			   long as OBS was open. Nothing logged it; the only symptom was the fan. */
 			nap(t, 1);
 			continue;
 		}
@@ -391,25 +541,41 @@ static void *worker(void *arg)
 		pthread_mutex_lock(&t->lock);
 		bool stop = t->state == FF_TWS_FAILED || t->state == FF_TWS_OFF;
 		pthread_mutex_unlock(&t->lock);
-		if (stop)
+		if (stop) {
+			nap(t, 1); /* never loop without sleeping; see the note above */
 			continue;
+		}
 		int wait = ff_twitch_backoff_secs(attempt);
-		set_state(t, FF_TWS_RETRYING, obs_module_text("Foxfire.Twitch.Retrying"), wait);
+		char n_wait[16];
+		snprintf(n_wait, sizeof n_wait, "%d", wait);
+		set_text(t, FF_TWS_RETRYING, "Foxfire.Twitch.Retrying", n_wait, NULL, NULL);
 		nap(t, wait);
 	}
 	return NULL;
 }
 
-struct ff_twitch *ff_twitch_create(ff_twitch_event_cb cb, void *ctx, const char *module_path)
+struct ff_twitch *ff_twitch_create(ff_twitch_event_cb cb, ff_twitch_changed_cb on_change,
+				   void *ctx, const char *module_path)
 {
 	struct ff_twitch *t = bzalloc(sizeof *t);
-	pthread_mutex_init(&t->lock, NULL);
+	if (pthread_mutex_init(&t->lock, NULL) != 0) {
+		obs_log(LOG_ERROR, "twitch: could not create the connection's lock");
+		bfree(t);
+		return NULL;
+	}
 	t->cb = cb;
+	t->on_change = on_change;
 	t->ctx = ctx;
 	t->running = true;
 	snprintf(t->module_path, sizeof t->module_path, "%s", module_path ? module_path : "");
 	snprintf(t->line, sizeof t->line, "%s", obs_module_text("Foxfire.Twitch.NotSignedIn"));
-	if (pthread_create(&t->thread, NULL, worker, t) != 0) {
+	int rc = pthread_create(&t->thread, NULL, worker, t);
+	if (rc != 0) {
+		/* Said out loud. Silently returning NULL leaves both panel buttons inert and the
+		   status line stuck on "Not signed in" forever -- the streamer presses Connect and
+		   nothing happens, with nothing anywhere to explain it. */
+		obs_log(LOG_ERROR, "twitch: could not start the connection thread (%d); the Twitch "
+				   "feed will not work this session", rc);
 		pthread_mutex_destroy(&t->lock);
 		bfree(t);
 		return NULL;

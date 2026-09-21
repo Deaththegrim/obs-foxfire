@@ -67,8 +67,9 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(step, "refresh")) {
 		struct ff_twitch_token t;
-		bool ok = ff_twitch_refresh("cid123", "rt123", &t, err, sizeof err);
-		printf("REFRESH:%d %s\n", ok, ok ? t.access : err);
+		enum ff_refresh_result r = ff_twitch_refresh("cid123", "rt123", &t, err, sizeof err);
+		static const char *N[] = {"OK", "REJECTED", "UNREACHABLE"};
+		printf("REFRESH:%s %s\n", N[r], r == FF_REFRESH_OK ? t.access : err);
 		return 0;
 	}
 	if (!strcmp(step, "user")) {

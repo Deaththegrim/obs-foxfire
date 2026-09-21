@@ -13,24 +13,31 @@
  * ARMED by mutation -- each guard removed in turn, recompiled and rerun. Where removing a guard
  * outright leaves a variable unused (-Werror refuses that), it was disabled with `&& false`:
  *
- *     control (every guard in place)               87 checks,  0 failed
- *     101 status check removed                     87 checks,  1 failed
- *     accept-value comparison removed              87 checks,  2 failed
- *     Upgrade header check removed                 87 checks,  1 failed
- *     returns whole length, not header length      87 checks,  1 failed
- *     header match made case-sensitive             87 checks,  1 failed
- *     runaway-header guard removed                 87 checks,  1 failed
- *     ping no longer answered                      87 checks,  4 failed
- *     close no longer echoed                       87 checks,  2 failed
- *     loop stops at the first control frame        87 checks,  2 failed
- *     orphan continuation allowed                  87 checks,  2 failed
- *     interleaved message allowed                  87 checks,  2 failed
- *     consumed frame not dropped after emit        87 checks,  5 failed
- *     frame mask forced to zero                    87 checks,  1 failed
+ *     control (every guard in place)              101 checks,  0 failed
+ *     101 status check removed                    101 checks,  1 failed
+ *     accept-value comparison removed             101 checks,  2 failed
+ *     Upgrade header check removed                101 checks,  1 failed
+ *     Connection header check removed             101 checks,  1 failed
+ *     Connection list rejected (exact match only) 101 checks,  1 failed
+ *     returns whole length, not header length     101 checks,  1 failed
+ *     runaway-header guard removed                101 checks,  1 failed
+ *     ping no longer answered                     101 checks,  4 failed
+ *     loop stops at the first control frame       101 checks,  2 failed
+ *     orphan continuation allowed                 101 checks,  2 failed
+ *     interleaved message allowed                 101 checks,  2 failed
+ *     reassembly bounds check removed             101 checks,  2 failed
+ *     consumed frame not dropped after emit       101 checks,  6 failed
+ *     frame mask forced to zero                   101 checks,  1 failed
+ *     would-block send spins again (no cap)       101 checks,  2 failed
  *
- * One mutation was a dud at first -- a "stops after one frame" edit that changed no behaviour and
- * scored 0 failed, which reads exactly like a missing test. The loop only matters when a control
- * frame SHARES a read with a message, so that case was added and the real mutation then bit.
+ * Three of these started out surviving, at a clean score, and each one was a missing case rather
+ * than a pointless guard:
+ *   - a "stops after one frame" edit that changed no behaviour. The loop only matters when a
+ *     control frame SHARES a read with a message, so that case was added.
+ *   - the reassembly bounds check -- the only memory-safety guard in this file, and the only one
+ *     with no test. Two full-size fragments write a megabyte past the buffer.
+ *   - the Connection header. Upgrade-missing and Accept-missing were both tested; the third of
+ *     the trio was not.
  */
 
 #include "ff-test.h"
@@ -53,6 +60,8 @@ struct script {
 	bool dead;      /* recv reports a dead socket */
 	uint8_t sent[4096];
 	size_t sent_len;
+	const long *send_script; /* per-call: 0 = would block, n = accept at most n bytes */
+	size_t send_len, send_pos;
 };
 
 static long s_recv(void *ctx, void *buf, size_t len)
@@ -73,9 +82,19 @@ static long s_recv(void *ctx, void *buf, size_t len)
 	return (long)n;
 }
 
+/* `send_script` makes the socket behave like a real one under load: 0 means "would block" and a
+   smaller number is a short write. A scripted send that always accepts everything never produces
+   either, which is how the send loop's would-block path went untested while it busy-spun. */
 static long s_send(void *ctx, const void *buf, size_t len)
 {
 	struct script *s = ctx;
+	if (s->send_script && s->send_pos < s->send_len) {
+		long allow = s->send_script[s->send_pos++];
+		if (allow == 0)
+			return 0; /* would block */
+		if ((size_t)allow < len)
+			len = (size_t)allow;
+	}
 	if (s->sent_len + len > sizeof s->sent)
 		return -1;
 	memcpy(s->sent + s->sent_len, buf, len);
@@ -173,6 +192,26 @@ int main(void)
 		"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"
 		"Sec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
 	CHECK(ff_ws_handshake_check(NOUP, strlen(NOUP), KEY, err, sizeof err) == SIZE_MAX);
+
+	/* The missing half of the trio: Upgrade-missing and Accept-missing were both tested and
+	   Connection-missing was not, so removing that check scored a clean 98/98. */
+	static const char NOCONN[] =
+		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+		"Sec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
+	CHECK(ff_ws_handshake_check(NOCONN, strlen(NOCONN), KEY, err, sizeof err) == SIZE_MAX);
+
+	/* `Connection` is a comma-separated LIST (RFC 7230 s6.1), and a proxy in the path really
+	   does send "keep-alive, Upgrade". Demanding the whole value be "Upgrade" refuses a
+	   correct server, which costs more than letting a wrong one through -- the accept value is
+	   what actually proves this is a WebSocket server. */
+	static const char LIST[] =
+		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+		"Connection: keep-alive, Upgrade\r\nSec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
+	CHECK(ff_ws_handshake_check(LIST, strlen(LIST), KEY, err, sizeof err) == strlen(LIST));
+
+	/* something that is not HTTP at all */
+	static const char NOTHTTP[] = "\x16\x03\x01 this is not a response\r\n\r\n";
+	CHECK(ff_ws_handshake_check(NOTHTTP, strlen(NOTHTTP), KEY, err, sizeof err) == SIZE_MAX);
 
 	static const char NOACC[] =
 		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
@@ -279,6 +318,39 @@ int main(void)
 	CHECK(ff_ws_conn_poll(c, &m) == -1);
 	CHECK(strstr(c->err, "before the previous one finished") != NULL);
 
+	/* A message reassembled past the buffer it is being written into. This is the only
+	   memory-safety guard in ff-ws-conn.c, and it was the only one missing from the table
+	   below -- disabling it left this file entirely green. The write target is 1 MiB, and two
+	   1 MiB fragments would run a megabyte past it; the writer is the server, so this needs a
+	   hostile endpoint past TLS, which is exactly the case a bounds check is for. */
+	{
+		static uint8_t huge[2 * (FF_WS_MAX_PAYLOAD + 16)];
+		size_t n = 0;
+		/* frame 1: TEXT, FIN clear, a full FF_WS_MAX_PAYLOAD payload (64-bit length) */
+		huge[n++] = 0x01;
+		huge[n++] = 127;
+		for (int sh = 56; sh >= 0; sh -= 8)
+			huge[n++] = (uint8_t)((uint64_t)FF_WS_MAX_PAYLOAD >> sh);
+		memset(huge + n, 'a', FF_WS_MAX_PAYLOAD);
+		n += FF_WS_MAX_PAYLOAD;
+		/* frame 2: one more byte, FIN set -- one byte too many */
+		huge[n++] = 0x80;
+		huge[n++] = 0x01;
+		huge[n++] = 'b';
+
+		struct script sh = {.data = huge, .len = n};
+		c = fresh(&sh);
+		int r;
+		int guard = 0;
+		/* the first frame needs several reads to arrive */
+		while ((r = ff_ws_conn_poll(c, &m)) == 0 && ++guard < 64)
+			;
+		CHECK(r == -1);
+		CHECK(strstr(c->err, "larger than") != NULL);
+		if (r != -1)
+			fprintf(stderr, "      (a message past the buffer was accepted)\n");
+	}
+
 	/* a dead socket is reported, not spun on */
 	struct script s9 = {.data = HELLO, .len = sizeof HELLO, .dead = true};
 	c = fresh(&s9);
@@ -304,6 +376,27 @@ int main(void)
 	size_t firstlen = s11.sent_len;
 	CHECK(ff_ws_conn_send(c, FF_WS_TEXT, "hey", 3));
 	CHECK(memcmp(s11.sent, s11.sent + firstlen, firstlen) != 0);
+
+	/* A socket that blocks, then dribbles the frame out a few bytes at a time. Both are
+	   ordinary on a slow uplink while OBS is also pushing video, and the send loop used to
+	   answer a would-block by immediately trying again -- an uninterruptible full-core spin
+	   inside the worker thread, which also meant shutdown could never join it. */
+	static const long DRIBBLE[] = {0, 0, 2, 1, 0, 3, 100};
+	struct script s12 = {.data = HELLO, .len = 0, .send_script = DRIBBLE,
+			     .send_len = sizeof DRIBBLE / sizeof DRIBBLE[0]};
+	c = fresh(&s12);
+	CHECK(ff_ws_conn_send(c, FF_WS_TEXT, "hey", 3));
+	CHECK(s12.sent_len == 9); /* the whole frame still arrives, in pieces */
+	CHECK(decode_sent(s12.sent, s12.sent_len, &op, pl, &pn));
+	CHECK(op == FF_WS_TEXT && pn == 3 && memcmp(pl, "hey", 3) == 0);
+
+	/* A socket that NEVER accepts anything has to be given up on, not waited on forever. */
+	static const long NEVER[1024] = {0};
+	struct script s13 = {.data = HELLO, .len = 0, .send_script = NEVER,
+			     .send_len = sizeof NEVER / sizeof NEVER[0]};
+	c = fresh(&s13);
+	CHECK(!ff_ws_conn_send(c, FF_WS_TEXT, "hey", 3));
+	CHECK(strstr(c->err, "stopped accepting") != NULL);
 
 	/* ---- the random source ---- */
 	uint8_t r1[16], r2[16];

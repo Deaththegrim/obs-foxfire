@@ -18,7 +18,7 @@ Compared PER CONTROL, not per block, and that distinction is the whole design:
 
 What is never legitimate is the same named control declared two different ways.
 
-Armed by mutation, 7 checks, every one of them measured to bite:
+Armed by mutation, 9 checks, every one of them measured to bite:
 
     widen `size`'s range in one shader only ......... FAIL 'size' is declared differently
     stop calling ff_on_shape() in wave .............. FAIL defines ff_on_shape() and never calls it
@@ -26,6 +26,8 @@ Armed by mutation, 7 checks, every one of them measured to bite:
     drop `* onShape` from bars (call kept) .......... FAIL calls ff_on_shape() into 'onShape' ...
     drop `* onShape` from wave (call kept) .......... FAIL   ... and never reads 'onShape'
     flip ff_place()'s rotation sign in wave only .... FAIL ff_place() has two implementations
+    delete the whole Placement block from bars ...... FAIL calls ff_place() but declares none
+    delete only `rotate_deg` from bars .............. FAIL has a PARTIAL Placement block
     point it at a directory with no .effect files ... exit 2, NOTHING INSPECTED
 
 The last one is not a formality. A checker that silently passes on nothing inspected is worse than
@@ -52,6 +54,15 @@ SHARED = {"pos_x", "pos_y", "size", "rotate_deg", "opacity", "gain", "smoothing"
 # proof passes. Measured -- wave.effect carried an ff_band with a `sampler_state` parameter, a
 # signature that does NOT compile when called, through a full 16/16 placement proof, because
 # nothing called it.
+# The Placement block is GENERATED as a unit, so a shader carrying part of it is always a defect
+# -- either the block was half-edited, or most of it was deleted. This is the check that would
+# have caught the regression that started all of this: five of six packs shipped with the whole
+# block missing, and a checker that only compares declarations WHERE THEY APPEAR said nothing,
+# because omission is legitimate (pulse.effect has no `smoothing`). Per-control comparison cannot
+# see a deletion; per-shader completeness can.
+PLACEMENT_SET = ("pos_x", "pos_y", "size", "rotate_deg", "opacity")
+COMMENT = re.compile(r"/\*.*?\*/", re.S)
+
 HELPERS = ("ff_place", "ff_on_shape", "ff_band")
 DEFINES = re.compile(r"^\s*(?:float\d?|float[234]?)\s+(ff_\w+)\s*\(", re.M)
 
@@ -65,7 +76,6 @@ ASSIGNED = re.compile(r"^\s*(?:float[234]?)\s+(\w+)\s*=\s*(ff_\w+)\s*\(", re.M)
 # implementations is the drift that actually costs something: "Smoothing 0.5" meaning one blend
 # here and another there is invisible in the panel and invisible in a render proof.
 BODY = re.compile(r"^\s*(?:float[234]?)\s+(ff_\w+)\s*\([^)]*\)\s*\n\{(.*?)\n\}", re.M | re.S)
-COMMENT = re.compile(r"/\*.*?\*/", re.S)
 
 
 def norm(s: str) -> str:
@@ -85,6 +95,7 @@ def main() -> int:
         for eff in sorted(Path(root).rglob("*.effect")):
             scanned += 1
             text = eff.read_text()
+            code = COMMENT.sub("", text)
             for m in DEFINES.finditer(text):
                 fn = m.group(1)
                 if fn not in HELPERS:
@@ -92,7 +103,7 @@ def main() -> int:
                 helpers_checked += 1
                 # calls, not the definition: every occurrence of "<fn>(" minus the one that is
                 # the definition itself.
-                if text.count(fn + "(") - 1 < 1:
+                if code.count(fn + "(") - 1 < 1:
                     unused.append(f"{eff}: defines {fn}() and never calls it")
             for m in BODY.finditer(text):
                 fn = m.group(1)
@@ -100,13 +111,27 @@ def main() -> int:
                     continue
                 bodies.setdefault(fn, []).append(
                     (eff, re.sub(r"\s+", " ", COMMENT.sub("", m.group(2))).strip()))
-            for m in ASSIGNED.finditer(text):
+            for m in ASSIGNED.finditer(code):
                 var, fn = m.group(1), m.group(2)
                 if fn not in HELPERS:
                     continue
                 helpers_checked += 1
-                if len(re.findall(rf"\b{re.escape(var)}\b", text)) < 2:
+                if len(re.findall(rf"\b{re.escape(var)}\b", code)) < 2:
                     unused.append(f"{eff}: calls {fn}() into '{var}' and never reads '{var}'")
+            here = {m.group(2) for m in UNIFORM.finditer(text)}
+            have = [c for c in PLACEMENT_SET if c in here]
+            # `code` above has comments stripped. A shader that declines the block says so in a
+            # comment -- "there is no ff_place() here" -- and matching that text reported a
+            # correct file as broken. A guard that refuses good input costs more than one that
+            # misses.
+            uses_place = ("ff_place(" in code)
+            if have and len(have) != len(PLACEMENT_SET):
+                unused.append(f"{eff}: has a PARTIAL Placement block -- "
+                              f"{', '.join(have)} but not "
+                              f"{', '.join(c for c in PLACEMENT_SET if c not in here)}")
+            elif uses_place and not have:
+                unused.append(f"{eff}: calls ff_place() but declares none of the Placement "
+                              f"controls, so nothing can drive it")
             for m in UNIFORM.finditer(text):
                 name = m.group(2)
                 if name not in SHARED:
@@ -145,6 +170,10 @@ def main() -> int:
                                 f"    {f}\n      {b}")
     print(f"  compared {sum(len(v) for v in bodies.values())} helper body/bodies "
           f"of {len(bodies)} helper(s)")
+    # Said out loud, because "0 of 4 shaders carry Placement" is a clean pass under the
+    # per-control rules and is exactly the state this is here to prevent going unnoticed.
+    withp = len(seen.get("pos_x", []))
+    print(f"  {withp} of {scanned} shader(s) carry the Placement block")
 
     compared = sum(len(v) for v in seen.values())
     print(f"compared {compared} declaration(s) of {len(seen)} shared control(s), "

@@ -2,6 +2,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <util/platform.h> /* os_sleep_ms */
 #include <stdlib.h>
 #include <string.h>
 
@@ -128,6 +129,25 @@ static bool value_is(const char *v, size_t vlen, const char *want)
 	return true;
 }
 
+/* Is `want` one of the comma-separated tokens in this header value? */
+static bool value_has(const char *v, size_t vlen, const char *want)
+{
+	size_t i = 0;
+	while (i < vlen) {
+		while (i < vlen && (v[i] == ' ' || v[i] == '\t' || v[i] == ','))
+			i++;
+		size_t start = i;
+		while (i < vlen && v[i] != ',')
+			i++;
+		size_t end = i;
+		while (end > start && (v[end - 1] == ' ' || v[end - 1] == '\t'))
+			end--;
+		if (value_is(v + start, end - start, want))
+			return true;
+	}
+	return false;
+}
+
 static void say(char *err, size_t cap, const char *fmt, ...)
 {
 	if (!err || !cap)
@@ -182,7 +202,11 @@ size_t ff_ws_handshake_check(const char *resp, size_t len, const char *key_b64, 
 		say(err, errcap, "no 'Upgrade: websocket' header");
 		return SIZE_MAX;
 	}
-	if (!header_value(resp, hlen, "Connection", &v, &vlen) || !value_is(v, vlen, "Upgrade")) {
+	/* `Connection` is a COMMA-SEPARATED LIST (RFC 7230 s6.1), and a proxy in the path really
+	   does send "keep-alive, Upgrade". Demanding the whole value equal "Upgrade" refuses a
+	   correct server, which costs more than letting a wrong one through -- the accept-value
+	   check below is what actually proves this is a WebSocket server. */
+	if (!header_value(resp, hlen, "Connection", &v, &vlen) || !value_has(v, vlen, "Upgrade")) {
 		say(err, errcap, "no 'Connection: Upgrade' header");
 		return SIZE_MAX;
 	}
@@ -216,13 +240,25 @@ bool ff_ws_conn_send(struct ff_ws_conn *c, enum ff_ws_opcode op, const void *pay
 	   around something this cheap. */
 	size_t cap = len + 16;
 	uint8_t *frame = malloc(cap);
-	if (!frame)
+	if (!frame) {
+		snprintf(c->err, sizeof c->err, "out of memory building a %zu-byte frame", len);
 		return false;
+	}
 	size_t n = ff_ws_build(op, payload, len, mask, frame, cap);
 	bool ok = false;
-	if (n) {
+	if (!n) {
+		/* The caller gets a reason. Returning false with whatever was in c->err from the
+		   last failure reports the wrong cause, which is worse than reporting none. */
+		snprintf(c->err, sizeof c->err, "could not build a %d-byte frame", (int)len);
+	} else {
 		size_t sent = 0;
 		ok = true;
+		/* A send that cannot make progress has to end. `r == 0` is "would block", and the
+		   first version of this loop simply `continue`d on it -- so a stalled TCP window
+		   pinned a core at 100% with no timeout and no way out. Bounded, and each empty
+		   turn yields rather than spinning: ~200 * 5ms is a second of patience for a frame
+		   that is at most a megabyte. */
+		int idle = 0;
 		while (sent < n) {
 			long r = c->io.send(c->io.ctx, frame + sent, n - sent);
 			if (r < 0) {
@@ -230,8 +266,19 @@ bool ff_ws_conn_send(struct ff_ws_conn *c, enum ff_ws_opcode op, const void *pay
 				ok = false;
 				break;
 			}
-			if (r == 0) /* would block: the rest goes nowhere useful, so say so */
+			if (r == 0) {
+				if (++idle > 200) {
+					snprintf(c->err, sizeof c->err,
+						 "the connection stopped accepting data after "
+						 "%zu of %zu bytes",
+						 sent, n);
+					ok = false;
+					break;
+				}
+				os_sleep_ms(5);
 				continue;
+			}
+			idle = 0;
 			sent += (size_t)r;
 		}
 	}
@@ -317,7 +364,13 @@ int ff_ws_conn_poll(struct ff_ws_conn *c, struct ff_ws_msg *out)
 			   and before anything upstream gets a chance to be slow. A pong that waits
 			   on the caller's event loop is a pong that arrives after the server has
 			   given up on us. */
-			ff_ws_conn_send(c, FF_WS_PONG, m.payload, m.len);
+			if (!ff_ws_conn_send(c, FF_WS_PONG, m.payload, m.len)) {
+				/* A server that gets no pong drops us. Reporting the connection as
+				   healthy until then means the disconnect arrives later with a
+				   different and less useful reason attached to it. */
+				c->open = false;
+				return -1;
+			}
 			drop(c, used);
 			continue;
 		}

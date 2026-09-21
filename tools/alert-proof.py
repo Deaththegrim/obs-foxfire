@@ -106,6 +106,25 @@ async def shoot(c) -> Image.Image:
     return Image.open(io.BytesIO(base64.b64decode(r["imageData"].split(",", 1)[1]))).convert("RGBA")
 
 
+def obs_cpu_seconds():
+    """OBS's total CPU time, or None if it cannot be read.
+
+    /proc rather than psutil: no dependency, and this has to work on the CI runner. Fields 14 and
+    15 of /proc/<pid>/stat are utime and stime in clock ticks. The process name in field 2 can
+    contain spaces and brackets, so the split is anchored on the LAST ')'.
+    """
+    try:
+        pids = subprocess.run(["pgrep", "-x", "obs"], capture_output=True, text=True).stdout.split()
+        if len(pids) != 1:
+            return None  # ambiguous: some other OBS is running, and this would measure it
+        with open(f"/proc/{pids[0]}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        ticks = float(os.sysconf("SC_CLK_TCK"))
+        return (int(fields[11]) + int(fields[12])) / ticks
+    except Exception:
+        return None
+
+
 def ink(img: Image.Image) -> int:
     """Pixels with real alpha. Text is thin, so this counts rather than averaging -- a mean over
     an 800x240 frame barely moves for a line of 48px type."""
@@ -249,14 +268,43 @@ async def check_twitch_off(c):
     """
     await reset(c)
     before = ink(await shoot(c))
+
+    # A BASELINE first, with the feed off. OBS under software GL burns real CPU just rendering,
+    # so an absolute threshold would measure the renderer, not the worker. What matters is the
+    # INCREASE when the feed is switched on.
+    idle_start = obs_cpu_seconds()
+    await asyncio.sleep(4.0)
+    idle_end = obs_cpu_seconds()
+
+    cpu_before = obs_cpu_seconds()
     await c.request("SetInputSettings", {"inputName": "alert", "inputSettings": {
         "twitch_enabled": True, "twitch_client_id": ""}})
     await asyncio.sleep(4.0)
     after = ink(await shoot(c))
+    cpu_after = obs_cpu_seconds()
     check("enabling Twitch with no sign-in draws nothing",
           after == 0 and before == 0,
           f"{before} pixels before, {after} after 4s enabled -- an alert nobody sent is worse "
           f"than no alert")
+    # The check above says the failure modes are "a worker that hammers Twitch every time round
+    # its loop, or one that draws something that is not a real alert" -- and then measured only
+    # the second. The first was REAL and shipping: with the box ticked and nobody signed in, the
+    # worker returned to OFF in microseconds and the loop skipped its sleep, spinning a core for
+    # as long as OBS was open. Ink cannot see that. This can.
+    if None in (idle_start, idle_end, cpu_before, cpu_after):
+        check("enabling the feed does not spin a core", False,
+              "could not read OBS's CPU time -- the check that matters here does not get to be "
+              "skipped quietly")
+    else:
+        idle = idle_end - idle_start
+        used = cpu_after - cpu_before
+        # A whole extra core would be ~4.0s over this window. Half of one is far more than any
+        # correct version of this needs and still catches the spin by a wide margin.
+        check("enabling the feed does not spin a core",
+              used - idle < 2.0,
+              f"{used:.2f}s of CPU with the feed on vs {idle:.2f}s idle over the same 4s window "
+              f"(+{used - idle:.2f}s). A worker looping without sleeping adds about 4.0s")
+
     # Still answering: a worker that deadlocked or wedged the source shows up here rather than as
     # a timeout ten steps later with an unrelated name on it.
     r = await c.request("GetInputSettings", {"inputName": "alert"})

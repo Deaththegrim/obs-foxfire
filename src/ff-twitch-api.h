@@ -43,15 +43,25 @@ enum ff_twitch_poll {
 
 /* The scopes the subscriptions in FF_ES_SUBS need, space separated, built from that list rather
    than written out again -- two lists of scopes drift, and the symptom is one alert type silently
-   never arriving. Returns the number of characters written. */
+   never arriving. Returns the number of characters written, or 0 if they did not all fit.
+   Truncating would ask for FEWER scopes than the code needs, and that surfaces much later as
+   "some alert types never fire" -- so it refuses instead. */
 size_t ff_twitch_scopes(char *out, size_t cap);
 
 bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out, char *err,
 			    size_t errcap);
 enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *device_code,
 					  struct ff_twitch_token *out, char *err, size_t errcap);
-bool ff_twitch_refresh(const char *client_id, const char *refresh_token,
-		       struct ff_twitch_token *out, char *err, size_t errcap);
+/* Why this is not a bool: "the token is dead" and "we could not reach Twitch" are different
+   answers, and collapsing them means a Wi-Fi blip DELETES a perfectly good refresh token and the
+   streamer has to sign in again for a router reboot. Only FF_REFRESH_REJECTED may forget it. */
+enum ff_refresh_result {
+	FF_REFRESH_OK = 0,
+	FF_REFRESH_REJECTED,    /* Twitch answered, and said no. The saved sign-in really is dead. */
+	FF_REFRESH_UNREACHABLE, /* no answer at all: DNS, TLS, timeout, a captive portal, a 502 */
+};
+enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refresh_token,
+					 struct ff_twitch_token *out, char *err, size_t errcap);
 
 /* Who the token belongs to. EventSub conditions need the broadcaster's numeric id, not the name. */
 bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size_t idcap,

@@ -77,14 +77,17 @@ class Handler(BaseHTTPRequestHandler):
             form = urllib.parse.parse_qs(raw)
             SEEN["device_scopes"] = form.get("scopes", [""])[0]
             SEEN["device_calls"] = SEEN.get("device_calls", 0) + 1
+            # Both values are deliberately NOT the client's own fallbacks. They used to be
+            # identical to them, so "the response's interval is read" and "the client's default
+            # is 5" were indistinguishable -- never reading the field at all still scored 20/20.
             body = {"device_code": "dev123", "expires_in": 1800, "user_code": "ABCD1234",
-                    "verification_uri": "https://www.twitch.tv/activate"}
+                    "verification_uri": "https://www.twitch.tv/activate?probe=1"}
             # The second call answers with NO interval and NO verification_uri. Both are things a
             # response can leave out, and both have a floor/default in the client that nothing
             # exercised until this existed -- the mutation that removed the interval floor
             # scored a clean 18/18.
             if SEEN["device_calls"] == 1:
-                body["interval"] = 5
+                body["interval"] = 7
             else:
                 del body["verification_uri"]
             self._send(200, body)
@@ -93,9 +96,19 @@ class Handler(BaseHTTPRequestHandler):
             grant = form.get("grant_type", [""])[0]
             if grant == "refresh_token":
                 SEEN["refresh_body"] = raw
-                self._send(200, {"access_token": "at-refreshed", "refresh_token": "rt-new",
-                                 "expires_in": 14400, "scope": ["bits:read"],
-                                 "token_type": "bearer"})
+                mode = SEEN.get("refresh_mode", "ok")
+                if mode == "rejected":
+                    # Twitch ANSWERED and said no. This is the only case where the saved token
+                    # should be deleted.
+                    self._send(400, {"status": 400, "message": "Invalid refresh token"})
+                elif mode == "server_error":
+                    # Twitch's problem, not the token's. Deleting the token here is how a bad
+                    # five minutes at Twitch costs a streamer their sign-in.
+                    self._send(503, {"status": 503, "message": "Service Unavailable"})
+                else:
+                    self._send(200, {"access_token": "at-refreshed", "refresh_token": "rt-new",
+                                     "expires_in": 14400, "scope": ["bits:read"],
+                                     "token_type": "bearer"})
                 return
             SEEN["token_body"] = raw
             SEEN["token_grant"] = grant
@@ -113,7 +126,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(raw)
             SEEN["subscribe"].append(body)
             SEEN["sub_ct"] = self.headers.get("Content-Type", "")
-            self._send(202, {"data": [{"id": "s1", "status": "enabled"}]})
+            # Not every subscription succeeds, and a mock that only ever answers 202 lets
+            # `ok = res.status / 100 == 2` be replaced with `ok = true` and still pass.
+            # 403 is the missing-scope case -- one alert type dead, the rest fine.
+            # 409 is what Twitch returns when the subscription already exists, which happens on
+            # every session_reconnect, and which must count as a SUCCESS.
+            if body["type"] == "channel.follow":
+                self._send(403, {"status": 403, "message": "missing scope"})
+            elif body["type"] == "channel.raid":
+                self._send(409, {"status": 409, "message": "subscription already exists"})
+            else:
+                self._send(202, {"data": [{"id": "s1", "status": "enabled"}]})
         else:
             self._send(404, {"message": "no"})
 
@@ -145,7 +168,13 @@ def main():
     out = run(cli, base, "device")
     check("the device flow returns a code the streamer can type",
           "CODE:ABCD1234" in out and "twitch.tv/activate" in out, out)
-    check("it does not poll faster than Twitch allows", "INTERVAL:5" in out, out)
+    check("the interval Twitch sent is the one used",
+          "INTERVAL:7" in out,
+          f"{out} -- 7, not the client's own fallback of 5, or 'never read the field' passes too")
+    check("the verification URI Twitch sent is the one shown",
+          "probe=1" in out,
+          f"{out} -- the hardcoded fallback is the same host, so only a distinguishable value "
+          f"can tell 'read it' from 'never read it' apart")
     bare = run(cli, base, "device")
     check("a response with no interval still does not poll in a tight loop",
           "INTERVAL:5" in bare,
@@ -171,10 +200,31 @@ def main():
           SEEN.get("token_grant") == "urn:ietf:params:oauth:grant-type:device_code",
           SEEN.get("token_grant", ""))
 
-    # ---- refresh ----
+    # ---- refresh, and the distinction that decides whether a token gets deleted ----
     out = run(cli, base, "refresh")
-    check("a saved sign-in can be refreshed", out.startswith("REFRESH:1") and "at-refreshed" in out,
-          out)
+    check("a saved sign-in can be refreshed",
+          out.startswith("REFRESH:OK") and "at-refreshed" in out, out)
+
+    SEEN["refresh_mode"] = "rejected"
+    out = run(cli, base, "refresh")
+    check("a refusal from Twitch is reported as REJECTED",
+          out.startswith("REFRESH:REJECTED"), out)
+
+    SEEN["refresh_mode"] = "server_error"
+    out = run(cli, base, "refresh")
+    check("a 5xx is UNREACHABLE, not a dead token",
+          out.startswith("REFRESH:UNREACHABLE"),
+          f"{out} -- only REJECTED may delete the saved sign-in; a bad five minutes at Twitch "
+          f"must not cost the streamer their login")
+
+    # And the case that actually bit: no answer at all. Pointed at a port nothing is listening on,
+    # which is what a router reboot, a DNS failure or a captive portal look like from here.
+    dead = run(cli, "http://127.0.0.1:9", "refresh")
+    check("no answer at all is UNREACHABLE, not a dead token",
+          dead.startswith("REFRESH:UNREACHABLE"),
+          f"{dead} -- this is the Wi-Fi-dropped case, and treating it as a dead token deleted "
+          f"the refresh token and stopped alerts permanently")
+    SEEN["refresh_mode"] = "ok"
 
     # ---- who we are ----
     out = run(cli, base, "user")
@@ -187,8 +237,19 @@ def main():
     # ---- the subscriptions ----
     out = run(cli, base, "subscribe")
     subs = SEEN["subscribe"]
-    check("every subscription is accepted", out.count("OK:1") == len(subs) and len(subs) > 0,
-          f"{len(subs)} sent")
+    check("a refused subscription is reported as refused, with its status",
+          "SUB:channel.follow OK:0 STATUS:403" in out,
+          "a mock that only answers 202 lets the status check be deleted entirely")
+    check("the refusal names the subscription type, so the missing scope is findable",
+          any(l.startswith("SUB:channel.follow") and "channel.follow was refused" in l
+              for l in out.splitlines()),
+          "one missing scope takes out one alert type; the log is where that gets diagnosed")
+    check("409 'already exists' counts as SUCCESS, not as a refusal",
+          "SUB:channel.raid OK:1 STATUS:409" in out,
+          "Twitch returns 409 after a session_reconnect carries subscriptions across -- counting "
+          "it as a refusal turned a routine reconnect into 'Twitch refused every alert type'")
+    check("the ones that succeed still succeed", out.count("OK:1") == len(subs) - 1,
+          f"{len(subs)} sent, {out.count('OK:1')} accepted")
     check("all seven are asked for", len(subs) == 7, f"{len(subs)}")
     by_type = {s["type"]: s for s in subs}
     follow = by_type.get("channel.follow", {})

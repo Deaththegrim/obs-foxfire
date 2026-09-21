@@ -140,6 +140,15 @@ class Server(threading.Thread):
             conn.close()
             return
 
+        if self.mode == "fin":
+            # A clean TCP close with NO close frame -- a router dropping the connection, or a
+            # server going away mid-deploy. curl reports this as OK with zero bytes, and a client
+            # that read that as "nothing yet" would wait on a socket that will never speak again.
+            conn.sendall(head)
+            conn.shutdown(socket.SHUT_WR)
+            conn.close()
+            return
+
         # The 101 and the first frame in ONE write, deliberately: a client that clears its buffer
         # after the handshake loses this message and reports nothing at all.
         conn.sendall(head + frame(0x1, b"welcome"))
@@ -247,6 +256,16 @@ def main():
     check("a wrong Sec-WebSocket-Accept is refused",
           any(l.startswith("REFUSED:") and "match" in l for l in lines3),
           next(iter(lines3), "no output"))
+
+    # ---- a server that just hangs up, with no close frame ----
+    s4 = Server("fin")
+    s4.start()
+    lines5 = run_cli(cli, f"ws://127.0.0.1:{s4.port}/ws")
+    s4.join(timeout=15)
+    check("a bare TCP close ends the connection instead of waiting forever",
+          any(l.startswith("END:") for l in lines5),
+          f"{lines5} -- curl reports a FIN as success with zero bytes, and reading that as "
+          f"'nothing yet' hangs on a socket that will never speak again")
 
     # ---- a URL that is not one ----
     lines4 = run_cli(cli, "not-a-url")

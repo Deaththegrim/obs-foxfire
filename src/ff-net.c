@@ -4,10 +4,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <util/platform.h>
 
 #ifdef _WIN32
 #include <winsock2.h>
 #else
+#include <errno.h>
 #include <poll.h>
 #endif
 
@@ -125,20 +127,33 @@ static long net_recv(void *ctx, void *buf, size_t len)
 	return (long)got;
 }
 
-void ff_net_wait(struct ff_net *n, int timeout_ms)
+/* `writing` picks which readiness to wait for. It matters: the upgrade-send loop calls this to
+   wait for the socket to accept data, and a POLLIN-only wait there degenerates into a plain sleep
+   -- it works, but it is not what the name says, and "waits for the socket" would be a comment
+   describing something the code does not do. */
+static void net_wait(struct ff_net *n, int timeout_ms, bool writing)
 {
 	if (!n || n->sock == CURL_SOCKET_BAD)
 		return;
 #ifdef _WIN32
-	fd_set r;
-	FD_ZERO(&r);
-	FD_SET(n->sock, &r);
+	fd_set s;
+	FD_ZERO(&s);
+	FD_SET(n->sock, &s);
 	struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
-	select(0, &r, NULL, NULL, &tv);
+	select(0, writing ? NULL : &s, writing ? &s : NULL, NULL, &tv);
 #else
-	struct pollfd pfd = {.fd = n->sock, .events = POLLIN};
-	poll(&pfd, 1, timeout_ms);
+	struct pollfd pfd = {.fd = n->sock, .events = writing ? POLLOUT : POLLIN};
+	if (poll(&pfd, 1, timeout_ms) < 0 && errno != EINTR)
+		/* A persistently failing poll (EBADF, EINVAL) would otherwise return instantly
+		   every time and turn the caller's loop into a busy wait. Sleeping the interval
+		   it asked for keeps the loop's timing honest even when the wait cannot work. */
+		os_sleep_ms((uint32_t)(timeout_ms < 0 ? 0 : timeout_ms));
 #endif
+}
+
+void ff_net_wait(struct ff_net *n, int timeout_ms)
+{
+	net_wait(n, timeout_ms, false);
 }
 
 struct ff_net *ff_net_ws_open(const char *url, char *err, size_t errcap)
@@ -179,7 +194,19 @@ struct ff_net *ff_net_ws_open(const char *url, char *err, size_t errcap)
 		free(n);
 		return NULL;
 	}
-	curl_easy_getinfo(n->curl, CURLINFO_ACTIVESOCKET, &n->sock);
+	/* Checked, because the consequence of not having it is invisible: ff_net_wait returns
+	   immediately on CURL_SOCKET_BAD, so the read loop stops sleeping and spins a core while
+	   looking completely healthy from the outside -- reads and writes still work, through
+	   curl. Better to fail the connection here, where there is something to say. */
+	if (curl_easy_getinfo(n->curl, CURLINFO_ACTIVESOCKET, &n->sock) != CURLE_OK ||
+	    n->sock == CURL_SOCKET_BAD) {
+		snprintf(err, errcap, "connected to %s but could not get the socket to wait on",
+			 u.host);
+		curl_easy_cleanup(n->curl);
+		n->curl = NULL;
+		free(n);
+		return NULL;
+	}
 
 	struct ff_ws_io io = {.send = net_send, .recv = net_recv, .ctx = n};
 	if (!ff_ws_conn_init(&n->conn, io)) {
@@ -230,7 +257,7 @@ struct ff_net *ff_net_ws_open(const char *url, char *err, size_t errcap)
 			return NULL;
 		}
 		if (w == 0)
-			ff_net_wait(n, 100);
+			net_wait(n, 100, true);
 		sent += (size_t)w;
 	}
 
@@ -331,8 +358,21 @@ bool ff_http_request(const char *method, const char *url, const char *const *hea
 	}
 	struct sink s = {0};
 	struct curl_slist *hl = NULL;
-	for (size_t i = 0; i < nh; i++)
-		hl = curl_slist_append(hl, headers[i]);
+	for (size_t i = 0; i < nh; i++) {
+		/* curl_slist_append returns NULL on failure and does NOT free what it was given, so
+		   assigning the result would leak the list AND silently drop every header -- the
+		   Authorization line among them. Twitch would answer 401 and the message would say
+		   the sign-in was rejected, sending the streamer to re-authorise for no reason. */
+		struct curl_slist *next = curl_slist_append(hl, headers[i]);
+		if (!next) {
+			curl_slist_free_all(hl);
+			curl_easy_cleanup(c);
+			free(s.p);
+			snprintf(err, errcap, "out of memory building the request headers");
+			return false;
+		}
+		hl = next;
+	}
 
 	curl_easy_setopt(c, CURLOPT_URL, url);
 	curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, method);

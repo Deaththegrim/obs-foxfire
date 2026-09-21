@@ -241,6 +241,16 @@ static void start_alert(struct ff_alert_source *a, const struct ff_alert_event *
 	obs_log(LOG_INFO, "alerts: firing '%s'", body);
 }
 
+/* The worker thread says the status line changed. Pushing it means a properties page that is
+   already open updates itself -- without this the panel showed whatever was true when it was
+   opened, so a connection that failed mid-stream changed nothing the streamer could see. */
+static void on_twitch_changed(void *data)
+{
+	struct ff_alert_source *a = data;
+	if (a && a->self)
+		obs_source_update_properties(a->self);
+}
+
 void ff_alert_enqueue(void *data, const struct ff_alert_event *e)
 {
 	struct ff_alert_source *a = data;
@@ -345,8 +355,11 @@ static void *alert_create(obs_data_t *s, obs_source_t *self)
 	/* Last: the worker can call ff_alert_enqueue the moment it exists, and everything that
 	   touches -- the queue, its lock, the per-kind switches -- has to be set up by then. */
 	char *cfg = obs_module_config_path("packs");
-	a->twitch = ff_twitch_create(ff_alert_enqueue, a, cfg);
+	a->twitch = ff_twitch_create(ff_alert_enqueue, on_twitch_changed, a, cfg);
 	bfree(cfg);
+	if (!a->twitch)
+		obs_log(LOG_ERROR, "alerts: the Twitch feed could not be created; the Connect "
+				   "button will do nothing this session");
 	if (a->twitch) {
 		ff_twitch_set_client_id(a->twitch, obs_data_get_string(s, "twitch_client_id"));
 		ff_twitch_set_enabled(a->twitch, obs_data_get_bool(s, "twitch_enabled"));
@@ -365,14 +378,22 @@ static void alert_destroy(void *d)
 		obs_source_remove_active_child(a->self, a->sound);
 		obs_source_release(a->sound);
 	}
-	pthread_mutex_destroy(&a->qlock);
-	obs_enter_graphics();
-	/* FIRST, and before anything it might touch: the worker thread calls ff_alert_enqueue,
-	   which locks a->qlock and reads a->kinds. Destroying those out from under a running
-	   thread is a crash that only happens when a stream ends while an alert is arriving. */
+	/* FIRST, and outside the graphics lock, and this ordering is the whole point.
+	 *
+	 * The worker thread calls ff_alert_enqueue, which locks a->qlock and reads a->kinds --
+	 * so it has to be joined before either is destroyed. A previous version of this function
+	 * carried that reasoning as a comment while doing the opposite: pthread_mutex_destroy()
+	 * ran first, and the worker could then lock a destroyed mutex. The comment was right and
+	 * the code was wrong, which is the failure mode a comment stating a mechanism invites.
+	 *
+	 * Outside obs_enter_graphics() because the join can wait on a curl request -- up to the
+	 * 30s CURLOPT_TIMEOUT -- and holding the global graphics lock for that long stops every
+	 * source in OBS from rendering. Deleting a source would read as the program hanging. */
 	ff_twitch_destroy(a->twitch);
 	a->twitch = NULL;
+	pthread_mutex_destroy(&a->qlock);
 
+	obs_enter_graphics();
 	ff_renderer_destroy(a->renderer);
 	obs_leave_graphics();
 	ff_packs_free(&a->packs);
@@ -465,6 +486,19 @@ static void add_twitch_status(struct ff_alert_source *a, obs_properties_t *p)
 	char line[512] = {0}, code[32] = {0}, url[256] = {0};
 	enum ff_twitch_state st = ff_twitch_status(a ? a->twitch : NULL, line, sizeof line, code,
 						   sizeof code, url, sizeof url);
+	/* The code, on its own line and in large text, because it is the one thing on this page
+	   that has to be READ OFF THE SCREEN and typed somewhere else. An earlier version fetched
+	   it into this function and then displayed only `line` -- so the streamer saw the sentence
+	   and never the code, and the sign-in could not be completed at all. */
+	if (st == FF_TWS_SIGNING_IN && code[0]) {
+		struct dstr big = {0};
+		dstr_copy(&big, obs_module_text("Foxfire.Twitch.CodeIs"));
+		dstr_replace(&big, "%1", code);
+		obs_properties_add_text(g, "twitch_code", big.array, OBS_TEXT_INFO);
+		dstr_free(&big);
+		if (url[0])
+			obs_properties_add_text(g, "twitch_url", url, OBS_TEXT_INFO);
+	}
 	obs_property_t *info = obs_properties_add_text(g, "twitch_status", line, OBS_TEXT_INFO);
 	/* An error has to LOOK like one. A red line is the difference between a streamer noticing
 	   their sign-in expired and finding out from a viewer asking why nobody got thanked. */
