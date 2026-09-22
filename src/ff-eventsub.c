@@ -70,8 +70,8 @@ static void message_into(char *dst, size_t cap, obs_data_t *ev)
 	dst[0] = 0;
 }
 
-static enum ff_es_result from_event(const char *type, obs_data_t *ev, struct ff_alert_event *out,
-				    char *note, size_t notecap)
+static enum ff_es_result from_event(const char *type, obs_data_t *ev, struct ff_alert_event *out, char *note,
+				    size_t notecap)
 {
 	memset(out, 0, sizeof *out);
 
@@ -102,8 +102,7 @@ static enum ff_es_result from_event(const char *type, obs_data_t *ev, struct ff_
 		out->amount = obs_data_get_int(ev, "total");
 		if (out->amount < 1)
 			out->amount = 1;
-		name_into(out->name, sizeof out->name, ev, "user_name",
-			  obs_data_get_bool(ev, "is_anonymous"));
+		name_into(out->name, sizeof out->name, ev, "user_name", obs_data_get_bool(ev, "is_anonymous"));
 		return FF_ES_EVENT;
 	}
 	if (!strcmp(type, "channel.subscription.message")) {
@@ -117,8 +116,7 @@ static enum ff_es_result from_event(const char *type, obs_data_t *ev, struct ff_
 	if (!strcmp(type, "channel.cheer")) {
 		out->kind = FF_ALERT_BITS;
 		out->amount = obs_data_get_int(ev, "bits");
-		name_into(out->name, sizeof out->name, ev, "user_name",
-			  obs_data_get_bool(ev, "is_anonymous"));
+		name_into(out->name, sizeof out->name, ev, "user_name", obs_data_get_bool(ev, "is_anonymous"));
 		message_into(out->message, sizeof out->message, ev);
 		return FF_ES_EVENT;
 	}
@@ -185,8 +183,7 @@ enum ff_es_result ff_es_handle(struct ff_es *s, const char *json, struct ff_aler
 			snprintf(s->err, sizeof s->err, "a %s with no session", type);
 			r = FF_ES_BAD;
 		} else {
-			copy_into(s->session_id, sizeof s->session_id,
-				  obs_data_get_string(sess, "id"));
+			copy_into(s->session_id, sizeof s->session_id, obs_data_get_string(sess, "id"));
 			/* Twitch picks this, between 10 and 600 seconds, and silence for longer
 			   than it means the connection is gone. Defaulting to something when it is
 			   missing would invent a timeout the server never agreed to. */
@@ -195,8 +192,7 @@ enum ff_es_result ff_es_handle(struct ff_es *s, const char *json, struct ff_aler
 			copy_into(s->reconnect_url, sizeof s->reconnect_url, ru);
 			if (!strcmp(type, "session_reconnect")) {
 				if (!s->reconnect_url[0]) {
-					snprintf(s->err, sizeof s->err,
-						 "a reconnect with no URL to reconnect to");
+					snprintf(s->err, sizeof s->err, "a reconnect with no URL to reconnect to");
 					r = FF_ES_BAD;
 				} else {
 					r = FF_ES_RECONNECT;

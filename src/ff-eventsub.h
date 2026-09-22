@@ -38,8 +38,8 @@ enum ff_es_result ff_es_handle(struct ff_es *s, const char *json, struct ff_aler
 struct ff_es_sub {
 	const char *type;
 	const char *version;
-	const char *scope;     /* the OAuth scope it needs; "" when none */
-	bool needs_moderator;  /* condition carries moderator_user_id as well as broadcaster */
+	const char *scope;    /* the OAuth scope it needs; "" when none */
+	bool needs_moderator; /* condition carries moderator_user_id as well as broadcaster */
 };
 extern const struct ff_es_sub FF_ES_SUBS[];
 extern const size_t FF_ES_SUB_COUNT;

@@ -42,8 +42,7 @@
 static const uint8_t RFC_TEXT_UNMASKED[] = {0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f};
 /* RFC 6455 s5.7: the same message masked, with the mask the RFC uses. */
 static const uint8_t RFC_MASK[4] = {0x37, 0xfa, 0x21, 0x3d};
-static const uint8_t RFC_TEXT_MASKED[] = {0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d,
-					  0x7f, 0x9f, 0x4d, 0x51, 0x58};
+static const uint8_t RFC_TEXT_MASKED[] = {0x81, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58};
 /* RFC 6455 s5.7: "A fragmented unmasked text message" -- "Hel" then "lo". */
 static const uint8_t RFC_FRAG1[] = {0x01, 0x03, 0x48, 0x65, 0x6c};
 static const uint8_t RFC_FRAG2[] = {0x80, 0x02, 0x6c, 0x6f};
@@ -176,10 +175,8 @@ int main(void)
 	static uint8_t roomy[512];
 	char big_payload[200];
 	memset(big_payload, 'x', sizeof(big_payload));
-	CHECK(ff_ws_build(FF_WS_PING, big_payload, sizeof(big_payload), RFC_MASK, roomy,
-			  sizeof(roomy)) == 0);
-	CHECK(ff_ws_build(FF_WS_CLOSE, big_payload, sizeof(big_payload), RFC_MASK, roomy,
-			  sizeof(roomy)) == 0);
+	CHECK(ff_ws_build(FF_WS_PING, big_payload, sizeof(big_payload), RFC_MASK, roomy, sizeof(roomy)) == 0);
+	CHECK(ff_ws_build(FF_WS_CLOSE, big_payload, sizeof(big_payload), RFC_MASK, roomy, sizeof(roomy)) == 0);
 	/* exactly at the limit is legal, so the guard is a cap and not a blanket refusal */
 	CHECK(ff_ws_build(FF_WS_PING, big_payload, 125, RFC_MASK, roomy, sizeof(roomy)) == 6 + 125);
 	CHECK(ff_ws_build(FF_WS_TEXT, "Hello", 5, RFC_MASK, NULL, 64) == 0);

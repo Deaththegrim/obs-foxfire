@@ -89,8 +89,8 @@ struct ff_alert_source {
 	struct ff_alert_text style;
 	char preset_fallback[64]; /* art used by any kind that has none of its own */
 	char sound_fallback[512];
-	char sound_path[512];     /* what the sound child currently holds */
-	float duration; /* seconds an alert stays on screen */
+	char sound_path[512]; /* what the sound child currently holds */
+	float duration;       /* seconds an alert stays on screen */
 
 	/* Pending alerts. Events will arrive on a network thread once the feed is real, and the
 	   tick pops them on the video thread, so this is locked NOW rather than when the second
@@ -101,7 +101,7 @@ struct ff_alert_source {
 	   calls ff_alert_enqueue, which touches the queue and the per-kind switches below. */
 	struct ff_twitch *twitch;
 
-	bool paused;                 /* stops STARTING new alerts; whatever is on screen still finishes */
+	bool paused;                  /* stops STARTING new alerts; whatever is on screen still finishes */
 	enum ff_alert_kind test_kind; /* which kind the test button fires */
 
 	/* Playback state, written and read on the video thread only (tick and render both run
@@ -124,8 +124,7 @@ static void ensure_text_child(struct ff_alert_source *a)
 	a->text = obs_source_create_private(kind, FF_ALERT_TEXT_CHILD, s);
 	obs_data_release(s);
 	if (!a->text) {
-		obs_log(LOG_WARNING, "alerts: '%s' is registered but would not create; no name will be drawn",
-			kind);
+		obs_log(LOG_WARNING, "alerts: '%s' is registered but would not create; no name will be drawn", kind);
 		return;
 	}
 	obs_source_add_active_child(a->self, a->text);
@@ -153,8 +152,7 @@ static void ensure_sound_child(struct ff_alert_source *a)
 		a->sound = obs_source_create_private("ffmpeg_source", FF_ALERT_SOUND_CHILD, s);
 		obs_data_release(s);
 		if (!a->sound) {
-			obs_log(LOG_WARNING, "alerts: could not create a media source for '%s'",
-				a->sound_path);
+			obs_log(LOG_WARNING, "alerts: could not create a media source for '%s'", a->sound_path);
 			return;
 		}
 		obs_source_add_active_child(a->self, a->sound);
@@ -172,8 +170,8 @@ static void ensure_sound_child(struct ff_alert_source *a)
 /* Substitutes the message variables. Every value that came from the wire -- the name and the
    viewer's own message -- has already been through ff_alert_sanitise; this only joins strings.
    {amount} and {tier} are ours, so they are formatted here. */
-static void render_template(const struct ff_alert_source *a, const struct ff_alert_event *e,
-			    const char *safe_name, const char *safe_msg, char *out, size_t cap)
+static void render_template(const struct ff_alert_source *a, const struct ff_alert_event *e, const char *safe_name,
+			    const char *safe_msg, char *out, size_t cap)
 {
 	char num[32], tier[16];
 	snprintf(num, sizeof num, "%lld", (long long)e->amount);
@@ -206,8 +204,7 @@ static void start_alert(struct ff_alert_source *a, const struct ff_alert_event *
 	size_t dropped = ff_alert_sanitise(e->name, safe, sizeof safe);
 	dropped += ff_alert_sanitise(e->message, safe_msg, sizeof safe_msg);
 	if (dropped)
-		obs_log(LOG_INFO, "alerts: removed %zu unsafe character(s) from a name before drawing it",
-			dropped);
+		obs_log(LOG_INFO, "alerts: removed %zu unsafe character(s) from a name before drawing it", dropped);
 
 	char body[512];
 	render_template(a, e, safe, safe_msg, body, sizeof body);
@@ -311,8 +308,7 @@ static void alert_update(void *d, obs_data_t *s)
 		snprintf(key, sizeof key, "k.%s.enabled", id);
 		a->kinds[k].enabled = obs_data_get_bool(s, key);
 		snprintf(key, sizeof key, "k.%s.template", id);
-		snprintf(a->kinds[k].template_, sizeof a->kinds[k].template_, "%s",
-			 obs_data_get_string(s, key));
+		snprintf(a->kinds[k].template_, sizeof a->kinds[k].template_, "%s", obs_data_get_string(s, key));
 		snprintf(key, sizeof key, "k.%s.preset", id);
 		snprintf(a->kinds[k].preset, sizeof a->kinds[k].preset, "%s", obs_data_get_string(s, key));
 		snprintf(key, sizeof key, "k.%s.sound", id);
@@ -475,17 +471,16 @@ static bool on_twitch_sign_out(obs_properties_t *props, obs_property_t *p, void 
 static void add_twitch_status(struct ff_alert_source *a, obs_properties_t *p)
 {
 	obs_properties_t *g = obs_properties_create();
-	obs_properties_add_text(g, "twitch_client_id", obs_module_text("Foxfire.Twitch.ClientId"),
-				OBS_TEXT_DEFAULT);
+	obs_properties_add_text(g, "twitch_client_id", obs_module_text("Foxfire.Twitch.ClientId"), OBS_TEXT_DEFAULT);
 	obs_properties_add_bool(g, "twitch_enabled", obs_module_text("Foxfire.Twitch.Enabled"));
-	obs_properties_add_button2(g, "twitch_connect", obs_module_text("Foxfire.Twitch.Connect"),
-				   on_twitch_connect, a);
-	obs_properties_add_button2(g, "twitch_signout", obs_module_text("Foxfire.Twitch.SignOut"),
-				   on_twitch_sign_out, a);
+	obs_properties_add_button2(g, "twitch_connect", obs_module_text("Foxfire.Twitch.Connect"), on_twitch_connect,
+				   a);
+	obs_properties_add_button2(g, "twitch_signout", obs_module_text("Foxfire.Twitch.SignOut"), on_twitch_sign_out,
+				   a);
 
 	char line[512] = {0}, code[32] = {0}, url[256] = {0};
-	enum ff_twitch_state st = ff_twitch_status(a ? a->twitch : NULL, line, sizeof line, code,
-						   sizeof code, url, sizeof url);
+	enum ff_twitch_state st =
+		ff_twitch_status(a ? a->twitch : NULL, line, sizeof line, code, sizeof code, url, sizeof url);
 	/* The code, on its own line and in large text, because it is the one thing on this page
 	   that has to be READ OFF THE SCREEN and typed somewhere else. An earlier version fetched
 	   it into this function and then displayed only `line` -- so the streamer saw the sentence
@@ -502,13 +497,10 @@ static void add_twitch_status(struct ff_alert_source *a, obs_properties_t *p)
 	obs_property_t *info = obs_properties_add_text(g, "twitch_status", line, OBS_TEXT_INFO);
 	/* An error has to LOOK like one. A red line is the difference between a streamer noticing
 	   their sign-in expired and finding out from a viewer asking why nobody got thanked. */
-	obs_property_text_set_info_type(info,
-					st == FF_TWS_FAILED ? OBS_TEXT_INFO_ERROR
-							    : (st == FF_TWS_RETRYING
-								       ? OBS_TEXT_INFO_WARNING
-								       : OBS_TEXT_INFO_NORMAL));
-	obs_properties_add_group(p, "twitch", obs_module_text("Foxfire.Twitch.Group"),
-				 OBS_GROUP_NORMAL, g);
+	obs_property_text_set_info_type(info, st == FF_TWS_FAILED ? OBS_TEXT_INFO_ERROR
+								  : (st == FF_TWS_RETRYING ? OBS_TEXT_INFO_WARNING
+											   : OBS_TEXT_INFO_NORMAL));
+	obs_properties_add_group(p, "twitch", obs_module_text("Foxfire.Twitch.Group"), OBS_GROUP_NORMAL, g);
 }
 
 static bool on_test_fire(obs_properties_t *props, obs_property_t *p, void *data)
@@ -560,11 +552,11 @@ static obs_properties_t *alert_props(void *d)
 	struct ff_alert_source *a = d;
 	obs_properties_t *p = obs_properties_create();
 
-	obs_property_t *packs = obs_properties_add_list(p, "pack", obs_module_text("Foxfire.Pack"),
-							OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_t *packs = obs_properties_add_list(p, "pack", obs_module_text("Foxfire.Pack"), OBS_COMBO_TYPE_LIST,
+							OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(packs, obs_module_text("Foxfire.Alert.NoArt"), "");
 	obs_property_t *presets = obs_properties_add_list(p, "preset", obs_module_text("Foxfire.Preset"),
-							 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+							  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_list_add_string(presets, obs_module_text("Foxfire.Alert.NoArt"), "");
 	if (a) {
 		for (size_t i = 0; i < a->packs.n; i++) {
@@ -595,8 +587,7 @@ static obs_properties_t *alert_props(void *d)
 	obs_properties_add_bool(p, "shadow", obs_module_text("Foxfire.Alert.Shadow"));
 	obs_properties_add_path(p, "sound", obs_module_text("Foxfire.Alert.Sound"), OBS_PATH_FILE,
 				"Audio (*.wav *.mp3 *.ogg *.flac *.m4a);;All files (*.*)", NULL);
-	obs_properties_add_float_slider(p, "duration", obs_module_text("Foxfire.Alert.Duration"), 1.0, 30.0,
-					0.1);
+	obs_properties_add_float_slider(p, "duration", obs_module_text("Foxfire.Alert.Duration"), 1.0, 30.0, 0.1);
 	/* One group per kind, each collapsed into its own box, so seven kinds x four settings does
 	   not become a wall. The shared Message/Preset/Sound above stay as the fallback for any
 	   kind that has none of its own -- so a streamer who wants one look everywhere sets it
@@ -647,8 +638,7 @@ static obs_properties_t *alert_props(void *d)
 	obs_properties_add_button2(p, "skip", obs_module_text("Foxfire.Alert.Skip"), on_skip, d);
 	obs_properties_add_button2(p, "clear", obs_module_text("Foxfire.Alert.Clear"), on_clear, d);
 	if (!ff_alert_text_kind())
-		obs_properties_add_text(p, "notext", obs_module_text("Foxfire.Alert.NoTextSource"),
-					OBS_TEXT_INFO);
+		obs_properties_add_text(p, "notext", obs_module_text("Foxfire.Alert.NoTextSource"), OBS_TEXT_INFO);
 	return p;
 }
 
@@ -730,8 +720,8 @@ static void alert_render(void *d, gs_effect_t *effect)
 
 	/* the pack's art first, underneath */
 	if (a->renderer) {
-		gs_texture_t *art = ff_renderer_render(a->renderer, NULL, progress, NULL, a->width,
-						       a->height, 1.f / 60.f);
+		gs_texture_t *art =
+			ff_renderer_render(a->renderer, NULL, progress, NULL, a->width, a->height, 1.f / 60.f);
 		if (art) {
 			gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 			gs_eparam_t *img = gs_effect_get_param_by_name(def, "image");
@@ -761,8 +751,7 @@ static void alert_render(void *d, gs_effect_t *effect)
 		fade = 1.f;
 
 	gs_matrix_push();
-	gs_matrix_translate3f((float)((int)a->width - (int)tw) * 0.5f,
-			      (float)((int)a->height - (int)th) * 0.5f, 0.f);
+	gs_matrix_translate3f((float)((int)a->width - (int)tw) * 0.5f, (float)((int)a->height - (int)th) * 0.5f, 0.f);
 	gs_blend_state_push();
 	gs_reset_blend_state();
 	gs_blend_function(GS_BLEND_SRCALPHA, GS_BLEND_INVSRCALPHA);
@@ -778,8 +767,8 @@ static void alert_render(void *d, gs_effect_t *effect)
 	gs_matrix_pop();
 }
 
-static bool alert_audio_render(void *d, uint64_t *ts_out, struct obs_source_audio_mix *out,
-			       uint32_t mixers, size_t channels, size_t sample_rate)
+static bool alert_audio_render(void *d, uint64_t *ts_out, struct obs_source_audio_mix *out, uint32_t mixers,
+			       size_t channels, size_t sample_rate)
 {
 	UNUSED_PARAMETER(sample_rate);
 	struct ff_alert_source *a = d;

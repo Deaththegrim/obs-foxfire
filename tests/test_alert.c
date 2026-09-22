@@ -153,7 +153,7 @@ static void check_queue(void)
 		CHECK(!ff_alert_kind_parse("FOLLOW", &k)); /* ids are lower case, exactly */
 	}
 	CHECK(!strcmp(ff_alert_kind_id((enum ff_alert_kind)999), "unknown"));
-	CHECK(!strcmp(ff_alert_kind_id((enum ff_alert_kind)-1), "unknown"));
+	CHECK(!strcmp(ff_alert_kind_id((enum ff_alert_kind) - 1), "unknown"));
 }
 
 static const char *san(const char *in, char *buf, size_t cap, size_t *removed)
@@ -199,16 +199,22 @@ int main(void)
 	   way and compiles another). A test for the hazard must not carry the hazard. */
 	CHECK(!strcmp(san("gift\xe2\x80\xaeknarp", b, sizeof b, &removed), "giftknarp"));
 	CHECK(removed == 1);
-	CHECK(!strcmp(san("\xe2\x80\xaa\xe2\x80\xab\xe2\x80\xac\xe2\x80\xad\xe2\x80\xae" "ok", b,
-			  sizeof b, &removed),
+	CHECK(!strcmp(san("\xe2\x80\xaa\xe2\x80\xab\xe2\x80\xac\xe2\x80\xad\xe2\x80\xae"
+			  "ok",
+			  b, sizeof b, &removed),
 		      "ok")); /* LRE RLE PDF LRO RLO */
 	CHECK(removed == 5);
-	CHECK(!strcmp(san("\xe2\x81\xa6\xe2\x81\xa7\xe2\x81\xa8\xe2\x81\xa9" "ok", b, sizeof b,
-			  &removed),
+	CHECK(!strcmp(san("\xe2\x81\xa6\xe2\x81\xa7\xe2\x81\xa8\xe2\x81\xa9"
+			  "ok",
+			  b, sizeof b, &removed),
 		      "ok")); /* LRI RLI FSI PDI */
 	CHECK(removed == 4);
 	/* a legitimate U+2022 BULLET starts e2 80 too, and must NOT be eaten */
-	CHECK(!strcmp(san("a\xe2\x80\xa2" "b", b, sizeof b, &removed), "a\xe2\x80\xa2" "b"));
+	CHECK(!strcmp(san("a\xe2\x80\xa2"
+			  "b",
+			  b, sizeof b, &removed),
+		      "a\xe2\x80\xa2"
+		      "b"));
 	CHECK(removed == 0);
 
 	/* Length, and the part a naive truncation gets wrong: cutting mid-sequence leaves a partial
@@ -238,24 +244,40 @@ int main(void)
 	CHECK(!strcmp(san("\xff\xfeok", b, sizeof b, &removed), "ok"));
 	CHECK(removed == 2);
 	/* a 4-byte character (an emoji) is a character, not three stray bytes */
-	CHECK(!strcmp(san("a\xf0\x9f\xa6\x8a" "b", b, sizeof b, &removed), "a\xf0\x9f\xa6\x8a" "b"));
+	CHECK(!strcmp(san("a\xf0\x9f\xa6\x8a"
+			  "b",
+			  b, sizeof b, &removed),
+		      "a\xf0\x9f\xa6\x8a"
+		      "b"));
 	CHECK(removed == 0);
 	/* and it is kept whole or dropped whole when the buffer runs out */
 	char five[5];
-	CHECK(!strcmp(san("\xf0\x9f\xa6\x8a" "xy", five, sizeof five, &removed), "\xf0\x9f\xa6\x8a"));
+	CHECK(!strcmp(san("\xf0\x9f\xa6\x8a"
+			  "xy",
+			  five, sizeof five, &removed),
+		      "\xf0\x9f\xa6\x8a"));
 	/* When the FIRST character does not fit, the result is empty -- truncation stops, it does
 	   not skip ahead to characters that would. Skipping would silently change the name (the
 	   emoji vanishing from the front of "<fox>xy" to leave "xy") rather than shorten it, and a
 	   shortened name is a name while a reordered one is somebody else's. */
 	char four[4];
-	CHECK(!strcmp(san("\xf0\x9f\xa6\x8a" "xy", four, sizeof four, &removed), ""));
+	CHECK(!strcmp(san("\xf0\x9f\xa6\x8a"
+			  "xy",
+			  four, sizeof four, &removed),
+		      ""));
 	CHECK(!strcmp(san("ab\xf0\x9f\xa6\x8a", four, sizeof four, &removed), "ab"));
 
 	/* U+200E LEFT-TO-RIGHT MARK and U+061C ARABIC LETTER MARK: not overrides, but they still
 	   reorder what is drawn around them. */
-	CHECK(!strcmp(san("a\xe2\x80\x8e" "b", b, sizeof b, &removed), "ab"));
+	CHECK(!strcmp(san("a\xe2\x80\x8e"
+			  "b",
+			  b, sizeof b, &removed),
+		      "ab"));
 	CHECK(removed == 1);
-	CHECK(!strcmp(san("a\xd8\x9c" "b", b, sizeof b, &removed), "ab"));
+	CHECK(!strcmp(san("a\xd8\x9c"
+			  "b",
+			  b, sizeof b, &removed),
+		      "ab"));
 	CHECK(removed == 1);
 
 	/* A one-byte buffer has room for the terminator and nothing else. */

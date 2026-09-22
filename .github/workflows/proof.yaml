@@ -74,6 +74,7 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/alert-proof.py --plugin-build .
       - name: The shared pack control block has not drifted
+        id: placement
         # Static, so it needs no display. OBS's effect language has no #include, so the
         # Placement/Response block is COPIED into every shader that wants it; this refuses a
         # control declared two different ways, and a helper that is defined and never called --
@@ -86,35 +87,8 @@ jobs:
         if: steps.packs.outputs.shaders == 'true'
         run: tools/check-placement.py ../foxfire/packs
 
-      - name: Say which pack gates were skipped
-        # A green job must not mean two different things. The packs live in a private repo that
-        # is not checked out here, so the probe at the top of this job reports every pack gate
-        # absent on a stock runner -- and a skipped step and a passing step look identical once
-        # the list is collapsed. This writes the difference onto the run page.
-        if: always()
-        env:
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          # A failure ABOVE this step stops every step below it, pack-dependent or not. Saying
-          # "skipped because the packs repo is private" in that case is a wrong reason stated
-          # confidently, and it is what this run actually printed when alert-proof.py died on a
-          # missing ffmpeg: five gates did not run and the summary blamed the packs.
-          if [ "$JOB_STATUS" = "failure" ]; then
-            echo "### The job FAILED before the pack gates" >> "$GITHUB_STEP_SUMMARY"
-            echo "A step above stopped the run, so every gate below it did not execute --" >> "$GITHUB_STEP_SUMMARY"
-            echo "whether or not the packs are checked out. Read the failing step, not this." >> "$GITHUB_STEP_SUMMARY"
-          elif [ -d ../foxfire/packs ]; then
-            echo "packs present: every pack-dependent gate ran" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "### Pack-dependent gates SKIPPED" >> "$GITHUB_STEP_SUMMARY"
-            echo "The foxfire packs repo is private and is not checked out here, so these" >> "$GITHUB_STEP_SUMMARY"
-            echo "did not run: check-placement, mouth-strip registration, the picker selftest" >> "$GITHUB_STEP_SUMMARY"
-            echo "and its --mutate, every-pack-renders, and the mouth render proof." >> "$GITHUB_STEP_SUMMARY"
-            echo "(ctest, including the calibrate proof, does not need them and did run.)" >> "$GITHUB_STEP_SUMMARY"
-            echo "A green tick here does NOT mean they passed." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
       - name: Mouth art is registered
+        id: mouth_art_gate
         # Every cell of a mouth strip must sit on the same anchor: the engine swaps them frame to
         # frame, so drift reads as the mouth sliding around the face while the character talks.
         # No renderer is involved, which is why this runs before anything boots OBS -- and it is
@@ -132,6 +106,7 @@ jobs:
           python3 ../foxfire/tools/pick-mouth-frames.py --mutate
 
       - name: Pack controls actually move the picture
+        id: controls
         # A control that exists in the properties panel and changes nothing is this project's
         # most common defect, and no "does it render" check can see it. Skipped when the packs
         # repo is not checked out beside this one -- it is private.
@@ -141,6 +116,7 @@ jobs:
         run: python3 tools/placement-proof.py --plugin-build . --pack ../foxfire/packs/basics
 
       - name: Every shipped pack renders
+        id: packs_render
         # The gap that let a broken shader ship: alert-proof.py builds its OWN minimal pack, so
         # the real packs were never rendered by anything in CI. card.effect spent a while calling
         # a function it no longer had -- "error: opacity undeclared", the card layer drawing
@@ -162,6 +138,7 @@ jobs:
           done
 
       - name: The mouth draws the shape the audio asked for
+        id: mouth_render
         # Every layer under this is tested alone -- the classifier against synthesised vowels, the
         # band layout, the hold timing. None of it shows that the number reaches the shader or
         # that the shader picks the cell the number names, and a mouth stuck on one shape renders
@@ -171,6 +148,49 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
+
+      - name: Say what each pack gate actually did
+        # A green job must not mean two different things, and this step kept finding new
+        # ways to mean the wrong one. It used to sit in the MIDDLE of the gate list, so
+        # "every pack-dependent gate ran" was written before four of them had, and when
+        # check-placement itself failed it announced "the job FAILED before the pack
+        # gates" -- pointing the reader away from the pack gate that had just failed. It
+        # also re-derived pack presence from `-d ../foxfire/packs` while the gates keyed
+        # off four per-file probes, so a missing packs/mouth/ read as "all present".
+        #
+        # It now runs LAST and reports each gate's own recorded outcome. No derivation,
+        # no prose claim about steps it cannot see.
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          O_PLACEMENT: ${{ steps.placement.outcome }}
+          O_MOUTH_ART: ${{ steps.mouth_art_gate.outcome }}
+          O_CONTROLS: ${{ steps.controls.outcome }}
+          O_PACKS_RENDER: ${{ steps.packs_render.outcome }}
+          O_MOUTH_RENDER: ${{ steps.mouth_render.outcome }}
+        run: |
+          {
+            echo "### Pack-dependent gates"
+            echo ""
+            echo "| gate | outcome |"
+            echo "|------|---------|"
+            echo "| check-placement (shared control block) | ${O_PLACEMENT:-not reached} |"
+            echo "| mouth strip registration + picker selftest | ${O_MOUTH_ART:-not reached} |"
+            echo "| pack controls move the picture | ${O_CONTROLS:-not reached} |"
+            echo "| every shipped pack renders | ${O_PACKS_RENDER:-not reached} |"
+            echo "| the mouth draws the shape asked for | ${O_MOUTH_RENDER:-not reached} |"
+            echo ""
+            echo "\`skipped\` means the private foxfire packs repo is not checked out beside"
+            echo "this one, so the gate had nothing to inspect. \`not reached\` means the job"
+            echo "stopped before it. **Neither is a pass.**"
+            echo ""
+            case "$JOB_STATUS" in
+              success)   echo "Job status: success." ;;
+              failure)   echo "Job status: FAILURE — read the failing step. If it is one of the rows above, it is a pack gate that ran and failed, not a job that died before them." ;;
+              cancelled) echo "Job status: CANCELLED — gates below the cancellation point did not run, and that is why, whatever the packs are doing." ;;
+              *)         echo "Job status: $JOB_STATUS." ;;
+            esac
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         if: always()

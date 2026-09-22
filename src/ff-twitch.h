@@ -19,12 +19,12 @@
  */
 
 enum ff_twitch_state {
-	FF_TWS_OFF = 0,     /* not signed in, or switched off */
-	FF_TWS_SIGNING_IN,  /* the streamer has a code to type */
+	FF_TWS_OFF = 0,    /* not signed in, or switched off */
+	FF_TWS_SIGNING_IN, /* the streamer has a code to type */
 	FF_TWS_CONNECTING,
 	FF_TWS_LIVE,
-	FF_TWS_RETRYING,    /* lost it, waiting to try again */
-	FF_TWS_FAILED,      /* needs the streamer: sign in again, or grant a scope */
+	FF_TWS_RETRYING, /* lost it, waiting to try again */
+	FF_TWS_FAILED,   /* needs the streamer: sign in again, or grant a scope */
 };
 
 /* How long to wait before retry number `attempt` (1-based).
@@ -51,8 +51,7 @@ bool ff_twitch_is_stale(time_t last_message, int keepalive_secs, time_t now);
  * time a connection drops. A compiler attribute now guards the printf side, but an attribute
  * cannot see a format it is handed at runtime; this function and its test are what keep the two
  * mechanisms apart. NULL arguments are skipped. */
-void ff_twitch_format(const char *key, const char *a1, const char *a2, const char *a3, char *out,
-		      size_t cap);
+void ff_twitch_format(const char *key, const char *a1, const char *a2, const char *a3, char *out, size_t cap);
 
 struct ff_twitch;
 
@@ -64,8 +63,8 @@ typedef void (*ff_twitch_event_cb)(void *ctx, const struct ff_alert_event *e);
    happens to be open is refreshed instead of showing whatever was true when it was opened. */
 typedef void (*ff_twitch_changed_cb)(void *ctx);
 
-struct ff_twitch *ff_twitch_create(ff_twitch_event_cb cb, ff_twitch_changed_cb on_change,
-				   void *ctx, const char *module_path);
+struct ff_twitch *ff_twitch_create(ff_twitch_event_cb cb, ff_twitch_changed_cb on_change, void *ctx,
+				   const char *module_path);
 void ff_twitch_destroy(struct ff_twitch *t);
 
 /* The Twitch application's client id. There is no default and no fallback: a wrong or missing
@@ -78,5 +77,5 @@ void ff_twitch_sign_out(struct ff_twitch *t); /* forgets the saved token */
 
 /* A line for the properties panel, and the code to type while signing in. Both safe from the UI
    thread. `code`/`url` are empty unless the state is SIGNING_IN. */
-enum ff_twitch_state ff_twitch_status(struct ff_twitch *t, char *line, size_t linecap, char *code,
-				      size_t codecap, char *url, size_t urlcap);
+enum ff_twitch_state ff_twitch_status(struct ff_twitch *t, char *line, size_t linecap, char *code, size_t codecap,
+				      char *url, size_t urlcap);

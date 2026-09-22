@@ -43,7 +43,7 @@ struct ff_session {
 	/* Survives a reconnect ON PURPOSE: EventSub moves the subscriptions to the new session,
 	   and asking again duplicates every alert at best and 409s at worst. */
 	bool subscribed;
-	time_t opened;       /* when the CURRENT socket came up */
+	time_t opened; /* when the CURRENT socket came up */
 	/* Non-zero while a replacement socket is being brought up alongside this one. The old
 	   connection keeps delivering until the new one is welcomed, which is the whole point:
 	   Twitch keeps sending on the old socket during the changeover, and tearing it down first
@@ -59,8 +59,7 @@ void ff_session_init(struct ff_session *s, const char *url);
 /* A socket is up. Resets the per-connection clocks and NOT `subscribed`. */
 void ff_session_opened(struct ff_session *s, time_t now);
 
-enum ff_session_step ff_session_message(struct ff_session *s, const char *json, time_t now,
-					struct ff_alert_event *out);
+enum ff_session_step ff_session_message(struct ff_session *s, const char *json, time_t now, struct ff_alert_event *out);
 
 /* Nothing arrived. This is where a connection that is open at the socket and dead at the service
    gets noticed -- the only way to see it. */

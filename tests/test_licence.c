@@ -122,8 +122,9 @@ int main(void)
 	char canon[256];
 	size_t n = ff_licence_canonical("1", "p", "l", 5, 6, canon, sizeof canon);
 	CHECK(n == strlen(canon));
-	CHECK(!strcmp(canon,
-		      "{\"discord_id\":\"1\",\"entitled_through\":6,\"issued\":5,\"licence_id\":\"l\",\"pack_id\":\"p\"}"));
+	CHECK(!strcmp(
+		canon,
+		"{\"discord_id\":\"1\",\"entitled_through\":6,\"issued\":5,\"licence_id\":\"l\",\"pack_id\":\"p\"}"));
 
 	/* truncated buffer (length cuts inside the sig value): must be INVALID, must not crash */
 	make(sk, "ember", issued, expires, json, sizeof json, 0);
@@ -204,10 +205,11 @@ int main(void)
 
 		/* 4. a key name occurring inside an EARLIER string value is not mistaken for
 		 *    the key itself; the scanner must walk past it to the real field. */
-		snprintf(v, sizeof v,
-			 "{\"note\":\"entitled_through\",\"discord_id\":\"123456789012345678\",\"entitled_through\":%lld,"
-			 "\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
-			 (long long)expires, (long long)issued, s64);
+		snprintf(
+			v, sizeof v,
+			"{\"note\":\"entitled_through\",\"discord_id\":\"123456789012345678\",\"entitled_through\":%lld,"
+			"\"issued\":%lld,\"licence_id\":\"lic_test1\",\"pack_id\":\"ember\",\"sig\":\"%s\"}",
+			(long long)expires, (long long)issued, s64);
 		ff_licence_verify(v, strlen(v), pk, "ember", in_date, &L);
 		CHECK(L.state == FF_LIC_OK);
 		CHECK(L.entitled_through == expires);

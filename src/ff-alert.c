@@ -36,7 +36,7 @@
 /* Tried in order. The Windows names come from the OBS source tree rather than from a machine we
    have run on, which is exactly why this is a list and not a constant: the code has to behave
    correctly when none of it matches. */
-static const char *TEXT_KINDS[] = {"text_gdiplus_v3", "text_gdiplus_v2", "text_gdiplus",
+static const char *TEXT_KINDS[] = {"text_gdiplus_v3",    "text_gdiplus_v2", "text_gdiplus",
 				   "text_ft2_source_v2", "text_ft2_source", NULL};
 
 const char *ff_alert_text_kind(void)
@@ -162,16 +162,15 @@ size_t ff_alert_sanitise(const char *in, char *out, size_t cap)
 			continue;
 		}
 		if (len == 2 || len == 3) {
-			uint32_t cp = len == 2
-					      ? (uint32_t)(c & 0x1f) << 6 | ((unsigned char)in[i + 1] & 0x3f)
-					      : (uint32_t)(c & 0x0f) << 12 |
-							(uint32_t)((unsigned char)in[i + 1] & 0x3f) << 6 |
-							((unsigned char)in[i + 2] & 0x3f);
+			uint32_t cp = len == 2 ? (uint32_t)(c & 0x1f) << 6 | ((unsigned char)in[i + 1] & 0x3f)
+					       : (uint32_t)(c & 0x0f) << 12 |
+							 (uint32_t)((unsigned char)in[i + 1] & 0x3f) << 6 |
+							 ((unsigned char)in[i + 2] & 0x3f);
 			/* U+202A..U+202E embeddings and overrides, U+2066..U+2069 isolates,
 			   U+200E/U+200F and U+061C marks. U+2022 BULLET and the rest of the block
 			   are ordinary characters and must survive. */
-			bool bidi = (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) ||
-				    cp == 0x200e || cp == 0x200f || cp == 0x061c;
+			bool bidi = (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069) || cp == 0x200e ||
+				    cp == 0x200f || cp == 0x061c;
 			if (bidi) {
 				removed++;
 				i += len;

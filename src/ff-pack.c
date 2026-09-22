@@ -109,8 +109,7 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 	   would take its visualizer presets down with it. */
 	if (strcmp(pr->kind, "visualizer") && strcmp(pr->kind, "effects") && strcmp(pr->kind, "overlay") &&
 	    strcmp(pr->kind, "alert")) {
-		snprintf(why, cap, "preset '%s': kind must be visualizer, effects, overlay or alert",
-			 pr->id);
+		snprintf(why, cap, "preset '%s': kind must be visualizer, effects, overlay or alert", pr->id);
 		return false;
 	}
 	if (pr->thumb[0] && (!ff_rel_ok(pr->thumb) || !file_in_pack(pk->dir, pr->thumb))) {
@@ -347,9 +346,10 @@ static void log_stale_temp_dirs(const char *packs_root)
 	struct os_dirent *e;
 	while ((e = os_readdir(d))) {
 		if (e->directory && strncmp(e->d_name, ".tmp-", 5) == 0) {
-			obs_log(LOG_WARNING, "packs: leftover temp directory not auto-reclaimed (cannot safely "
-				 "check if its process is still alive; manual cleanup safe if pid %s is no longer running): %s",
-				 e->d_name + 5, e->d_name);
+			obs_log(LOG_WARNING,
+				"packs: leftover temp directory not auto-reclaimed (cannot safely "
+				"check if its process is still alive; manual cleanup safe if pid %s is no longer running): %s",
+				e->d_name + 5, e->d_name);
 		}
 	}
 	os_closedir(d);
@@ -487,7 +487,7 @@ static bool path_is_symlink(const char *path)
 	wchar_t *w = NULL;
 	if (!os_utf8_to_wcs_ptr(path, 0, &w) || !w) {
 		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (path conversion failed)",
-			 path);
+			path);
 		return true;
 	}
 	DWORD attrs = GetFileAttributesW(w);
@@ -499,7 +499,7 @@ static bool path_is_symlink(const char *path)
 		if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND)
 			return false;
 		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (GetFileAttributesW failed)",
-			 path);
+			path);
 		return true;
 	}
 	return (attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
@@ -517,8 +517,8 @@ static bool path_is_symlink(const char *path)
 		   ELOOP, ENAMETOOLONG) genuinely means "cannot tell", and that still fails closed. */
 		if (err == ENOENT)
 			return false;
-		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (lstat failed: %s)",
-			 path, strerror(err));
+		obs_log(LOG_WARNING, "pack cleanup: could not check if '%s' is a symlink (lstat failed: %s)", path,
+			strerror(err));
 		return true;
 	}
 	return S_ISLNK(st.st_mode);
@@ -810,7 +810,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	bool has_symlink = listing_has_symlink(&type_listing);
 	dstr_free(&type_listing);
 	if (has_symlink) {
-		snprintf(msg, cap, "zip must not contain symlinks. Re-download from kitsune.gg if this is an official pack.");
+		snprintf(msg, cap,
+			 "zip must not contain symlinks. Re-download from kitsune.gg if this is an official pack.");
 		obs_log(LOG_WARNING, "pack install: zip contains a symlink entry, refused: %s", zip_path);
 		dstr_free(&topdir);
 		dstr_free(&tool);
@@ -865,7 +866,9 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 		snprintf(msg, cap, "%s", check.nerrors ? check.errors[0] : "pack failed validation");
 		ff_packs_free(&check);
 		if (!ff_remove_recursive(tmp.array))
-			obs_log(LOG_WARNING, "pack install: failed to clean up extraction temp dir after validation failure: %s", tmp.array);
+			obs_log(LOG_WARNING,
+				"pack install: failed to clean up extraction temp dir after validation failure: %s",
+				tmp.array);
 		dstr_free(&tmp);
 		dstr_free(&pack_src);
 		bfree(packs_dir);
@@ -885,7 +888,8 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	if (os_file_exists(dest.array)) {
 		struct dstr backup = {0};
 		dstr_printf(&backup, "%s/.bak-%s-%d", packs_dir, id, (int)ff_getpid());
-		if (!ff_remove_recursive(backup.array)) /* clear any stale leftover backup from a crashed prior install */
+		if (!ff_remove_recursive(
+			    backup.array)) /* clear any stale leftover backup from a crashed prior install */
 			obs_log(LOG_WARNING, "pack install: failed to clean up old backup dir: %s", backup.array);
 		moved = os_safe_replace(dest.array, pack_src.array, backup.array) == 0;
 		if (moved)
@@ -898,8 +902,10 @@ bool ff_packs_install_zip(const char *zip_path, char *msg, size_t cap)
 	dstr_free(&dest);
 
 	if (moved) {
-		if (!ff_remove_recursive(tmp.array)) /* pack_src was moved out of tmp; the wrapper dir is safe to clear now */
-			obs_log(LOG_WARNING, "pack install: failed to clean up wrapper temp dir after move: %s", tmp.array);
+		if (!ff_remove_recursive(
+			    tmp.array)) /* pack_src was moved out of tmp; the wrapper dir is safe to clear now */
+			obs_log(LOG_WARNING, "pack install: failed to clean up wrapper temp dir after move: %s",
+				tmp.array);
 		dstr_free(&tmp);
 		dstr_free(&pack_src);
 		bfree(packs_dir);

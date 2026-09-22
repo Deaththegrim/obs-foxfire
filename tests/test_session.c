@@ -65,17 +65,14 @@ const char *obs_module_text(const char *key)
 	"{\"metadata\":{\"message_type\":\"session_reconnect\"},\"payload\":{\"session\":{"   \
 	"\"id\":\"s2\",\"keepalive_timeout_seconds\":10,\"reconnect_url\":\"" URL "\"}}}"
 
-static const char KEEPALIVE[] =
-	"{\"metadata\":{\"message_type\":\"session_keepalive\"},\"payload\":{}}";
+static const char KEEPALIVE[] = "{\"metadata\":{\"message_type\":\"session_keepalive\"},\"payload\":{}}";
 
-static const char RAID[] =
-	"{\"metadata\":{\"message_type\":\"notification\"},\"payload\":{\"subscription\":"
-	"{\"type\":\"channel.raid\"},\"event\":{\"from_broadcaster_user_name\":\"Big\","
-	"\"viewers\":50}}}";
+static const char RAID[] = "{\"metadata\":{\"message_type\":\"notification\"},\"payload\":{\"subscription\":"
+			   "{\"type\":\"channel.raid\"},\"event\":{\"from_broadcaster_user_name\":\"Big\","
+			   "\"viewers\":50}}}";
 
-static const char REVOKED[] =
-	"{\"metadata\":{\"message_type\":\"revocation\"},\"payload\":{\"subscription\":"
-	"{\"type\":\"channel.follow\",\"status\":\"authorization_revoked\"}}}";
+static const char REVOKED[] = "{\"metadata\":{\"message_type\":\"revocation\"},\"payload\":{\"subscription\":"
+			      "{\"type\":\"channel.follow\",\"status\":\"authorization_revoked\"}}}";
 
 int main(void)
 {
@@ -102,8 +99,7 @@ int main(void)
 
 	/* ---- the reconnect, which is where this used to fall over ---- */
 	now += 1;
-	CHECK(ff_session_message(&s, RECONNECT("wss://eventsub.wss.twitch.tv/ws?c=2"), now, &ev) ==
-	      FF_STEP_RECONNECT);
+	CHECK(ff_session_message(&s, RECONNECT("wss://eventsub.wss.twitch.tv/ws?c=2"), now, &ev) == FF_STEP_RECONNECT);
 	CHECK(strcmp(s.url, "wss://eventsub.wss.twitch.tv/ws?c=2") == 0);
 	CHECK(s.subscribed); /* it must SURVIVE the reconnect */
 
@@ -170,9 +166,9 @@ int main(void)
 	CHECK(ff_session_message(&s, WELCOME("s1", "10"), 1000, &ev) == FF_STEP_SUBSCRIBE);
 	CHECK(ff_session_subscribed(&s, 7, 7) == FF_STEP_NOTHING);
 
-	CHECK(ff_session_idle(&s, 1005) == FF_STEP_NOTHING);  /* well inside */
-	CHECK(ff_session_idle(&s, 1020) == FF_STEP_NOTHING);  /* one missed keepalive is allowed */
-	CHECK(ff_session_idle(&s, 1023) == FF_STEP_DROP);     /* past that it is gone */
+	CHECK(ff_session_idle(&s, 1005) == FF_STEP_NOTHING); /* well inside */
+	CHECK(ff_session_idle(&s, 1020) == FF_STEP_NOTHING); /* one missed keepalive is allowed */
+	CHECK(ff_session_idle(&s, 1023) == FF_STEP_DROP);    /* past that it is gone */
 	CHECK(strstr(s.reason, "quiet") != NULL);
 
 	/* a keepalive resets it. A FRESH session, not the one above: that one is already

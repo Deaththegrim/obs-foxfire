@@ -55,6 +55,6 @@ struct ff_http_res {
 /* `headers` is an array of "Name: value" strings. Returns false only when the request could not
    be made at all -- an HTTP error status is a successful request with a status to look at, and
    conflating the two loses the response body that says why. */
-bool ff_http_request(const char *method, const char *url, const char *const *headers, size_t nh,
-		     const char *body, struct ff_http_res *out, char *err, size_t errcap);
+bool ff_http_request(const char *method, const char *url, const char *const *headers, size_t nh, const char *body,
+		     struct ff_http_res *out, char *err, size_t errcap);
 void ff_http_res_free(struct ff_http_res *r);

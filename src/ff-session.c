@@ -35,15 +35,14 @@ enum ff_session_step ff_session_idle(struct ff_session *s, time_t now)
 		return FF_STEP_NOTHING;
 	}
 	if (ff_twitch_is_stale(s->last_message, s->es.keepalive_secs, now)) {
-		snprintf(s->reason, sizeof s->reason,
-			 "Twitch went quiet for more than %d seconds", s->es.keepalive_secs * 2 + 2);
+		snprintf(s->reason, sizeof s->reason, "Twitch went quiet for more than %d seconds",
+			 s->es.keepalive_secs * 2 + 2);
 		return FF_STEP_DROP;
 	}
 	return FF_STEP_NOTHING;
 }
 
-enum ff_session_step ff_session_message(struct ff_session *s, const char *json, time_t now,
-					struct ff_alert_event *out)
+enum ff_session_step ff_session_message(struct ff_session *s, const char *json, time_t now, struct ff_alert_event *out)
 {
 	s->last_message = now;
 	s->reason[0] = 0;
@@ -95,15 +94,13 @@ enum ff_session_step ff_session_subscribed(struct ff_session *s, int accepted, i
 	   DID get through. */
 	s->subscribed = true;
 	if (accepted <= 0) {
-		snprintf(s->reason, sizeof s->reason,
-			 "Twitch accepted none of the %d alert types", total);
+		snprintf(s->reason, sizeof s->reason, "Twitch accepted none of the %d alert types", total);
 		return FF_STEP_DROP;
 	}
 	if (accepted < total) {
 		/* Some work and some do not -- one missing scope takes out one alert type and the
 		   rest are fine. Worth saying, not worth dropping. */
-		snprintf(s->reason, sizeof s->reason, "only %d of %d alert types subscribed",
-			 accepted, total);
+		snprintf(s->reason, sizeof s->reason, "only %d of %d alert types subscribed", accepted, total);
 		return FF_STEP_NOTE;
 	}
 	return FF_STEP_NOTHING;

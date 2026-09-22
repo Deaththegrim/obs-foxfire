@@ -31,7 +31,7 @@ struct ff_ws_io {
 
 struct ff_ws_conn {
 	struct ff_ws_io io;
-	uint8_t *rx;       /* bytes read but not yet parsed into frames */
+	uint8_t *rx; /* bytes read but not yet parsed into frames */
 	size_t rx_len;
 	/* A message may arrive as several frames (RFC 6455 s5.4), so frames are reassembled here
 	   and only a WHOLE message is handed up. Handing up the pieces would push that job onto
@@ -41,8 +41,8 @@ struct ff_ws_conn {
 	size_t msg_len;
 	enum ff_ws_opcode msg_op;
 	bool in_msg;
-	bool open;         /* the handshake completed and no close has been seen */
-	bool closing;      /* a close was received or sent; no more application messages */
+	bool open;    /* the handshake completed and no close has been seen */
+	bool closing; /* a close was received or sent; no more application messages */
 	uint16_t close_code;
 	char err[256];
 };
@@ -54,8 +54,7 @@ void ff_ws_conn_free(struct ff_ws_conn *c);
 /* Builds the upgrade request. `key_b64` is the caller's 16 random bytes, base64'd -- passed in
    rather than generated here so a test can use the RFC's own key and compare the bytes exactly.
    Returns the length written, or 0 if it would not fit. */
-size_t ff_ws_handshake_request(const char *host, const char *path, const char *key_b64,
-			       char *out, size_t cap);
+size_t ff_ws_handshake_request(const char *host, const char *path, const char *key_b64, char *out, size_t cap);
 
 /* Checks a server's response to that request.
  *
@@ -63,8 +62,7 @@ size_t ff_ws_handshake_request(const char *host, const char *path, const char *k
  * after them -- a server is entitled to put the 101 and the first frame in one packet, and a
  * reader that discards its buffer after the handshake loses that frame with no error anywhere.
  * 0 means the headers are not complete yet; SIZE_MAX means this is not a WebSocket server. */
-size_t ff_ws_handshake_check(const char *resp, size_t len, const char *key_b64,
-			     char *err, size_t errcap);
+size_t ff_ws_handshake_check(const char *resp, size_t len, const char *key_b64, char *err, size_t errcap);
 
 /* Fills `out` with 16 unpredictable bytes. Used for the handshake key and for every frame mask;
    RFC 6455 s5.3 requires the mask to come from a strong source. Returns false if it could not. */

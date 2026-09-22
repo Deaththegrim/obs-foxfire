@@ -56,8 +56,8 @@ struct script {
 	const uint8_t *data;
 	size_t len;
 	size_t pos;
-	size_t chunk;   /* max bytes per recv; 0 means "everything available" */
-	bool dead;      /* recv reports a dead socket */
+	size_t chunk; /* max bytes per recv; 0 means "everything available" */
+	bool dead;    /* recv reports a dead socket */
 	uint8_t sent[4096];
 	size_t sent_len;
 	const long *send_script; /* per-call: 0 = would block, n = accept at most n bytes */
@@ -129,12 +129,11 @@ static struct ff_ws_conn *fresh(struct script *s)
 	return &c;
 }
 
-static const char OK101[] =
-	"HTTP/1.1 101 Switching Protocols\r\n"
-	"Upgrade: websocket\r\n"
-	"Connection: Upgrade\r\n"
-	"Sec-WebSocket-Accept: " ACCEPT "\r\n"
-	"\r\n";
+static const char OK101[] = "HTTP/1.1 101 Switching Protocols\r\n"
+			    "Upgrade: websocket\r\n"
+			    "Connection: Upgrade\r\n"
+			    "Sec-WebSocket-Accept: " ACCEPT "\r\n"
+			    "\r\n";
 
 int main(void)
 {
@@ -171,8 +170,7 @@ int main(void)
 
 	/* not complete yet -- and "not complete" must not be "not a WebSocket server" */
 	CHECK(ff_ws_handshake_check(OK101, 20, KEY, err, sizeof err) == 0);
-	CHECK(ff_ws_handshake_check("HTTP/1.1 101 Switching Protocols\r\nUpgrade: web", 46, KEY,
-				    err, sizeof err) == 0);
+	CHECK(ff_ws_handshake_check("HTTP/1.1 101 Switching Protocols\r\nUpgrade: web", 46, KEY, err, sizeof err) == 0);
 
 	/* a proxy or captive portal answering instead of the server */
 	static const char PAGE[] = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html>";
@@ -181,48 +179,42 @@ int main(void)
 	CHECK(strstr(err, "200") != NULL);
 
 	/* 101, but the accept value does not answer OUR key */
-	static const char WRONG[] =
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-		"Connection: Upgrade\r\nSec-WebSocket-Accept: AAAAAAAAAAAAAAAAAAAAAAAAAAA=\r\n\r\n";
+	static const char WRONG[] = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+				    "Connection: Upgrade\r\nSec-WebSocket-Accept: AAAAAAAAAAAAAAAAAAAAAAAAAAA=\r\n\r\n";
 	err[0] = 0;
 	CHECK(ff_ws_handshake_check(WRONG, strlen(WRONG), KEY, err, sizeof err) == SIZE_MAX);
 	CHECK(strstr(err, "does not match") != NULL);
 
-	static const char NOUP[] =
-		"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"
-		"Sec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
+	static const char NOUP[] = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n"
+				   "Sec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
 	CHECK(ff_ws_handshake_check(NOUP, strlen(NOUP), KEY, err, sizeof err) == SIZE_MAX);
 
 	/* The missing half of the trio: Upgrade-missing and Accept-missing were both tested and
 	   Connection-missing was not, so removing that check scored a clean 98/98. */
-	static const char NOCONN[] =
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-		"Sec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
+	static const char NOCONN[] = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+				     "Sec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
 	CHECK(ff_ws_handshake_check(NOCONN, strlen(NOCONN), KEY, err, sizeof err) == SIZE_MAX);
 
 	/* `Connection` is a comma-separated LIST (RFC 7230 s6.1), and a proxy in the path really
 	   does send "keep-alive, Upgrade". Demanding the whole value be "Upgrade" refuses a
 	   correct server, which costs more than letting a wrong one through -- the accept value is
 	   what actually proves this is a WebSocket server. */
-	static const char LIST[] =
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-		"Connection: keep-alive, Upgrade\r\nSec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
+	static const char LIST[] = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+				   "Connection: keep-alive, Upgrade\r\nSec-WebSocket-Accept: " ACCEPT "\r\n\r\n";
 	CHECK(ff_ws_handshake_check(LIST, strlen(LIST), KEY, err, sizeof err) == strlen(LIST));
 
 	/* something that is not HTTP at all */
 	static const char NOTHTTP[] = "\x16\x03\x01 this is not a response\r\n\r\n";
 	CHECK(ff_ws_handshake_check(NOTHTTP, strlen(NOTHTTP), KEY, err, sizeof err) == SIZE_MAX);
 
-	static const char NOACC[] =
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
-		"Connection: Upgrade\r\n\r\n";
+	static const char NOACC[] = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+				    "Connection: Upgrade\r\n\r\n";
 	CHECK(ff_ws_handshake_check(NOACC, strlen(NOACC), KEY, err, sizeof err) == SIZE_MAX);
 
 	/* header names are case-insensitive (RFC 7230 s3.2) and servers do vary -- refusing a
 	   lowercase 'upgrade' would fail against a perfectly correct server */
-	static const char LOWER[] =
-		"HTTP/1.1 101 Switching Protocols\r\nupgrade: WebSocket\r\n"
-		"connection: upgrade\r\nsec-websocket-accept: " ACCEPT "\r\n\r\n";
+	static const char LOWER[] = "HTTP/1.1 101 Switching Protocols\r\nupgrade: WebSocket\r\n"
+				    "connection: upgrade\r\nsec-websocket-accept: " ACCEPT "\r\n\r\n";
 	CHECK(ff_ws_handshake_check(LOWER, strlen(LOWER), KEY, err, sizeof err) == strlen(LOWER));
 
 	/* something that will never send a blank line must not hold the connection open forever */
@@ -382,7 +374,9 @@ int main(void)
 	   answer a would-block by immediately trying again -- an uninterruptible full-core spin
 	   inside the worker thread, which also meant shutdown could never join it. */
 	static const long DRIBBLE[] = {0, 0, 2, 1, 0, 3, 100};
-	struct script s12 = {.data = HELLO, .len = 0, .send_script = DRIBBLE,
+	struct script s12 = {.data = HELLO,
+			     .len = 0,
+			     .send_script = DRIBBLE,
 			     .send_len = sizeof DRIBBLE / sizeof DRIBBLE[0]};
 	c = fresh(&s12);
 	CHECK(ff_ws_conn_send(c, FF_WS_TEXT, "hey", 3));
@@ -392,8 +386,7 @@ int main(void)
 
 	/* A socket that NEVER accepts anything has to be given up on, not waited on forever. */
 	static const long NEVER[1024] = {0};
-	struct script s13 = {.data = HELLO, .len = 0, .send_script = NEVER,
-			     .send_len = sizeof NEVER / sizeof NEVER[0]};
+	struct script s13 = {.data = HELLO, .len = 0, .send_script = NEVER, .send_len = sizeof NEVER / sizeof NEVER[0]};
 	c = fresh(&s13);
 	CHECK(!ff_ws_conn_send(c, FF_WS_TEXT, "hey", 3));
 	CHECK(strstr(c->err, "stopped accepting") != NULL);

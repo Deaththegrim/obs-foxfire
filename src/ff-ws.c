@@ -3,8 +3,8 @@
 
 /* ------------------------------------------------------------------ framing */
 
-size_t ff_ws_build(enum ff_ws_opcode op, const void *payload, size_t len, const uint8_t mask[4],
-		   uint8_t *out, size_t cap)
+size_t ff_ws_build(enum ff_ws_opcode op, const void *payload, size_t len, const uint8_t mask[4], uint8_t *out,
+		   size_t cap)
 {
 	if (!out || !mask || (len && !payload))
 		return 0;
@@ -133,8 +133,8 @@ static void sha1_block(struct sha1 *c, const uint8_t *p)
 {
 	uint32_t w[80];
 	for (int i = 0; i < 16; i++)
-		w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) |
-		       ((uint32_t)p[i * 4 + 2] << 8) | p[i * 4 + 3];
+		w[i] = ((uint32_t)p[i * 4] << 24) | ((uint32_t)p[i * 4 + 1] << 16) | ((uint32_t)p[i * 4 + 2] << 8) |
+		       p[i * 4 + 3];
 	for (int i = 16; i < 80; i++)
 		w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
 	uint32_t a = c->h[0], b = c->h[1], d = c->h[2], e = c->h[3], f = c->h[4];

@@ -15,7 +15,8 @@ static int hex(const char *h, uint8_t out[32])
 int main(int argc, char **argv)
 {
 	if (argc != 5) {
-		fprintf(stderr, "usage: verify_cli <pubkey-hex> <licence.json> <expected-pack-id> <pack-released-unix>\n");
+		fprintf(stderr,
+			"usage: verify_cli <pubkey-hex> <licence.json> <expected-pack-id> <pack-released-unix>\n");
 		return 2;
 	}
 	uint8_t pk[32];

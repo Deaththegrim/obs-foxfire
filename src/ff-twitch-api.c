@@ -63,8 +63,8 @@ static size_t form_escape(const char *s, char *out, size_t cap)
 	size_t n = 0;
 	for (; s && *s; s++) {
 		unsigned char c = (unsigned char)*s;
-		bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-			    (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+		bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+			    c == '_' || c == '.' || c == '~';
 		if (safe) {
 			if (n + 1 >= cap)
 				return 0;
@@ -85,8 +85,7 @@ static size_t form_escape(const char *s, char *out, size_t cap)
 
 /* `status` is 0 when the request never completed -- no DNS, no route, no TLS, a timeout. That is
    NOT the same as Twitch answering with an error, and the caller has to be able to tell. */
-static obs_data_t *post_form(const char *url, const char *body, long *status, char *err,
-			     size_t errcap)
+static obs_data_t *post_form(const char *url, const char *body, long *status, char *err, size_t errcap)
 {
 	if (status)
 		*status = 0;
@@ -98,14 +97,12 @@ static obs_data_t *post_form(const char *url, const char *body, long *status, ch
 		*status = res.status;
 	obs_data_t *d = res.body ? obs_data_create_from_json(res.body) : NULL;
 	if (!d)
-		snprintf(err, errcap, "%s answered %ld with something that is not JSON", url,
-			 res.status);
+		snprintf(err, errcap, "%s answered %ld with something that is not JSON", url, res.status);
 	ff_http_res_free(&res);
 	return d;
 }
 
-bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out, char *err,
-			    size_t errcap)
+bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out, char *err, size_t errcap)
 {
 	if (!client_id || !*client_id || !out) {
 		snprintf(err, errcap, "no client id set");
@@ -115,8 +112,7 @@ bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out,
 
 	char scopes[512], esc_scopes[1536], esc_id[256];
 	ff_twitch_scopes(scopes, sizeof scopes);
-	if (!form_escape(scopes, esc_scopes, sizeof esc_scopes) ||
-	    !form_escape(client_id, esc_id, sizeof esc_id)) {
+	if (!form_escape(scopes, esc_scopes, sizeof esc_scopes) || !form_escape(client_id, esc_id, sizeof esc_id)) {
 		snprintf(err, errcap, "the request would not fit");
 		return false;
 	}
@@ -133,12 +129,9 @@ bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out,
 		snprintf(err, errcap, "Twitch refused the request (%ld): %s", status,
 			 obs_data_get_string(d, "message"));
 	} else {
-		snprintf(out->device_code, sizeof out->device_code, "%s",
-			 obs_data_get_string(d, "device_code"));
-		snprintf(out->user_code, sizeof out->user_code, "%s",
-			 obs_data_get_string(d, "user_code"));
-		snprintf(out->verify_url, sizeof out->verify_url, "%s",
-			 obs_data_get_string(d, "verification_uri"));
+		snprintf(out->device_code, sizeof out->device_code, "%s", obs_data_get_string(d, "device_code"));
+		snprintf(out->user_code, sizeof out->user_code, "%s", obs_data_get_string(d, "user_code"));
+		snprintf(out->verify_url, sizeof out->verify_url, "%s", obs_data_get_string(d, "verification_uri"));
 		out->interval = (int)obs_data_get_int(d, "interval");
 		out->expires_in = (int)obs_data_get_int(d, "expires_in");
 		/* Twitch documents 5 seconds; a 0 here would poll in a tight loop and be rate
@@ -149,8 +142,7 @@ bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out,
 			snprintf(err, errcap, "Twitch returned no code to show");
 		} else {
 			if (!out->verify_url[0])
-				snprintf(out->verify_url, sizeof out->verify_url,
-					 "https://www.twitch.tv/activate");
+				snprintf(out->verify_url, sizeof out->verify_url, "https://www.twitch.tv/activate");
 			ok = true;
 		}
 	}
@@ -170,8 +162,8 @@ static void token_from(obs_data_t *d, struct ff_twitch_token *t)
 	t->expires_at = time(NULL) + (ttl > 0 ? (time_t)ttl : 3600);
 }
 
-enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *device_code,
-					  struct ff_twitch_token *out, char *err, size_t errcap)
+enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *device_code, struct ff_twitch_token *out,
+					  char *err, size_t errcap)
 {
 	if (!client_id || !device_code || !out) {
 		snprintf(err, errcap, "nothing to poll with");
@@ -179,8 +171,7 @@ enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *dev
 	}
 	char esc_id[256], esc_dev[1024], scopes[512], esc_scopes[1536];
 	ff_twitch_scopes(scopes, sizeof scopes);
-	if (!form_escape(client_id, esc_id, sizeof esc_id) ||
-	    !form_escape(device_code, esc_dev, sizeof esc_dev) ||
+	if (!form_escape(client_id, esc_id, sizeof esc_id) || !form_escape(device_code, esc_dev, sizeof esc_dev) ||
 	    !form_escape(scopes, esc_scopes, sizeof esc_scopes)) {
 		snprintf(err, errcap, "the request would not fit");
 		return FF_TW_ERROR;
@@ -232,23 +223,21 @@ enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *dev
 	return r;
 }
 
-enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refresh_token,
-					 struct ff_twitch_token *out, char *err, size_t errcap)
+enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refresh_token, struct ff_twitch_token *out,
+					 char *err, size_t errcap)
 {
 	if (!client_id || !refresh_token || !*refresh_token || !out) {
 		snprintf(err, errcap, "no refresh token stored");
 		return FF_REFRESH_REJECTED;
 	}
 	char esc_id[256], esc_rt[1024];
-	if (!form_escape(client_id, esc_id, sizeof esc_id) ||
-	    !form_escape(refresh_token, esc_rt, sizeof esc_rt)) {
+	if (!form_escape(client_id, esc_id, sizeof esc_id) || !form_escape(refresh_token, esc_rt, sizeof esc_rt)) {
 		snprintf(err, errcap, "the request would not fit");
 		return FF_REFRESH_REJECTED;
 	}
 	char url[512], body[2048];
 	snprintf(url, sizeof url, "%s/oauth2/token", ID_BASE);
-	snprintf(body, sizeof body, "client_id=%s&grant_type=refresh_token&refresh_token=%s",
-		 esc_id, esc_rt);
+	snprintf(body, sizeof body, "client_id=%s&grant_type=refresh_token&refresh_token=%s", esc_id, esc_rt);
 	long status = 0;
 	obs_data_t *d = post_form(url, body, &status, err, errcap);
 	if (!d) {
@@ -274,16 +263,16 @@ enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refr
 		r = FF_REFRESH_REJECTED;
 	} else {
 		/* a 5xx, or a 2xx with no token in it: Twitch's problem, not the token's */
-		snprintf(err, errcap, "Twitch could not refresh the sign-in right now (%ld): %s",
-			 status, obs_data_get_string(d, "message"));
+		snprintf(err, errcap, "Twitch could not refresh the sign-in right now (%ld): %s", status,
+			 obs_data_get_string(d, "message"));
 		r = FF_REFRESH_UNREACHABLE;
 	}
 	obs_data_release(d);
 	return r;
 }
 
-bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size_t idcap,
-		       char *login, size_t logincap, char *err, size_t errcap)
+bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size_t idcap, char *login, size_t logincap,
+		       char *err, size_t errcap)
 {
 	if (!client_id || !access || !id) {
 		snprintf(err, errcap, "not signed in");
@@ -301,8 +290,7 @@ bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size
 	bool ok = false;
 	obs_data_t *d = res.body ? obs_data_create_from_json(res.body) : NULL;
 	if (!d) {
-		snprintf(err, errcap, "helix/users answered %ld with something that is not JSON",
-			 res.status);
+		snprintf(err, errcap, "helix/users answered %ld with something that is not JSON", res.status);
 	} else {
 		obs_data_array_t *arr = obs_data_get_array(d, "data");
 		obs_data_t *u = arr && obs_data_array_count(arr) ? obs_data_array_item(arr, 0) : NULL;
@@ -325,8 +313,7 @@ bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size
 }
 
 bool ff_twitch_subscribe(const char *client_id, const char *access, const struct ff_es_sub *sub,
-			 const char *broadcaster_id, const char *session_id, long *status,
-			 char *err, size_t errcap)
+			 const char *broadcaster_id, const char *session_id, long *status, char *err, size_t errcap)
 {
 	if (!client_id || !access || !sub || !broadcaster_id || !session_id) {
 		snprintf(err, errcap, "not enough to subscribe with");
@@ -337,8 +324,7 @@ bool ff_twitch_subscribe(const char *client_id, const char *access, const struct
 	   documented trap -- the alert type then simply never fires. */
 	char cond[512];
 	if (sub->needs_moderator)
-		snprintf(cond, sizeof cond,
-			 "{\"broadcaster_user_id\":\"%s\",\"moderator_user_id\":\"%s\"}",
+		snprintf(cond, sizeof cond, "{\"broadcaster_user_id\":\"%s\",\"moderator_user_id\":\"%s\"}",
 			 broadcaster_id, broadcaster_id);
 	else if (!strcmp(sub->type, "channel.raid"))
 		/* a raid's condition is about who RECEIVES it */
@@ -373,8 +359,8 @@ bool ff_twitch_subscribe(const char *client_id, const char *access, const struct
 		const char *msg = d ? obs_data_get_string(d, "message") : NULL;
 		/* Named per subscription, because the usual cause is one missing scope and the
 		   symptom is one alert type that never arrives while the others do. */
-		snprintf(err, errcap, "%s was refused (%ld)%s%s", sub->type, res.status,
-			 msg && *msg ? ": " : "", msg && *msg ? msg : "");
+		snprintf(err, errcap, "%s was refused (%ld)%s%s", sub->type, res.status, msg && *msg ? ": " : "",
+			 msg && *msg ? msg : "");
 		obs_data_release(d);
 	}
 	ff_http_res_free(&res);
@@ -392,8 +378,7 @@ bool ff_twitch_token_save(const char *module_path, const struct ff_twitch_token 
 {
 	char path[1024];
 	if (!t || !token_path(module_path, path, sizeof path)) {
-		obs_log(LOG_WARNING,
-			"twitch: no usable config path for the sign-in (module path '%s')",
+		obs_log(LOG_WARNING, "twitch: no usable config path for the sign-in (module path '%s')",
 			module_path ? module_path : "(null)");
 		return false;
 	}

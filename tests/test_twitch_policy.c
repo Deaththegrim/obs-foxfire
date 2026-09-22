@@ -96,8 +96,7 @@ int main(void)
 	ff_twitch_format("Reconnecting in %1s", "8", NULL, NULL, line, sizeof line);
 	CHECK(strcmp(line, "Reconnecting in 8s") == 0);
 
-	ff_twitch_format("Go to %2 and enter the code %1", "ABCD1234", "twitch.tv/activate", NULL,
-			 line, sizeof line);
+	ff_twitch_format("Go to %2 and enter the code %1", "ABCD1234", "twitch.tv/activate", NULL, line, sizeof line);
 	CHECK(strcmp(line, "Go to twitch.tv/activate and enter the code ABCD1234") == 0);
 
 	/* three of them, and %3 is not confused with %1 followed by a 3 */

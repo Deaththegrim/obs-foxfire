@@ -37,11 +37,9 @@ const char *obs_module_text(const char *key)
    share one directory. The path handed in here is shaped like a real one. */
 static void make_root(char *out, size_t cap)
 {
-	snprintf(out, cap, "/tmp/ff-token-test-%d/obs-studio/plugin_config/obs-foxfire/packs",
-		 (int)getpid());
+	snprintf(out, cap, "/tmp/ff-token-test-%d/obs-studio/plugin_config/obs-foxfire/packs", (int)getpid());
 	char mk[1024];
-	snprintf(mk, sizeof mk, "/tmp/ff-token-test-%d/obs-studio/plugin_config/foxfire",
-		 (int)getpid());
+	snprintf(mk, sizeof mk, "/tmp/ff-token-test-%d/obs-studio/plugin_config/foxfire", (int)getpid());
 	char cmd[1200];
 	snprintf(cmd, sizeof cmd, "mkdir -p '%s'", mk);
 	if (system(cmd) != 0)
@@ -80,8 +78,7 @@ int main(void)
 	CHECK(stat(path, &st) == 0);
 	CHECK((st.st_mode & 0777) == 0600);
 	if ((st.st_mode & 0777) != 0600)
-		fprintf(stderr, "      (mode is %04o; a credential readable by other accounts)\n",
-			st.st_mode & 0777);
+		fprintf(stderr, "      (mode is %04o; a credential readable by other accounts)\n", st.st_mode & 0777);
 
 	/* 2. the access token is not on disk -- neither the value nor a key to put one in */
 	char body[8192] = {0};

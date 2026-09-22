@@ -198,9 +198,10 @@ int main(void)
 		for (int i = 0; i < 60; i++) {
 			for (size_t k = 0; k < FF_HOP; k++, lph++) {
 				float t = (float)lph / sr;
-				buf[k] = 0.18f * (sinf(2.f * 3.14159265f * 35.f * t) + sinf(2.f * 3.14159265f * 45.f * t) +
-						  sinf(2.f * 3.14159265f * 60.f * t) + sinf(2.f * 3.14159265f * 80.f * t) +
-						  sinf(2.f * 3.14159265f * 110.f * t));
+				buf[k] = 0.18f *
+					 (sinf(2.f * 3.14159265f * 35.f * t) + sinf(2.f * 3.14159265f * 45.f * t) +
+					  sinf(2.f * 3.14159265f * 60.f * t) + sinf(2.f * 3.14159265f * 80.f * t) +
+					  sinf(2.f * 3.14159265f * 110.f * t));
 			}
 			ff_analysis_push(a, buf, FF_HOP, &f);
 		}

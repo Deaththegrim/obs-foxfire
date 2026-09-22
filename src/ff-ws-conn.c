@@ -44,8 +44,7 @@ bool ff_ws_random(uint8_t *out, size_t n)
 #endif
 }
 
-size_t ff_ws_handshake_request(const char *host, const char *path, const char *key_b64,
-			       char *out, size_t cap)
+size_t ff_ws_handshake_request(const char *host, const char *path, const char *key_b64, char *out, size_t cap)
 {
 	if (!host || !path || !key_b64 || !out)
 		return 0;
@@ -67,8 +66,7 @@ size_t ff_ws_handshake_request(const char *host, const char *path, const char *k
 
 /* Case-insensitive search for `name: value` in a header block, returning the value's bounds.
    Header names are case-insensitive (RFC 7230 s3.2) and servers do vary the casing. */
-static bool header_value(const char *resp, size_t len, const char *name, const char **val,
-			 size_t *vlen)
+static bool header_value(const char *resp, size_t len, const char *name, const char **val, size_t *vlen)
 {
 	size_t nlen = strlen(name);
 	size_t i = 0;
@@ -158,8 +156,7 @@ static void say(char *err, size_t cap, const char *fmt, ...)
 	va_end(ap);
 }
 
-size_t ff_ws_handshake_check(const char *resp, size_t len, const char *key_b64, char *err,
-			     size_t errcap)
+size_t ff_ws_handshake_check(const char *resp, size_t len, const char *key_b64, char *err, size_t errcap)
 {
 	if (!resp || !key_b64) {
 		say(err, errcap, "no response to check");
@@ -375,14 +372,11 @@ int ff_ws_conn_poll(struct ff_ws_conn *c, struct ff_ws_msg *out)
 			continue;
 		}
 		if (m.op == FF_WS_CLOSE) {
-			c->close_code = m.len >= 2 ? (uint16_t)((m.payload[0] << 8) | m.payload[1])
-						   : 1005;
-			snprintf(c->err, sizeof c->err, "the server closed the connection (%u)",
-				 c->close_code);
+			c->close_code = m.len >= 2 ? (uint16_t)((m.payload[0] << 8) | m.payload[1]) : 1005;
+			snprintf(c->err, sizeof c->err, "the server closed the connection (%u)", c->close_code);
 			if (!c->closing) {
 				c->closing = true;
-				uint8_t echo[2] = {(uint8_t)(c->close_code >> 8),
-						   (uint8_t)c->close_code};
+				uint8_t echo[2] = {(uint8_t)(c->close_code >> 8), (uint8_t)c->close_code};
 				ff_ws_conn_send(c, FF_WS_CLOSE, echo, sizeof echo);
 			}
 			c->open = false;
@@ -394,8 +388,7 @@ int ff_ws_conn_poll(struct ff_ws_conn *c, struct ff_ws_msg *out)
 			   unfinished one, both mean we have lost track of the stream. Guessing
 			   would splice two messages together and hand up JSON that parses. */
 			if (m.op == FF_WS_CONT && !c->in_msg) {
-				snprintf(c->err, sizeof c->err,
-					 "a continuation frame with no message to continue");
+				snprintf(c->err, sizeof c->err, "a continuation frame with no message to continue");
 				c->open = false;
 				return -1;
 			}
@@ -411,8 +404,7 @@ int ff_ws_conn_poll(struct ff_ws_conn *c, struct ff_ws_msg *out)
 				c->in_msg = true;
 			}
 			if (c->msg_len + m.len > FF_WS_MAX_PAYLOAD) {
-				snprintf(c->err, sizeof c->err,
-					 "a message larger than %u bytes", FF_WS_MAX_PAYLOAD);
+				snprintf(c->err, sizeof c->err, "a message larger than %u bytes", FF_WS_MAX_PAYLOAD);
 				c->open = false;
 				return -1;
 			}

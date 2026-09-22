@@ -35,8 +35,8 @@ struct ff_param {
 	char label[64], group[64];
 	float min, max, step;
 	bool has_range;
-	float def[4];         /* live value: preset default, then the user's setting if there is one */
-	float preset_def[4];  /* the pristine preset value; what "Restore Defaults" must come back to */
+	float def[4];             /* live value: preset default, then the user's setting if there is one */
+	float preset_def[4];      /* the pristine preset value; what "Restore Defaults" must come back to */
 	gs_image_file_t *tex;     /* TEXTURE params only: whatever is currently bound */
 	char tex_pack[512];       /* the pack's own asset, from <string path="...">; "" if none */
 	char tex_user[512];       /* the file the VIEWER picked; "" if none. Wins over tex_pack. */
@@ -82,7 +82,7 @@ struct ff_renderer {
 	float time;
 	char pack_dir[512]; /* kept so a texture can be re-resolved after load, when the viewer
 	                       picks a different file and only the renderer is in scope */
-	uint32_t rng; /* xorshift32 state; per renderer so two instances do not move in lockstep */
+	uint32_t rng;       /* xorshift32 state; per renderer so two instances do not move in lockstep */
 	float rand_instance;
 	/* The mouth. Kept per renderer rather than per source because the state it carries -- which
 	   shape is up and how long it has been up -- belongs to whatever is being drawn, and two
@@ -122,8 +122,8 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings);
    and an end, and a shader reading `progress` there gets a defined 0 rather than a stale value.
 
    graphics context required. */
-gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input, uint32_t w,
-				 uint32_t h, float dt);
+gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input,
+				 uint32_t w, uint32_t h, float dt);
 /* adds the annotated params of every layer to props (one group per annotation group) */
 void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props);
 /* seeds the settings' defaults from the current per-param values, so a preset switch shows its

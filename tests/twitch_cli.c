@@ -51,8 +51,7 @@ int main(int argc, char **argv)
 	if (!strcmp(step, "poll")) {
 		struct ff_twitch_token t;
 		enum ff_twitch_poll r = ff_twitch_device_poll("cid123", "dev123", &t, err, sizeof err);
-		static const char *N[] = {"PENDING", "GOT_TOKEN", "SLOW_DOWN", "DENIED", "EXPIRED",
-					  "ERROR"};
+		static const char *N[] = {"PENDING", "GOT_TOKEN", "SLOW_DOWN", "DENIED", "EXPIRED", "ERROR"};
 		printf("POLL:%s", N[r]);
 		if (r == FF_TW_GOT_TOKEN)
 			/* > now, not > 0: a token whose expiry was stored as the DURATION
@@ -74,18 +73,16 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(step, "user")) {
 		char id[64] = {0}, login[64] = {0};
-		bool ok = ff_twitch_user_id("cid123", "at123", id, sizeof id, login, sizeof login,
-					    err, sizeof err);
+		bool ok = ff_twitch_user_id("cid123", "at123", id, sizeof id, login, sizeof login, err, sizeof err);
 		printf("USER:%d ID:%s LOGIN:%s ERR:%s\n", ok, id, login, err);
 		return 0;
 	}
 	if (!strcmp(step, "subscribe")) {
 		for (size_t i = 0; i < FF_ES_SUB_COUNT; i++) {
 			long status = 0;
-			bool ok = ff_twitch_subscribe("cid123", "at123", &FF_ES_SUBS[i], "4242",
-						      "sess1", &status, err, sizeof err);
-			printf("SUB:%s OK:%d STATUS:%ld ERR:%s\n", FF_ES_SUBS[i].type, ok, status,
-			       ok ? "" : err);
+			bool ok = ff_twitch_subscribe("cid123", "at123", &FF_ES_SUBS[i], "4242", "sess1", &status, err,
+						      sizeof err);
+			printf("SUB:%s OK:%d STATUS:%ld ERR:%s\n", FF_ES_SUBS[i].type, ok, status, ok ? "" : err);
 		}
 		return 0;
 	}

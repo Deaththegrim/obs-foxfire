@@ -281,11 +281,11 @@ int main(void)
 		float f1, f2, f3;
 		enum ff_viseme want;
 	} V[] = {
-		{"ee (fleece)", 240, 2400, 2900, FF_VIS_B},  /* closed, teeth together */
-		{"eh (dress)", 390, 2300, 2800, FF_VIS_C},   /* open */
-		{"ae (trap)", 850, 1610, 2600, FF_VIS_D},    /* wide open */
-		{"aw (thought)", 360, 640, 2400, FF_VIS_E},  /* slightly rounded */
-		{"oo (goose)", 250, 595, 2400, FF_VIS_F},    /* puckered */
+		{"ee (fleece)", 240, 2400, 2900, FF_VIS_B}, /* closed, teeth together */
+		{"eh (dress)", 390, 2300, 2800, FF_VIS_C},  /* open */
+		{"ae (trap)", 850, 1610, 2600, FF_VIS_D},   /* wide open */
+		{"aw (thought)", 360, 640, 2400, FF_VIS_E}, /* slightly rounded */
+		{"oo (goose)", 250, 595, 2400, FF_VIS_F},   /* puckered */
 	};
 	for (size_t k = 0; k < sizeof V / sizeof V[0]; k++) {
 		synth_vowel(buf, SR, 120.0f, V[k].f1, V[k].f2, V[k].f3);
@@ -293,9 +293,8 @@ int main(void)
 		enum ff_viseme got = ff_viseme_classify(&f, 0.0f);
 		CHECK(got == V[k].want);
 		if (got != V[k].want)
-			fprintf(stderr, "      (%s at F1=%.0f F2=%.0f gave %s, wanted %s)\n",
-				V[k].name, V[k].f1, V[k].f2, ff_viseme_name(got),
-				ff_viseme_name(V[k].want));
+			fprintf(stderr, "      (%s at F1=%.0f F2=%.0f gave %s, wanted %s)\n", V[k].name, V[k].f1,
+				V[k].f2, ff_viseme_name(got), ff_viseme_name(V[k].want));
 	}
 
 	/* A DIFFERENT speaker: a higher pitch with the same formants is the same vowel. Formants
@@ -391,12 +390,9 @@ int main(void)
 		const char *name;
 		float hz, bw, buzz;
 	} FR[] = {
-		{"s, peak 6.5k", 6500.0f, 4000.0f, 0.0f},
-		{"s, peak 5.2k", 5200.0f, 3000.0f, 0.0f},
-		{"sh, peak 3.2k", 3200.0f, 2500.0f, 0.0f},
-		{"sh, dark 2.6k", 2600.0f, 2000.0f, 0.0f},
-		{"f, flat and broad", 4500.0f, 7000.0f, 0.0f},
-		{"v, voiced", 4500.0f, 7000.0f, 110.0f},
+		{"s, peak 6.5k", 6500.0f, 4000.0f, 0.0f},      {"s, peak 5.2k", 5200.0f, 3000.0f, 0.0f},
+		{"sh, peak 3.2k", 3200.0f, 2500.0f, 0.0f},     {"sh, dark 2.6k", 2600.0f, 2000.0f, 0.0f},
+		{"f, flat and broad", 4500.0f, 7000.0f, 0.0f}, {"v, voiced", 4500.0f, 7000.0f, 110.0f},
 	};
 	float worst_fric = 1.0f;
 	for (size_t k = 0; k < sizeof FR / sizeof FR[0]; k++) {
@@ -442,8 +438,8 @@ int main(void)
 	/* The margin itself, so a threshold creeping toward either family fails here rather than
 	   in somebody's stream. Both numbers are printed because a gate that narrows quietly is
 	   the one nobody notices. */
-	fprintf(stderr, "      frication: vowels reach %.4f, fricatives fall to %.4f, threshold %.2f\n",
-		worst_vowel, worst_fric, FF_VIS_FRICATION);
+	fprintf(stderr, "      frication: vowels reach %.4f, fricatives fall to %.4f, threshold %.2f\n", worst_vowel,
+		worst_fric, FF_VIS_FRICATION);
 	CHECK(worst_vowel < FF_VIS_FRICATION * 0.6f);
 	CHECK(worst_fric > FF_VIS_FRICATION * 1.6f);
 
@@ -481,8 +477,7 @@ int main(void)
 			quiet_v = fr;
 		CHECK(fr < FF_VIS_FRICATION);
 	}
-	fprintf(stderr, "      frication down to quarter level: vowel <= %.4f, /s/ >= %.4f\n", quiet_v,
-		quiet_f);
+	fprintf(stderr, "      frication down to quarter level: vowel <= %.4f, /s/ >= %.4f\n", quiet_v, quiet_f);
 
 	/* ---- the timings, driven off their defaults ---- */
 

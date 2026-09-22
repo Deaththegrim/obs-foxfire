@@ -35,18 +35,18 @@ struct ff_instance {
 	struct ff_pack_list packs;
 	char pack_id[64], preset_id[64];
 	uint32_t width, height;
-	float dt;                /* video thread only -- see the threading contract in ff-props.c. bzalloc leaves this
+	float dt;                 /* video thread only -- see the threading contract in ff-props.c. bzalloc leaves this
 		     0 for an instance's first rendered frame (tick hasn't run yet the very first
 		     time create() is followed by a render before any tick); harmless, since the only
 		     use is r->time += dt in ff_renderer_render, so one 0-length frame of animation
 		     time just doesn't advance -- nothing divides by it. */
-	char status[256];        /* last refusal sentence for the current pack/preset, empty when fine */
-	char install_msg[256];   /* last "Install pack" result; update() must not clear it, see below */
-	gs_texrender_t *capture; /* filter only: the target, captured premultiplied -- see ff-filter.c */
-	struct ff_frame frame;   /* last frame read from the audio tap; kept when none arrived */
-	bool install_failed;     /* colours the install line: a refusal must not read as a success */
-	bool reload_pending;     /* the Reload button asks for a re-read without a preset switch */
-	bool initialised;        /* false until the first update(): there is no previous preset yet */
+	char status[256];         /* last refusal sentence for the current pack/preset, empty when fine */
+	char install_msg[256];    /* last "Install pack" result; update() must not clear it, see below */
+	gs_texrender_t *capture;  /* filter only: the target, captured premultiplied -- see ff-filter.c */
+	struct ff_frame frame;    /* last frame read from the audio tap; kept when none arrived */
+	bool install_failed;      /* colours the install line: a refusal must not read as a success */
+	bool reload_pending;      /* the Reload button asks for a re-read without a preset switch */
+	bool initialised;         /* false until the first update(): there is no previous preset yet */
 	bool begin_failed_logged; /* latch: gs_texrender_begin failures are logged only once per instance */
 };
 

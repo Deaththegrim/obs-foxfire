@@ -53,18 +53,18 @@ int main(void)
 	CHECK(strcmp(u.path, "/ws") == 0);
 	CHECK(p("wss://[2001:db8::1]/ws", &u));
 	CHECK(strcmp(u.host, "2001:db8::1") == 0 && strcmp(u.port, "443") == 0);
-	CHECK(!p("ws://[::1/ws", &u));       /* never closed */
-	CHECK(!p("ws://[::1]x/ws", &u));     /* junk between the bracket and the port */
+	CHECK(!p("ws://[::1/ws", &u));   /* never closed */
+	CHECK(!p("ws://[::1]x/ws", &u)); /* junk between the bracket and the port */
 
 	/* refusals */
 	CHECK(!p("not-a-url", &u));
 	CHECK(!p("", &u));
 	CHECK(!p(NULL, &u));
-	CHECK(!p("://example.com/", &u));         /* no scheme */
-	CHECK(!p("ftp://example.com/", &u));      /* a scheme we do not speak */
-	CHECK(!p("wss:///ws", &u));               /* no host */
-	CHECK(!p("wss://example.com:/ws", &u));   /* empty port */
-	CHECK(!p("wss://example.com:80a/ws", &u));/* a port that is not a number */
+	CHECK(!p("://example.com/", &u));          /* no scheme */
+	CHECK(!p("ftp://example.com/", &u));       /* a scheme we do not speak */
+	CHECK(!p("wss:///ws", &u));                /* no host */
+	CHECK(!p("wss://example.com:/ws", &u));    /* empty port */
+	CHECK(!p("wss://example.com:80a/ws", &u)); /* a port that is not a number */
 	CHECK(!p("wss://example.com:-1/ws", &u));
 
 	char huge[1200];

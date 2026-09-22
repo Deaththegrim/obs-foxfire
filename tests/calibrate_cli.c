@@ -75,8 +75,7 @@ static float *load_wav(const char *path, uint32_t *sr_out, size_t *n_out)
 				break;
 			fmt = (uint16_t)(b[0] | (b[1] << 8));
 			ch = (uint16_t)(b[2] | (b[3] << 8));
-			sr = (uint32_t)b[4] | ((uint32_t)b[5] << 8) | ((uint32_t)b[6] << 16) |
-			     ((uint32_t)b[7] << 24);
+			sr = (uint32_t)b[4] | ((uint32_t)b[5] << 8) | ((uint32_t)b[6] << 16) | ((uint32_t)b[7] << 24);
 			bits = (uint16_t)(b[14] | (b[15] << 8));
 			if (sz > want)
 				fseek(fp, (long)(sz - want), SEEK_CUR);
@@ -85,8 +84,7 @@ static float *load_wav(const char *path, uint32_t *sr_out, size_t *n_out)
 				/* Loudly, and with the numbers: a calibration run that silently
 				   skipped a file would report percentiles over whatever was left
 				   and look exactly like a successful run. */
-				fprintf(stderr, "%s: need 16-bit PCM, got format %u at %u bits\n", path, fmt,
-					bits);
+				fprintf(stderr, "%s: need 16-bit PCM, got format %u at %u bits\n", path, fmt, bits);
 				break;
 			}
 			size_t frames = sz / (size_t)(ch * 2);
@@ -243,9 +241,8 @@ int main(int argc, char **argv)
 	}
 	/* The denominator, always: a distribution over 40 frames is not a calibration, and the
 	   only way to know that is for the count to be printed next to it. */
-	printf("\n%zu voiced frames of %zu (%.0f%% over the %.3f gate), from %zu file(s), jaw bias %+.3f\n",
-	       k + capped, total, 100.0 * (double)(k + capped) / (double)total, (double)p.gate, files,
-	       (double)p.jaw_bias);
+	printf("\n%zu voiced frames of %zu (%.0f%% over the %.3f gate), from %zu file(s), jaw bias %+.3f\n", k + capped,
+	       total, 100.0 * (double)(k + capped) / (double)total, (double)p.gate, files, (double)p.jaw_bias);
 	if (skipped)
 		printf("  SKIPPED %zu of %zu input file(s) -- see stderr. What follows describes the "
 		       "rest.\n",

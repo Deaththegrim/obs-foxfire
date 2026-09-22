@@ -72,10 +72,9 @@ int main(void)
 	struct ff_alert_event e;
 
 	/* ---- the session ---- */
-	static const char WELCOME[] =
-		"{\"metadata\":{\"message_id\":\"m0\",\"message_type\":\"session_welcome\"},"
-		"\"payload\":{\"session\":{\"id\":\"AgoQ1234\",\"status\":\"connected\","
-		"\"keepalive_timeout_seconds\":10,\"reconnect_url\":null}}}";
+	static const char WELCOME[] = "{\"metadata\":{\"message_id\":\"m0\",\"message_type\":\"session_welcome\"},"
+				      "\"payload\":{\"session\":{\"id\":\"AgoQ1234\",\"status\":\"connected\","
+				      "\"keepalive_timeout_seconds\":10,\"reconnect_url\":null}}}";
 	CHECK(handle(&s, WELCOME, &e) == FF_ES_WELCOME);
 	CHECK(strcmp(s.session_id, "AgoQ1234") == 0);
 	CHECK(s.keepalive_secs == 10);
@@ -84,72 +83,64 @@ int main(void)
 	   all, which the branch above catches -- this one has the right shape and nothing usable
 	   in it, and accepting it would have the client subscribe against an empty session id and
 	   then wait forever for events that go nowhere. A surviving mutant found this missing. */
-	static const char WELCOME_NOID[] =
-		"{\"metadata\":{\"message_type\":\"session_welcome\"},"
-		"\"payload\":{\"session\":{\"id\":\"\",\"keepalive_timeout_seconds\":10}}}";
+	static const char WELCOME_NOID[] = "{\"metadata\":{\"message_type\":\"session_welcome\"},"
+					   "\"payload\":{\"session\":{\"id\":\"\",\"keepalive_timeout_seconds\":10}}}";
 	CHECK(handle(&s, WELCOME_NOID, &e) == FF_ES_BAD);
 	CHECK(strstr(s.err, "session id") != NULL);
 
-	static const char KEEPALIVE[] =
-		"{\"metadata\":{\"message_id\":\"m2\",\"message_type\":\"session_keepalive\"},"
-		"\"payload\":{}}";
+	static const char KEEPALIVE[] = "{\"metadata\":{\"message_id\":\"m2\",\"message_type\":\"session_keepalive\"},"
+					"\"payload\":{}}";
 	CHECK(handle(&s, KEEPALIVE, &e) == FF_ES_KEEPALIVE);
 
-	static const char RECONNECT[] =
-		"{\"metadata\":{\"message_id\":\"m3\",\"message_type\":\"session_reconnect\"},"
-		"\"payload\":{\"session\":{\"id\":\"AgoQ1234\",\"status\":\"reconnecting\","
-		"\"keepalive_timeout_seconds\":null,"
-		"\"reconnect_url\":\"wss://eventsub.wss.twitch.tv/ws?challenge=abc\"}}}";
+	static const char RECONNECT[] = "{\"metadata\":{\"message_id\":\"m3\",\"message_type\":\"session_reconnect\"},"
+					"\"payload\":{\"session\":{\"id\":\"AgoQ1234\",\"status\":\"reconnecting\","
+					"\"keepalive_timeout_seconds\":null,"
+					"\"reconnect_url\":\"wss://eventsub.wss.twitch.tv/ws?challenge=abc\"}}}";
 	CHECK(handle(&s, RECONNECT, &e) == FF_ES_RECONNECT);
 	CHECK(strcmp(s.reconnect_url, "wss://eventsub.wss.twitch.tv/ws?challenge=abc") == 0);
 
 	/* a reconnect we cannot act on must be an error, not a silent no-op that leaves the client
 	   sitting on a connection Twitch is about to close */
-	static const char RECONNECT_NOURL[] =
-		"{\"metadata\":{\"message_type\":\"session_reconnect\"},"
-		"\"payload\":{\"session\":{\"id\":\"x\",\"reconnect_url\":\"\"}}}";
+	static const char RECONNECT_NOURL[] = "{\"metadata\":{\"message_type\":\"session_reconnect\"},"
+					      "\"payload\":{\"session\":{\"id\":\"x\",\"reconnect_url\":\"\"}}}";
 	CHECK(handle(&s, RECONNECT_NOURL, &e) == FF_ES_BAD);
 
-	static const char REVOKED[] =
-		"{\"metadata\":{\"message_type\":\"revocation\"},"
-		"\"payload\":{\"subscription\":{\"type\":\"channel.follow\","
-		"\"status\":\"authorization_revoked\"}}}";
+	static const char REVOKED[] = "{\"metadata\":{\"message_type\":\"revocation\"},"
+				      "\"payload\":{\"subscription\":{\"type\":\"channel.follow\","
+				      "\"status\":\"authorization_revoked\"}}}";
 	CHECK(handle(&s, REVOKED, &e) == FF_ES_REVOKED);
 	CHECK(strstr(s.note, "channel.follow") != NULL);
 	CHECK(strstr(s.note, "authorization_revoked") != NULL);
 
 	/* ---- follow ---- */
-	CHECK(handle(&s, NOTIF("channel.follow",
-			       "{\"user_id\":\"1\",\"user_name\":\"Cassie\","
-			       "\"broadcaster_user_name\":\"junkie\"}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.follow", "{\"user_id\":\"1\",\"user_name\":\"Cassie\","
+					     "\"broadcaster_user_name\":\"junkie\"}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_FOLLOW);
 	CHECK(strcmp(e.name, "Cassie") == 0);
 
 	/* ---- a new sub, tier 2 ---- */
-	CHECK(handle(&s, NOTIF("channel.subscribe",
-			       "{\"user_name\":\"Mira\",\"tier\":\"2000\",\"is_gift\":false}"),
+	CHECK(handle(&s, NOTIF("channel.subscribe", "{\"user_name\":\"Mira\",\"tier\":\"2000\",\"is_gift\":false}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_SUB);
 	CHECK(strcmp(e.name, "Mira") == 0);
 	CHECK(e.tier == 2); /* the string "2000", not 0 and not 2000 */
 
 	/* Prime is not a tier number, and must not become one */
-	CHECK(handle(&s, NOTIF("channel.subscribe",
-			       "{\"user_name\":\"Ash\",\"tier\":\"Prime\",\"is_gift\":false}"),
+	CHECK(handle(&s, NOTIF("channel.subscribe", "{\"user_name\":\"Ash\",\"tier\":\"Prime\",\"is_gift\":false}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.tier == 0);
 
 	/* ---- the same sub when it was GIFTED: dropped, because the gift event covers it ---- */
-	CHECK(handle(&s, NOTIF("channel.subscribe",
-			       "{\"user_name\":\"Nell\",\"tier\":\"1000\",\"is_gift\":true}"),
+	CHECK(handle(&s, NOTIF("channel.subscribe", "{\"user_name\":\"Nell\",\"tier\":\"1000\",\"is_gift\":true}"),
 		     &e) == FF_ES_IGNORED);
 	CHECK(strstr(s.note, "gift") != NULL);
 
 	/* ---- the gift itself ---- */
-	CHECK(handle(&s, NOTIF("channel.subscription.gift",
-			       "{\"user_name\":\"Bea\",\"tier\":\"1000\",\"total\":5,"
-			       "\"cumulative_total\":40,\"is_anonymous\":false}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.subscription.gift", "{\"user_name\":\"Bea\",\"tier\":\"1000\",\"total\":5,"
+							"\"cumulative_total\":40,\"is_anonymous\":false}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_GIFT);
 	CHECK(strcmp(e.name, "Bea") == 0);
@@ -157,25 +148,24 @@ int main(void)
 	CHECK(e.tier == 1);
 
 	/* an anonymous gifter has no name at all */
-	CHECK(handle(&s, NOTIF("channel.subscription.gift",
-			       "{\"user_name\":null,\"tier\":\"1000\",\"total\":2,"
-			       "\"is_anonymous\":true}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.subscription.gift", "{\"user_name\":null,\"tier\":\"1000\",\"total\":2,"
+							"\"is_anonymous\":true}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(strcmp(e.name, "Foxfire.Alert.Anonymous") == 0);
 	CHECK(e.amount == 2);
 
 	/* a gift with no total is one sub, not zero */
-	CHECK(handle(&s, NOTIF("channel.subscription.gift",
-			       "{\"user_name\":\"Sol\",\"tier\":\"1000\"}"),
-		     &e) == FF_ES_EVENT);
+	CHECK(handle(&s, NOTIF("channel.subscription.gift", "{\"user_name\":\"Sol\",\"tier\":\"1000\"}"), &e) ==
+	      FF_ES_EVENT);
 	CHECK(e.amount == 1);
 
 	/* ---- a resub, whose message is an OBJECT ---- */
-	CHECK(handle(&s, NOTIF("channel.subscription.message",
-			       "{\"user_name\":\"Wren\",\"tier\":\"3000\","
-			       "\"cumulative_months\":12,\"streak_months\":3,"
-			       "\"duration_months\":1,"
-			       "\"message\":{\"text\":\"a year already\",\"emotes\":[]}}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.subscription.message", "{\"user_name\":\"Wren\",\"tier\":\"3000\","
+							   "\"cumulative_months\":12,\"streak_months\":3,"
+							   "\"duration_months\":1,"
+							   "\"message\":{\"text\":\"a year already\",\"emotes\":[]}}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_RESUB);
 	CHECK(strcmp(e.name, "Wren") == 0);
@@ -184,33 +174,34 @@ int main(void)
 	CHECK(strcmp(e.message, "a year already") == 0);
 
 	/* ---- bits, whose message is a plain string ---- */
-	CHECK(handle(&s, NOTIF("channel.cheer",
-			       "{\"user_name\":\"Iris\",\"bits\":500,"
-			       "\"message\":\"cheer500 go on\",\"is_anonymous\":false}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.cheer", "{\"user_name\":\"Iris\",\"bits\":500,"
+					    "\"message\":\"cheer500 go on\",\"is_anonymous\":false}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_BITS);
 	CHECK(e.amount == 500);
 	CHECK(strcmp(e.message, "cheer500 go on") == 0);
 
-	CHECK(handle(&s, NOTIF("channel.cheer",
-			       "{\"user_name\":null,\"bits\":100,\"message\":\"\","
-			       "\"is_anonymous\":true}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.cheer", "{\"user_name\":null,\"bits\":100,\"message\":\"\","
+					    "\"is_anonymous\":true}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(strcmp(e.name, "Foxfire.Alert.Anonymous") == 0);
 
 	/* ---- a raid, which names the raider in a different field entirely ---- */
-	CHECK(handle(&s, NOTIF("channel.raid",
-			       "{\"from_broadcaster_user_name\":\"BigStreamer\","
-			       "\"to_broadcaster_user_name\":\"junkie\",\"viewers\":247}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.raid", "{\"from_broadcaster_user_name\":\"BigStreamer\","
+					   "\"to_broadcaster_user_name\":\"junkie\",\"viewers\":247}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_RAID);
 	CHECK(strcmp(e.name, "BigStreamer") == 0);
 	CHECK(e.amount == 247);
 
 	/* ---- a channel point redemption ---- */
-	CHECK(handle(&s, NOTIF("channel.channel_points_custom_reward_redemption.add",
-			       "{\"user_name\":\"Pip\",\"user_input\":\"play the song\","
-			       "\"reward\":{\"title\":\"Song request\",\"cost\":500}}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.channel_points_custom_reward_redemption.add",
+			   "{\"user_name\":\"Pip\",\"user_input\":\"play the song\","
+			   "\"reward\":{\"title\":\"Song request\",\"cost\":500}}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(e.kind == FF_ALERT_REDEEM);
 	CHECK(strcmp(e.name, "Pip") == 0);
@@ -218,20 +209,22 @@ int main(void)
 
 	/* a reward with no input falls back to the reward's own name, so the alert still says
 	   what happened rather than naming someone and stopping */
-	CHECK(handle(&s, NOTIF("channel.channel_points_custom_reward_redemption.add",
-			       "{\"user_name\":\"Pip\",\"user_input\":\"\","
-			       "\"reward\":{\"title\":\"Hydrate!\",\"cost\":100}}"),
+	CHECK(handle(&s,
+		     NOTIF("channel.channel_points_custom_reward_redemption.add",
+			   "{\"user_name\":\"Pip\",\"user_input\":\"\","
+			   "\"reward\":{\"title\":\"Hydrate!\",\"cost\":100}}"),
 		     &e) == FF_ES_EVENT);
 	CHECK(strcmp(e.message, "Hydrate!") == 0);
 
 	/* ---- malformed input is refused, and each refusal says which thing was missing ---- */
 	CHECK(handle(&s, "not json at all", &e) == FF_ES_BAD);
-	CHECK(handle(&s, "{\"payload\":{}}", &e) == FF_ES_BAD); /* no metadata */
+	CHECK(handle(&s, "{\"payload\":{}}", &e) == FF_ES_BAD);                 /* no metadata */
 	CHECK(handle(&s, "{\"metadata\":{},\"payload\":{}}", &e) == FF_ES_BAD); /* no type */
-	CHECK(handle(&s, "{\"metadata\":{\"message_type\":\"session_welcome\"},\"payload\":{}}",
-		     &e) == FF_ES_BAD); /* no session */
-	CHECK(handle(&s, "{\"metadata\":{\"message_type\":\"notification\"},"
-			 "\"payload\":{\"subscription\":{\"type\":\"channel.raid\"}}}",
+	CHECK(handle(&s, "{\"metadata\":{\"message_type\":\"session_welcome\"},\"payload\":{}}", &e) ==
+	      FF_ES_BAD); /* no session */
+	CHECK(handle(&s,
+		     "{\"metadata\":{\"message_type\":\"notification\"},"
+		     "\"payload\":{\"subscription\":{\"type\":\"channel.raid\"}}}",
 		     &e) == FF_ES_BAD); /* no event */
 	CHECK(handle(&s, NOTIF("channel.ban", "{\"user_name\":\"x\"}"), &e) == FF_ES_IGNORED);
 	CHECK(strstr(s.note, "no handler") != NULL);
@@ -246,8 +239,7 @@ int main(void)
 		CHECK(FF_ES_SUBS[i].type && FF_ES_SUBS[i].type[0]);
 		CHECK(FF_ES_SUBS[i].version && FF_ES_SUBS[i].version[0]);
 		if (!strcmp(FF_ES_SUBS[i].type, "channel.follow"))
-			follow_v2 = !strcmp(FF_ES_SUBS[i].version, "2") &&
-				    FF_ES_SUBS[i].needs_moderator;
+			follow_v2 = !strcmp(FF_ES_SUBS[i].version, "2") && FF_ES_SUBS[i].needs_moderator;
 		if (!strcmp(FF_ES_SUBS[i].type, "channel.raid"))
 			raid_no_scope = FF_ES_SUBS[i].scope[0] == 0;
 	}

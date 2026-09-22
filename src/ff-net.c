@@ -180,8 +180,7 @@ struct ff_net *ff_net_ws_open(const char *url, char *err, size_t errcap)
 	/* curl has no ws:// scheme, so the connection is made as http(s) and upgraded by hand.
 	   CONNECT_ONLY=1 stops curl after the TLS handshake and hands the socket over. */
 	char curl_url[1024];
-	snprintf(curl_url, sizeof curl_url, "%s://%s:%s%s", u.secure ? "https" : "http", u.host,
-		 u.port, u.path);
+	snprintf(curl_url, sizeof curl_url, "%s://%s:%s%s", u.secure ? "https" : "http", u.host, u.port, u.path);
 	curl_easy_setopt(n->curl, CURLOPT_URL, curl_url);
 	curl_easy_setopt(n->curl, CURLOPT_CONNECT_ONLY, 1L);
 	curl_easy_setopt(n->curl, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -198,10 +197,8 @@ struct ff_net *ff_net_ws_open(const char *url, char *err, size_t errcap)
 	   immediately on CURL_SOCKET_BAD, so the read loop stops sleeping and spins a core while
 	   looking completely healthy from the outside -- reads and writes still work, through
 	   curl. Better to fail the connection here, where there is something to say. */
-	if (curl_easy_getinfo(n->curl, CURLINFO_ACTIVESOCKET, &n->sock) != CURLE_OK ||
-	    n->sock == CURL_SOCKET_BAD) {
-		snprintf(err, errcap, "connected to %s but could not get the socket to wait on",
-			 u.host);
+	if (curl_easy_getinfo(n->curl, CURLINFO_ACTIVESOCKET, &n->sock) != CURLE_OK || n->sock == CURL_SOCKET_BAD) {
+		snprintf(err, errcap, "connected to %s but could not get the socket to wait on", u.host);
 		curl_easy_cleanup(n->curl);
 		n->curl = NULL;
 		free(n);
@@ -227,8 +224,7 @@ struct ff_net *ff_net_ws_open(const char *url, char *err, size_t errcap)
 	static const char B64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 	char key[25];
 	for (int i = 0; i < 5; i++) {
-		uint32_t v = ((uint32_t)raw[i * 3] << 16) | ((uint32_t)raw[i * 3 + 1] << 8) |
-			     raw[i * 3 + 2];
+		uint32_t v = ((uint32_t)raw[i * 3] << 16) | ((uint32_t)raw[i * 3 + 1] << 8) | raw[i * 3 + 2];
 		key[i * 4 + 0] = B64[(v >> 18) & 63];
 		key[i * 4 + 1] = B64[(v >> 12) & 63];
 		key[i * 4 + 2] = B64[(v >> 6) & 63];
@@ -343,8 +339,8 @@ static size_t on_body(char *data, size_t size, size_t nmemb, void *ctx)
 	return add;
 }
 
-bool ff_http_request(const char *method, const char *url, const char *const *headers, size_t nh,
-		     const char *body, struct ff_http_res *out, char *err, size_t errcap)
+bool ff_http_request(const char *method, const char *url, const char *const *headers, size_t nh, const char *body,
+		     struct ff_http_res *out, char *err, size_t errcap)
 {
 	if (!method || !url || !out) {
 		snprintf(err, errcap, "bad arguments");

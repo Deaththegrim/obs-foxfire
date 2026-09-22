@@ -284,8 +284,7 @@ enum ff_viseme ff_viseme_update(struct ff_viseme_state *s, const struct ff_frame
 
 		   Either way this ignores the hold. A mouth left hanging open after the audio
 		   stopped is the most obvious tell that a rig is not really listening. */
-		enum ff_viseme want = (s->spoke && s->silent_ms < p->closure_ms) ? FF_VIS_A
-									       : FF_VIS_X;
+		enum ff_viseme want = (s->spoke && s->silent_ms < p->closure_ms) ? FF_VIS_A : FF_VIS_X;
 		if (s->current != want) {
 			s->current = want;
 			s->held_ms = 0.0f;

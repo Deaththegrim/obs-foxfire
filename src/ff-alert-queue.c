@@ -2,9 +2,8 @@
 #include <string.h>
 
 static const char *KIND_IDS[FF_ALERT_KIND_COUNT] = {
-	[FF_ALERT_FOLLOW] = "follow", [FF_ALERT_SUB] = "sub",   [FF_ALERT_RESUB] = "resub",
-	[FF_ALERT_GIFT] = "gift",     [FF_ALERT_BITS] = "bits", [FF_ALERT_RAID] = "raid",
-	[FF_ALERT_REDEEM] = "redeem",
+	[FF_ALERT_FOLLOW] = "follow", [FF_ALERT_SUB] = "sub",   [FF_ALERT_RESUB] = "resub",   [FF_ALERT_GIFT] = "gift",
+	[FF_ALERT_BITS] = "bits",     [FF_ALERT_RAID] = "raid", [FF_ALERT_REDEEM] = "redeem",
 };
 
 const char *ff_alert_kind_id(enum ff_alert_kind k)

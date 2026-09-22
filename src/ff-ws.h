@@ -39,8 +39,8 @@ struct ff_ws_msg {
  *
  * Returns the number of bytes written, or 0 if `cap` is too small or the arguments are unusable.
  * Never writes a partial frame. */
-size_t ff_ws_build(enum ff_ws_opcode op, const void *payload, size_t len, const uint8_t mask[4],
-		   uint8_t *out, size_t cap);
+size_t ff_ws_build(enum ff_ws_opcode op, const void *payload, size_t len, const uint8_t mask[4], uint8_t *out,
+		   size_t cap);
 
 /* How many bytes a complete frame at the front of `buf` occupies, filling `out`.
  *

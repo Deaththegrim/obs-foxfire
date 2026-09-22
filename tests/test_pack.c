@@ -124,20 +124,19 @@ static void check_released_gate(const char *base)
 	/* Controls first. Without these the refusals below could all be passing because the
 	   FIXTURE never loads, and the suite would be green while testing nothing. */
 	CHECK(load_manifest(base, PACK_HEAD "\"licensed\":false" PACK_TAIL, why, sizeof why));
-	CHECK(load_manifest(base, PACK_HEAD "\"licensed\":true,\"released\":1758412800" PACK_TAIL, why,
-			    sizeof why));
+	CHECK(load_manifest(base, PACK_HEAD "\"licensed\":true,\"released\":1758412800" PACK_TAIL, why, sizeof why));
 	/* a free pack predating the field still loads: absent is back-compat, not an error */
 	CHECK(load_manifest(base, PACK_HEAD "\"licensed\":false,\"x\":0" PACK_TAIL, why, sizeof why));
 
 	static const char *bad_released[] = {
-		"\"licensed\":true",                          /* the key is simply absent */
-		"\"licensed\":true,\"released\":0",            /* explicitly zero */
-		"\"licensed\":true,\"released\":-1",           /* before the epoch */
+		"\"licensed\":true",                             /* the key is simply absent */
+		"\"licensed\":true,\"released\":0",              /* explicitly zero */
+		"\"licensed\":true,\"released\":-1",             /* before the epoch */
 		"\"licensed\":true,\"released\":\"1758412800\"", /* a quoted number */
 		"\"licensed\":true,\"released\":\"2026-09-21\"", /* a date string */
-		"\"licensed\":true,\"released\":true",         /* a bool */
-		"\"licensed\":true,\"released\":null",         /* null */
-		"\"licensed\":true,\"released\":[1758412800]", /* an array */
+		"\"licensed\":true,\"released\":true",           /* a bool */
+		"\"licensed\":true,\"released\":null",           /* null */
+		"\"licensed\":true,\"released\":[1758412800]",   /* an array */
 	};
 	for (size_t i = 0; i < sizeof bad_released / sizeof *bad_released; i++) {
 		char json[512];
@@ -152,8 +151,7 @@ static void check_released_gate(const char *base)
 	static const char *bad_licensed[] = {"\"licensed\":\"true\"", "\"licensed\":1"};
 	for (size_t i = 0; i < sizeof bad_licensed / sizeof *bad_licensed; i++) {
 		char json[512];
-		snprintf(json, sizeof json, PACK_HEAD "%s,\"released\":1758412800" PACK_TAIL,
-			 bad_licensed[i]);
+		snprintf(json, sizeof json, PACK_HEAD "%s,\"released\":1758412800" PACK_TAIL, bad_licensed[i]);
 		CHECK(!load_manifest(base, json, why, sizeof why));
 		CHECK(strstr(why, "licensed") != NULL);
 	}
@@ -188,8 +186,8 @@ static void check_shared_config_path(void)
 	CHECK(!strcmp(out, "/home/x/.config/obs-studio/plugin_config/foxfire/packs"));
 
 	/* the whole point: a DIFFERENT plugin lands on the same directory */
-	CHECK(ff_shared_config_path("/home/x/.config/obs-studio/plugin_config/obs-foxfire-alerts/packs",
-				    "packs", out, sizeof out));
+	CHECK(ff_shared_config_path("/home/x/.config/obs-studio/plugin_config/obs-foxfire-alerts/packs", "packs", out,
+				    sizeof out));
 	CHECK(!strcmp(out, "/home/x/.config/obs-studio/plugin_config/foxfire/packs"));
 
 	/* a leaf other than packs still works, for whatever a later plugin needs to share */
@@ -197,8 +195,7 @@ static void check_shared_config_path(void)
 	CHECK(!strcmp(out, "/home/x/.config/obs-studio/plugin_config/foxfire/sounds"));
 
 	/* portable mode, or any other config root: the prefix comes from OBS, we never rebuild it */
-	CHECK(ff_shared_config_path("/opt/obs/portable/plugin_config/obs-foxfire/packs", "packs", out,
-				    sizeof out));
+	CHECK(ff_shared_config_path("/opt/obs/portable/plugin_config/obs-foxfire/packs", "packs", out, sizeof out));
 	CHECK(!strcmp(out, "/opt/obs/portable/plugin_config/foxfire/packs"));
 
 	/* Windows separators */
@@ -207,27 +204,23 @@ static void check_shared_config_path(void)
 	CHECK(!strcmp(out, "C:\\Users\\x\\AppData\\Roaming\\obs-studio\\plugin_config/foxfire/packs"));
 
 	/* A user whose own directory is called plugin_config must not win over OBS's. */
-	CHECK(ff_shared_config_path("/home/plugin_config/.config/obs-studio/plugin_config/obs-foxfire/packs",
-				    "packs", out, sizeof out));
+	CHECK(ff_shared_config_path("/home/plugin_config/.config/obs-studio/plugin_config/obs-foxfire/packs", "packs",
+				    out, sizeof out));
 	CHECK(!strcmp(out, "/home/plugin_config/.config/obs-studio/plugin_config/foxfire/packs"));
 
 	/* Refusals. Each of these must leave `out` untouched so a caller that ignores the return
 	   value gets an empty string rather than a plausible-looking wrong path. */
 	memset(out, 'Z', sizeof out);
-	CHECK(!ff_shared_config_path("/home/x/.config/obs-studio/obs-foxfire/packs", "packs", out,
-				     sizeof out));
+	CHECK(!ff_shared_config_path("/home/x/.config/obs-studio/obs-foxfire/packs", "packs", out, sizeof out));
 	CHECK(out[0] == 'Z'); /* not written */
 	/* a prefix of a longer word is not the component */
-	CHECK(!ff_shared_config_path("/home/x/plugin_configuration/obs-foxfire/packs", "packs", out,
-				     sizeof out));
+	CHECK(!ff_shared_config_path("/home/x/plugin_configuration/obs-foxfire/packs", "packs", out, sizeof out));
 	CHECK(!ff_shared_config_path("plugin_configx/obs-foxfire/packs", "packs", out, sizeof out));
 	/* ...nor a SUFFIX of a longer component. Without the check on the character BEFORE the
 	   anchor this rewrites to "/home/x/myplugin_config/foxfire/packs" -- a directory that is
 	   not OBS's and that nothing else will ever read. */
-	CHECK(!ff_shared_config_path("/home/x/myplugin_config/obs-foxfire/packs", "packs", out,
-				     sizeof out));
-	CHECK(!ff_shared_config_path("/home/x/.myplugin_config/obs-foxfire/packs", "packs", out,
-				     sizeof out));
+	CHECK(!ff_shared_config_path("/home/x/myplugin_config/obs-foxfire/packs", "packs", out, sizeof out));
+	CHECK(!ff_shared_config_path("/home/x/.myplugin_config/obs-foxfire/packs", "packs", out, sizeof out));
 	/* A path with no anchor at all, whose 14th character happens to be a separator. Without
 	   the "was the anchor found" check this is accepted -- the component checks alone read
 	   offset 13 of the whole string and find a '/' there by coincidence -- and it rewrites to
@@ -274,13 +267,13 @@ int main(void)
 	/* The whole point. Pre-fix this file was deleted, because os_dirent's directory flag comes
 	   from stat(), which follows the link, so the walk descended into victim/ and unlinked it. */
 	CHECK(exists(canary));
-	CHECK(!exists(tree));   /* the tree itself is still supposed to go away */
-	CHECK(exists(victim));  /* and the link's TARGET directory must survive too */
+	CHECK(!exists(tree));  /* the tree itself is still supposed to go away */
+	CHECK(exists(victim)); /* and the link's TARGET directory must survive too */
 
 	/* ---- case 2: the path handed in IS a symlink (the backup-slot case) ---- */
 	CHECK(symlink(victim, toplink) == 0);
 	ff_remove_recursive(toplink);
-	CHECK(exists(canary));  /* removing the link must not empty what it points at */
+	CHECK(exists(canary)); /* removing the link must not empty what it points at */
 	CHECK(exists(victim));
 	CHECK(!exists(toplink)); /* the link itself should be gone */
 
@@ -312,8 +305,10 @@ int main(void)
 	   developer mode to create a link at all, so it is not exercised here. The manifest gate
 	   below it shares this file's POSIX temp-directory scaffolding and so goes unrun too. Say
 	   so rather than reporting a pass that inspected nothing. */
-	fprintf(stderr, "%s: SKIPPED on Windows -- the reparse-point guard AND the licensed-pack "
-			"`released` gate are both unverified here\n", __FILE__);
+	fprintf(stderr,
+		"%s: SKIPPED on Windows -- the reparse-point guard AND the licensed-pack "
+		"`released` gate are both unverified here\n",
+		__FILE__);
 	return 77;
 }
 

@@ -5,7 +5,14 @@
 # compile ff-pack.c a second time with different flags, and anything added to the plugin's core
 # was invisible to the tests until somebody noticed. One definition, in the top-level
 # CMakeLists.txt, linked here.
-foreach(t analysis handoff licence pack viseme)
+foreach(
+  t
+  analysis
+  handoff
+  licence
+  pack
+  viseme
+)
   add_executable(test_${t} test_${t}.c)
   target_link_libraries(test_${t} PRIVATE ff-core)
   add_test(NAME ${t} COMMAND test_${t})
@@ -22,8 +29,7 @@ add_test(NAME ws COMMAND test_ws)
 
 # The connection layer takes its socket as two function pointers, so this links no transport at
 # all -- the whole read loop is driven from a scripted buffer.
-add_executable(test_ws_conn test_ws_conn.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
-  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c)
+add_executable(test_ws_conn test_ws_conn.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c)
 target_link_libraries(test_ws_conn PRIVATE ff-core)
 add_test(NAME ws_conn COMMAND test_ws_conn)
 target_link_libraries(test_alert PRIVATE ff-core)
@@ -47,8 +53,10 @@ add_executable(calibrate_cli calibrate_cli.c)
 target_link_libraries(calibrate_cli PRIVATE ff-core)
 
 if(Python3_Interpreter_FOUND)
-  add_test(NAME calibrate
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/calibrate-proof.py $<TARGET_FILE:calibrate_cli>)
+  add_test(
+    NAME calibrate
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/calibrate-proof.py $<TARGET_FILE:calibrate_cli>
+  )
 endif()
 
 # Python signs, C verifies. The unit tests above sign and verify with the same
@@ -56,65 +64,112 @@ endif()
 # which is what packforge mints real licences with. Skips (77) when the
 # cryptography module is absent rather than failing the build.
 if(Python3_Interpreter_FOUND)
-  add_test(NAME licence_interop
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/licence-interop.py $<TARGET_FILE:verify_cli>)
+  add_test(
+    NAME licence_interop
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/licence-interop.py $<TARGET_FILE:verify_cli>
+  )
   set_tests_properties(licence_interop PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 # A real socket, a real curl connection, and a WebSocket server built out of raw sockets in
 # Python. The unit test proves the state machine; this proves it is wired to a socket. Skips (77)
 # when Python is absent rather than passing having inspected nothing.
-add_executable(test_eventsub test_eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
-  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c)
+add_executable(
+  test_eventsub
+  test_eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+)
 target_link_libraries(test_eventsub PRIVATE ff-core)
 add_test(NAME eventsub COMMAND test_eventsub)
 
-add_executable(test_url test_url.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
-  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+add_executable(
+  test_url
+  test_url.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c
+)
 target_link_libraries(test_url PRIVATE ff-core CURL::libcurl)
 add_test(NAME url COMMAND test_url)
 
 # ff-twitch.c is a thread and a socket; these two functions are neither, which is why they were
 # pulled out of it. Linked directly rather than through the plugin: the test needs no OBS.
-add_executable(test_token test_token.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
-  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
-  ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
-  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+add_executable(
+  test_token
+  test_token.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c
+)
 target_link_libraries(test_token PRIVATE ff-core CURL::libcurl)
 add_test(NAME token COMMAND test_token)
 
-add_executable(test_twitch_policy test_twitch_policy.c ${CMAKE_SOURCE_DIR}/src/ff-twitch.c
-  ${CMAKE_SOURCE_DIR}/src/ff-session.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
-  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c
-  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+add_executable(
+  test_twitch_policy
+  test_twitch_policy.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch.c
+  ${CMAKE_SOURCE_DIR}/src/ff-session.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c
+)
 target_link_libraries(test_twitch_policy PRIVATE ff-core CURL::libcurl)
 add_test(NAME twitch_policy COMMAND test_twitch_policy)
 
 # The session state machine: scripted messages and an invented clock, no socket and no OBS.
-add_executable(test_session test_session.c ${CMAKE_SOURCE_DIR}/src/ff-session.c
-  ${CMAKE_SOURCE_DIR}/src/ff-twitch.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
-  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
-  ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
-  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+add_executable(
+  test_session
+  test_session.c
+  ${CMAKE_SOURCE_DIR}/src/ff-session.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c
+)
 target_link_libraries(test_session PRIVATE ff-core CURL::libcurl)
 add_test(NAME session COMMAND test_session)
 
-add_executable(twitch_cli twitch_cli.c ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
-  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
-  ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
-  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+add_executable(
+  twitch_cli
+  twitch_cli.c
+  ${CMAKE_SOURCE_DIR}/src/ff-twitch-api.c
+  ${CMAKE_SOURCE_DIR}/src/ff-eventsub.c
+  ${CMAKE_SOURCE_DIR}/src/ff-alert-queue.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c
+)
 target_link_libraries(twitch_cli PRIVATE ff-core CURL::libcurl)
 if(Python3_Interpreter_FOUND)
-  add_test(NAME twitch_api
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/twitch-api-proof.py $<TARGET_FILE:twitch_cli>)
+  add_test(
+    NAME twitch_api
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/twitch-api-proof.py $<TARGET_FILE:twitch_cli>
+  )
   set_tests_properties(twitch_api PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
-add_executable(ws_cli ws_cli.c ${CMAKE_SOURCE_DIR}/src/ff-ws.c ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
-  ${CMAKE_SOURCE_DIR}/src/ff-net.c)
+add_executable(
+  ws_cli
+  ws_cli.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws.c
+  ${CMAKE_SOURCE_DIR}/src/ff-ws-conn.c
+  ${CMAKE_SOURCE_DIR}/src/ff-net.c
+)
 target_link_libraries(ws_cli PRIVATE ff-core CURL::libcurl)
 if(Python3_Interpreter_FOUND)
-  add_test(NAME ws_server
-    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ws-server-proof.py $<TARGET_FILE:ws_cli>)
+  add_test(
+    NAME ws_server
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/ws-server-proof.py $<TARGET_FILE:ws_cli>
+  )
   set_tests_properties(ws_server PROPERTIES SKIP_RETURN_CODE 77)
 endif()

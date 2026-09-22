@@ -35,9 +35,9 @@ struct ff_twitch_token {
 enum ff_twitch_poll {
 	FF_TW_PENDING = 0, /* the streamer has not finished authorising yet */
 	FF_TW_GOT_TOKEN,
-	FF_TW_SLOW_DOWN,   /* we polled too fast; wait longer, do not treat as an error */
-	FF_TW_DENIED,      /* they said no */
-	FF_TW_EXPIRED,     /* the code timed out */
+	FF_TW_SLOW_DOWN, /* we polled too fast; wait longer, do not treat as an error */
+	FF_TW_DENIED,    /* they said no */
+	FF_TW_EXPIRED,   /* the code timed out */
 	FF_TW_ERROR,
 };
 
@@ -48,10 +48,9 @@ enum ff_twitch_poll {
    "some alert types never fire" -- so it refuses instead. */
 size_t ff_twitch_scopes(char *out, size_t cap);
 
-bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out, char *err,
-			    size_t errcap);
-enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *device_code,
-					  struct ff_twitch_token *out, char *err, size_t errcap);
+bool ff_twitch_device_start(const char *client_id, struct ff_twitch_device *out, char *err, size_t errcap);
+enum ff_twitch_poll ff_twitch_device_poll(const char *client_id, const char *device_code, struct ff_twitch_token *out,
+					  char *err, size_t errcap);
 /* Why this is not a bool: "the token is dead" and "we could not reach Twitch" are different
    answers, and collapsing them means a Wi-Fi blip DELETES a perfectly good refresh token and the
    streamer has to sign in again for a router reboot. Only FF_REFRESH_REJECTED may forget it. */
@@ -60,18 +59,17 @@ enum ff_refresh_result {
 	FF_REFRESH_REJECTED,    /* Twitch answered, and said no. The saved sign-in really is dead. */
 	FF_REFRESH_UNREACHABLE, /* no answer at all: DNS, TLS, timeout, a captive portal, a 502 */
 };
-enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refresh_token,
-					 struct ff_twitch_token *out, char *err, size_t errcap);
+enum ff_refresh_result ff_twitch_refresh(const char *client_id, const char *refresh_token, struct ff_twitch_token *out,
+					 char *err, size_t errcap);
 
 /* Who the token belongs to. EventSub conditions need the broadcaster's numeric id, not the name. */
-bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size_t idcap,
-		       char *login, size_t logincap, char *err, size_t errcap);
+bool ff_twitch_user_id(const char *client_id, const char *access, char *id, size_t idcap, char *login, size_t logincap,
+		       char *err, size_t errcap);
 
 /* Asks for one subscription on an open WebSocket session. Returns false with `err` set; a 401 is
    reported as such so the caller can refresh rather than giving up. */
 bool ff_twitch_subscribe(const char *client_id, const char *access, const struct ff_es_sub *sub,
-			 const char *broadcaster_id, const char *session_id, long *status,
-			 char *err, size_t errcap);
+			 const char *broadcaster_id, const char *session_id, long *status, char *err, size_t errcap);
 
 /* Where the refresh token lives. A refresh token is a credential: it goes in the plugin's own
    config directory with 0600, never in a scene collection, which streamers share and back up. */
