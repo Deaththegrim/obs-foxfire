@@ -65,13 +65,13 @@ QUAD_PNG = "/tmp/ff-quadrant.png"
 ALPHAHOLE_PNG = "/tmp/ff-alphahole.png"
 W, H = 640, 360
 STRESS_ROUNDS = 30
-# Seconds. Generous for a local socket, short next to a hang -- but 20 was not generous on a
-# 2-core CI runner driving OBS under Xvfb with software GL, where the FIRST request that touches
-# the UI thread can sit behind the rest of start-up. Two separate proofs died on it, both only in
-# CI and both on the first scene they asked for: alert-proof and user-image-proof, each reported
-# as `FFTimeout: CreateScene returns`. open_client's wait_until_serving already absorbs the part
-# of start-up that answers nothing at all; this covers the part that answers slowly. A genuine
-# deadlock still fails, 25 s later.
+# Seconds. Generous for a local socket, short next to a hang. Raised from 20 after two proofs
+# timed out in CI on the first request that touches OBS's UI thread -- but that reading was only
+# half right: alert-proof's was a one-in-three flake that 45 would likely have absorbed, while
+# user-image-proof's turned out to be a real hang, waited the full 45 and failed anyway (see the
+# filter-only pack in that file). Kept at 45 because it is defensible on a 2-core runner driving
+# OBS under Xvfb, and costs a genuine deadlock only 25 s more before it is reported. Do not read
+# a timeout here as "needs more time" without measuring how long it actually waited.
 REQ_TIMEOUT = 45
 # the number of check() calls a full, uninterrupted run makes (run() + run_filter() + run_spatial()
 # + run_transparency(); NOT counting the FFTimeout handler's own check(), which is a different,
