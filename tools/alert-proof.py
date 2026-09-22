@@ -45,11 +45,25 @@ FAILS: list[str] = []
 CHECKS: list[str] = []
 
 
+NOT_RUN: list[str] = []
+
+
 def check(name, ok, detail):
     CHECKS.append(name)
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     if not ok:
         FAILS.append(name)
+
+
+def not_run(name, why):
+    """A check whose subject never happened. NOT the same as a failing check, and printing
+    FAIL for it sends the reader hunting a bug that is not there: when drive() died on a
+    websocket timeout, this file reported `[FAIL] a hostile name is sanitised before it is
+    drawn` -- for a sanitiser that was never reached, in a run where nothing was ever
+    fired. The job still fails; it just fails honestly, at the thing that actually broke.
+    """
+    NOT_RUN.append(name)
+    print(f"  [NOT RUN] {name}: {why}")
 
 
 def write_tone_wav(path: Path, seconds=3.0, hz=440.0, rate=48000):
@@ -593,7 +607,9 @@ def main() -> int:
             stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
         try:
             proof.wait_for_port(proof.PORT, proof.BOOT_TIMEOUT)
+            drove = False
             asyncio.run(drive(sound, obs_cfg))
+            drove = True
             rec_dir = scratch / "rec"
             rec_dir.mkdir()
             quiet_f, loud_f = asyncio.run(record_alert_audio(rec_dir))
@@ -605,7 +621,12 @@ def main() -> int:
         finally:
             proof.terminate_process_group(p)
             logs = sorted(obs_cfg.glob("logs/*.txt"))
-            if logs:
+            if not drove:
+                for name in ("the text source kind is resolved and named in the log",
+                             "a hostile name is sanitised before it is drawn",
+                             "the sanitised name, not the raw one, is what got fired"):
+                    not_run(name, "the scene was never driven, so nothing fired -- read the error above")
+            elif logs:
                 text = logs[-1].read_text(errors="replace")
                 check("the text source kind is resolved and named in the log",
                       "alerts: drawing text with '" in text,
@@ -626,16 +647,20 @@ def main() -> int:
             if logs:
                 shutil.copy(logs[-1], "/tmp/ff-alert-obs.log")
                 print("log: /tmp/ff-alert-obs.log")
-        except Exception:
-            pass
+        except Exception as e:
+            # Not `pass`: the rmtree two lines down is about to delete the only copy of
+            # this log, so a failure to save it is the difference between a diagnosable
+            # run and a silent one.
+            print(f"could not save the OBS log to /tmp/ff-alert-obs.log: {e!r}")
         shutil.rmtree(cfg, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
-    print(f"\nalert proof: {len(CHECKS) - len(FAILS)}/{len(CHECKS)} passed")
-    if not CHECKS:
+    tail = f", {len(NOT_RUN)} never ran" if NOT_RUN else ""
+    print(f"\nalert proof: {len(CHECKS) - len(FAILS)}/{len(CHECKS)} passed{tail}")
+    if not CHECKS and not NOT_RUN:
         print("alert proof: NOTHING INSPECTED")
         return 2
-    return 1 if FAILS else 0
+    return 1 if FAILS or NOT_RUN else 0
 
 
 if __name__ == "__main__":

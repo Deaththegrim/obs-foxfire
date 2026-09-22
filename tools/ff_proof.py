@@ -29,6 +29,7 @@ import math
 import shutil
 import struct
 import sys
+import time
 import wave
 import zipfile
 from pathlib import Path
@@ -233,7 +234,35 @@ async def open_client(what):
     await ws.send(json.dumps({"op": 1, "d": {"rpcVersion": 1}}))
     ident = json.loads(await guard(f"{what} is identified", ws.recv()))
     assert ident["op"] == 2, ident
-    return ws, Client(ws)
+    client = Client(ws)
+    await wait_until_serving(client, what)
+    return ws, client
+
+
+async def wait_until_serving(client, what, timeout=60.0, attempt=5.0):
+    """Block until obs-websocket actually answers a request, not merely a handshake.
+
+    Hello and Identify come back while OBS is still loading plugins and the scene
+    collection, so an identified connection is NOT a ready one. The first real request
+    then spends the whole 20 s REQ_TIMEOUT on a cold runner and the proof dies at
+    whatever it happened to ask for first -- seen in CI once as
+    `FFTimeout: CreateScene returns`, with the two checks after it reporting FAIL for
+    work that never ran. Asking something trivial in a retry loop puts the waiting where
+    it belongs and names it properly when it really is stuck.
+
+    A reply that arrives after its attempt timed out is harmless: `_exchange` skips any
+    message whose requestId is not the one it is waiting for.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            await asyncio.wait_for(client._exchange("GetVersion", {}), timeout=attempt)
+            return
+        except (asyncio.TimeoutError, RuntimeError):
+            if time.monotonic() >= deadline:
+                raise FFTimeout(f"{what}: obs-websocket identified but served no request "
+                                f"in {timeout:.0f}s") from None
+            await asyncio.sleep(0.5)
 
 
 class Shot:
