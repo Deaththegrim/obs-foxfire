@@ -142,6 +142,17 @@ jobs:
           codesign: ${{ fromJSON(needs.check-event.outputs.codesign) }}
           codesignIdent: ${{ steps.codesign.outputs.codesignIdent }}
 
+      - name: Upload the raw xcodebuild log on failure 🪵
+        # xcbeautify reports a failed build phase as a bare "script execution error" with no
+        # file and no diagnostic, so the pretty log cannot say what broke. This is the log
+        # that can.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-raw-${{ needs.check-event.outputs.commitHash }}
+          path: ${{ github.workspace }}/xcodebuild-raw.log
+          if-no-files-found: warn
+
       - name: Package Plugin 📀
         uses: ./.github/actions/package-plugin
         with:

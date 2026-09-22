@@ -114,14 +114,19 @@ build() {
   cmake -S ${project_root} ${cmake_args}
 
   log_group "Building ${product_name}..."
+  # xcbeautify collapses a failing build to "script execution error" with no error: line and
+  # no failing file, which is a build you cannot act on -- one such failure cost a whole CI
+  # round just to find out what broke. Keep the pretty output AND tee the raw log, so the
+  # workflow can hand it over as an artifact when the build fails.
+  local raw_log="${project_root}/xcodebuild-raw.log"
   run_xcodebuild() {
     if (( debug )) {
-      xcodebuild ${@}
+      xcodebuild ${@} 2>&1 | tee ${raw_log}
     } else {
       if [[ ${GITHUB_EVENT_NAME} == push ]] {
-        xcodebuild ${@} 2>&1 | xcbeautify --renderer terminal
+        xcodebuild ${@} 2>&1 | tee ${raw_log} | xcbeautify --renderer terminal
       } else {
-        xcodebuild ${@} 2>&1 | xcbeautify --renderer github-actions
+        xcodebuild ${@} 2>&1 | tee ${raw_log} | xcbeautify --renderer github-actions
       }
     }
   }
