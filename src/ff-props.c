@@ -211,15 +211,6 @@ static bool licence_blocks(const struct ff_pack *pk)
 /* Every populate_* below reads in->packs and so runs with state_lock held, except
    populate_audio_sources, which reads none of the instance and takes libobs's sources_mutex. */
 
-static void populate_pack_list(struct ff_instance *in, obs_property_t *p)
-{
-	if (!p)
-		return;
-	obs_property_list_clear(p);
-	for (size_t i = 0; i < in->packs.n; i++)
-		obs_property_list_add_string(p, in->packs.packs[i].name, in->packs.packs[i].id);
-}
-
 /* A source draws its own canvas (visualizer/overlay presets); a filter reworks another source's
    image (effects presets). Offering the wrong kind would load a stack that has nothing to read. */
 static bool preset_kind_matches(const struct ff_preset *pr, bool is_filter)
@@ -227,6 +218,35 @@ static bool preset_kind_matches(const struct ff_preset *pr, bool is_filter)
 	if (is_filter)
 		return !strcmp(pr->kind, "effects");
 	return !strcmp(pr->kind, "visualizer") || !strcmp(pr->kind, "overlay");
+}
+
+static bool pack_has_a_preset_for(const struct ff_pack *pk, bool is_filter)
+{
+	for (size_t i = 0; i < pk->npresets; i++)
+		if (preset_kind_matches(&pk->presets[i], is_filter))
+			return true;
+	return false;
+}
+
+/* Only packs this source could actually use. The preset list has always filtered by kind; the
+   pack list did not, so every pack was offered to everything and picking the wrong one led to an
+   empty preset dropdown and no explanation. The alerts pack is the plain case -- it declares
+   kinds ["alert"], belongs to the alerts source, and had no business in the visualizer's list at
+   all. A filter had it worse: `basics` offered fifteen presets, none of them effects.
+
+   `current` is kept whatever its kind, so opening the panel can never silently move a scene off
+   the pack it was saved with -- a dropdown that does not contain the stored value is one OBS may
+   snap to its first entry. */
+static void populate_pack_list(struct ff_instance *in, obs_property_t *p, const char *current)
+{
+	if (!p)
+		return;
+	obs_property_list_clear(p);
+	for (size_t i = 0; i < in->packs.n; i++) {
+		const struct ff_pack *pk = &in->packs.packs[i];
+		if (pack_has_a_preset_for(pk, in->is_filter) || (current && !strcmp(pk->id, current)))
+			obs_property_list_add_string(p, pk->name, pk->id);
+	}
 }
 
 static void populate_preset_list(struct ff_instance *in, obs_property_t *p, const char *pack_id)
@@ -323,7 +343,7 @@ static bool on_install_changed(obs_properties_t *props, obs_property_t *p, obs_d
 	refresh_packs(in);
 
 	pthread_mutex_lock(&in->state_lock);
-	populate_pack_list(in, obs_properties_get(props, S_PACK));
+	populate_pack_list(in, obs_properties_get(props, S_PACK), obs_data_get_string(s, S_PACK));
 	populate_preset_list(in, obs_properties_get(props, S_PRESET), obs_data_get_string(s, S_PACK));
 	pthread_mutex_unlock(&in->state_lock);
 	return true;
@@ -341,7 +361,7 @@ static bool on_reload(obs_properties_t *props, obs_property_t *p, void *data)
 	/* the authoring loop: the ids have not changed but the files on disk have, so ask update()
 	   for a reload without pretending the preset switched (that would wipe the user's knobs) */
 	in->reload_pending = true;
-	populate_pack_list(in, obs_properties_get(props, S_PACK));
+	populate_pack_list(in, obs_properties_get(props, S_PACK), in->pack_id);
 	populate_preset_list(in, obs_properties_get(props, S_PRESET), in->pack_id);
 	pthread_mutex_unlock(&in->state_lock);
 
@@ -564,7 +584,7 @@ obs_properties_t *ff_instance_properties(struct ff_instance *in)
 
 	obs_property_t *packs = obs_properties_add_list(props, S_PACK, obs_module_text("Foxfire.Pack"),
 							OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	populate_pack_list(in, packs);
+	populate_pack_list(in, packs, in->pack_id);
 	obs_property_set_modified_callback(packs, on_pack_changed);
 
 	obs_property_t *presets = obs_properties_add_list(props, S_PRESET, obs_module_text("Foxfire.Preset"),

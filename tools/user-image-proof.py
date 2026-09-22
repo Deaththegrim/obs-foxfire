@@ -116,6 +116,25 @@ def build_pack(root: Path) -> Path:
     return pack
 
 
+def build_alert_only_pack(root: Path) -> Path:
+    """A pack the VISUALIZER can do nothing with: every preset is kind `alert`.
+
+    This is the shipped `alerts` pack's shape, and it used to appear in the visualizer's pack
+    dropdown regardless -- select it and the preset list came back empty with no explanation.
+    The preset list had always filtered by kind; the pack list had not.
+    """
+    pack = root / "alertonly"
+    (pack / "effects").mkdir(parents=True)
+    (pack / "effects" / "art.effect").write_text(EFFECT)
+    (pack / "pack.json").write_text(json.dumps({
+        "format": 1, "id": "alertonly", "name": "Alert only proof", "version": "0.1.0",
+        "author": "proof", "min_engine": "0.1.0", "licensed": False, "kinds": ["alert"],
+        "presets": [{"id": "a", "name": "a", "kind": "alert", "thumb": "", "heavy": False,
+                     "layers": [{"effect": "effects/art.effect", "params": {}}]}],
+    }))
+    return pack
+
+
 async def shoot(c, name) -> Image.Image:
     r = await c.request("GetSourceScreenshot", {"sourceName": name, "imageFormat": "png",
                                                 "imageWidth": W, "imageHeight": H})
@@ -187,6 +206,31 @@ async def check_lists(c):
           f"allbad={allbad!r}")
 
 
+async def check_pack_list_offers_nothing_dead(c):
+    """No pack in the dropdown may come back with an empty preset list.
+
+    A pack offered to a source that can use none of it is a dead end the viewer has to discover
+    by clicking it, and the engine already knows better -- every preset carries a `kind`. The
+    armed case is `alertonly`, installed alongside and deliberately unusable here.
+    """
+    packs = await list_items(c, "pack")
+    assert not isinstance(packs, str), f"the pack list itself failed: {packs}"
+    ids = [v for _, v in packs]
+    check("a pack whose presets are all the wrong kind is not offered at all",
+          "alertonly" not in ids,
+          f"pack dropdown = {ids}; alertonly has one preset and it is kind `alert`")
+
+    dead = []
+    for pid in ids:
+        await c.request("SetInputSettings", {"inputName": "ff", "inputSettings": {"pack": pid}})
+        presets = await list_items(c, "preset")
+        if isinstance(presets, str) or not presets:
+            dead.append(pid)
+    check("every pack that IS offered has at least one preset for this source",
+          not dead, f"packs offering an empty preset list: {dead or 'none'}")
+    await c.request("SetInputSettings", {"inputName": "ff", "inputSettings": {"pack": "userimg"}})
+
+
 async def drive(userart: Path):
     ws, c = await ff_proof.open_client("user image proof")
     try:
@@ -225,6 +269,7 @@ async def drive(userart: Path):
               miss_ar is not None and abs(miss_ar - 1.0) < 0.2, f"aspect={miss_ar}")
 
         await check_lists(c)
+        await check_pack_list_offers_nothing_dead(c)
     finally:
         await ws.close()
 
@@ -248,6 +293,7 @@ def main() -> int:
         proof.write_ws_config(obs_cfg)
         proof.install_plugin(repo, obs_cfg)
         proof.install_pack(pack, obs_cfg)
+        proof.install_pack(build_alert_only_pack(scratch), obs_cfg)
         proof.wait_for_port_free(proof.PORT)  # never connect to a previous run's dying OBS
         p = subprocess.Popen(
             ["xvfb-run", "-a", "-s", f"-screen 0 {proof.SCREEN}", "obs", "--multi", "--minimize-to-tray"],
