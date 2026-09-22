@@ -128,6 +128,13 @@ build() {
 
   local -a build_args=(
     ONLY_ACTIVE_ARCH=NO
+    # Xcode 16 turns on explicit modules, does not recognise the ccache launcher this script
+    # configures, and emits one note per translation unit before the build dies -- the run that
+    # prompted this produced 32 of them and no error: line at all, because xcbeautify reports
+    # the failure as a bare "script execution error". This is the remedy the note itself
+    # prescribes; the alternative it offers, CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER,
+    # requires a launcher Xcode considers compatible, which ccache is not.
+    CLANG_ENABLE_EXPLICIT_MODULES=NO
     -arch arm64
     -arch x86_64
     -project ${product_name}.xcodeproj

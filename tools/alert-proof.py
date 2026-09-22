@@ -540,6 +540,17 @@ async def record_alert_audio(rec_dir: Path) -> tuple[Path, Path]:
         await ws.close()
 
 
+def require_ffmpeg() -> None:
+    """Checked up front, not at the point of use. audio_rms runs after OBS has booted, driven a
+    scene and recorded twice, so a missing binary surfaced as a FileNotFoundError traceback three
+    minutes in -- and took the five gates after this one down with it, unrun and unreported."""
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("alert-proof needs the ffmpeg binary to measure the recording's audio "
+                         "(apt-get install ffmpeg). Note this is NOT the same as OBS's built-in "
+                         "ffmpeg_source input kind, which the other proofs use and which needs "
+                         "nothing installed.")
+
+
 def audio_rms(path: Path) -> float:
     """RMS of a recording's audio, 0..1. Decoded to raw s16 mono so nothing depends on parsing
     ffmpeg's human-readable output, which changes between versions."""
@@ -561,6 +572,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plugin-build", required=True, help="built engine repo (has install-local.sh)")
     args = ap.parse_args()
+    require_ffmpeg()
 
     repo = Path(args.plugin_build).resolve()
     scratch = Path(tempfile.mkdtemp(prefix="ff-alert-src-"))

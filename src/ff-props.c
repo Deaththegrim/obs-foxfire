@@ -72,6 +72,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ff-props.h"
 #include <plugin-support.h>
+#include "ff-compat.h"
 #include <util/darray.h>
 #include <util/dstr.h>
 #include <ctype.h>
@@ -100,7 +101,7 @@ static void fmt_date(int64_t t, char *out, size_t cap)
 {
 	time_t tt = (time_t)t;
 	struct tm tm;
-	if (!localtime_r(&tt, &tm) || strftime(out, cap, "%Y-%m-%d", &tm) == 0)
+	if (!ff_localtime(&tt, &tm) || strftime(out, cap, "%Y-%m-%d", &tm) == 0)
 		snprintf(out, cap, "?");
 }
 

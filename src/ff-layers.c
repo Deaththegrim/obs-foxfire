@@ -1,6 +1,7 @@
 #include "ff-layers.h"
 #include "ff-pack.h"
 #include <plugin-support.h>
+#include "ff-compat.h"
 #include <graphics/image-file.h>
 #include <graphics/vec2.h>
 #include <graphics/vec4.h>
@@ -1038,8 +1039,8 @@ static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, cons
 	char buf[sizeof p->list];
 	set_field(buf, sizeof buf, p->list);
 	char *save = NULL;
-	for (char *tok = strtok_r(buf, ";", &save); tok && added < FF_LIST_MAX;
-	     tok = strtok_r(NULL, ";", &save)) {
+	for (char *tok = ff_strtok_r(buf, ";", &save); tok && added < FF_LIST_MAX;
+	     tok = ff_strtok_r(NULL, ";", &save)) {
 		while (*tok == ' ')
 			tok++;
 		char *eq = strchr(tok, '=');

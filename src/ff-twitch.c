@@ -4,6 +4,7 @@
 
 #include <obs-module.h>
 #include <plugin-support.h>
+#include "ff-compat.h"
 #include <pthread.h>
 #include <stdarg.h>
 #include <util/dstr.h>
@@ -118,9 +119,7 @@ static void set_line(struct ff_twitch *t, enum ff_twitch_state s, const char *li
  *
  * So: this one takes literal formats with C arguments, ff_localise() below takes OBS strings with
  * %1/%2/%3, and the two never meet. */
-__attribute__((format(printf, 3, 4))) static void set_state(struct ff_twitch *t,
-							    enum ff_twitch_state s, const char *fmt,
-							    ...)
+FF_PRINTF(3, 4) static void set_state(struct ff_twitch *t, enum ff_twitch_state s, const char *fmt, ...)
 {
 	char line[512];
 	va_list ap;

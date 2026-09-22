@@ -11,7 +11,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y obs-studio xvfb cmake ninja-build pkg-config build-essential \
             python3-websockets python3-pil python3-numpy python3-cryptography mesa-utils libsimde-dev \
-            libcurl4-openssl-dev
+            libcurl4-openssl-dev ffmpeg
+          # ffmpeg is the BINARY, for alert-proof.py's audio_rms. It is not the same thing as OBS's
+          # built-in `ffmpeg_source` input kind that the other proofs use, which needs nothing
+          # installed -- which is why its absence went unnoticed until the alert proof was added.
       - name: Build
         run: |
           cmake --preset ubuntu-x86_64 -DFOXFIRE_BUILD_TESTS=ON
@@ -72,8 +75,18 @@ jobs:
         # false on a stock runner -- and a skipped step and a passing step look identical once
         # the list is collapsed. This writes the difference onto the run page.
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
-          if [ -d ../foxfire/packs ]; then
+          # A failure ABOVE this step stops every step below it, pack-dependent or not. Saying
+          # "skipped because the packs repo is private" in that case is a wrong reason stated
+          # confidently, and it is what this run actually printed when alert-proof.py died on a
+          # missing ffmpeg: five gates did not run and the summary blamed the packs.
+          if [ "$JOB_STATUS" = "failure" ]; then
+            echo "### The job FAILED before the pack gates" >> "$GITHUB_STEP_SUMMARY"
+            echo "A step above stopped the run, so every gate below it did not execute --" >> "$GITHUB_STEP_SUMMARY"
+            echo "whether or not the packs are checked out. Read the failing step, not this." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -d ../foxfire/packs ]; then
             echo "packs present: every pack-dependent gate ran" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Pack-dependent gates SKIPPED" >> "$GITHUB_STEP_SUMMARY"

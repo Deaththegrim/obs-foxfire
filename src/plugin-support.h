@@ -31,7 +31,13 @@ extern const char *PLUGIN_NAME;
 extern const char *PLUGIN_VERSION;
 
 void obs_log(int log_level, const char *format, ...);
-extern void blogva(int log_level, const char *format, va_list args);
+
+/* blogva is NOT declared here, though the template shipped it that way. It belongs to libobs,
+   which declares it in <util/base.h> as EXPORT -- and on Windows EXPORT is __declspec(dllimport)
+   for a plugin consuming libobs. A second declaration with default linkage is not a duplicate
+   MSVC forgives: `error C2375: 'blogva': redefinition; different linkage`, and the build stops.
+   GCC accepts the same pair silently, which is why this only ever failed off Linux. The one
+   caller is plugin-support.c, which includes <util/base.h> for LOG_WARNING anyway. */
 
 #ifdef __cplusplus
 }
