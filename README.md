@@ -44,6 +44,15 @@ The Windows installer package installs Foxfire to
 `C:\ProgramData\obs-studio\plugins\obs-foxfire\`. Download the release zip, extract, run the
 installer (or copy the extracted tree into that folder yourself), then start OBS.
 
+There is no tagged release yet. CI builds Windows on every push to `master` and publishes
+`obs-foxfire-0.1.0-windows-x64.zip` as a run artifact, carrying both plugins —
+`obs-foxfire\bin\64bit\obs-foxfire.dll` and `obs-foxfire-alerts\bin\64bit\obs-foxfire-alerts.dll`
+— in the layout above. Either directory can be copied on its own; they share the packs folder.
+
+**It has never been run on Windows.** It compiles, links and packages there as of
+2026-09-22, and that is all that is known: every render, alert and mouth proof in this repo
+is Linux-only and has never executed against a Windows build.
+
 ### Linux
 
 Two ways to install:
