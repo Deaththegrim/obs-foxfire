@@ -116,20 +116,29 @@ def build_pack(root: Path) -> Path:
     return pack
 
 
-def build_alert_only_pack(root: Path) -> Path:
-    """A pack the VISUALIZER can do nothing with: every preset is kind `alert`.
+def build_filter_only_pack(root: Path) -> Path:
+    """A pack a SOURCE can do nothing with: its only preset is kind `effects`, which belongs to
+    the filter. The shipped `alerts` pack is the same shape with kind `alert`, and it used to
+    appear in the visualizer's pack dropdown regardless -- select it and the preset list came
+    back empty with no explanation. The preset list had always filtered by kind; the pack list
+    had not.
 
-    This is the shipped `alerts` pack's shape, and it used to appear in the visualizer's pack
-    dropdown regardless -- select it and the preset list came back empty with no explanation.
-    The preset list had always filtered by kind; the pack list had not.
+    `effects` rather than `alert`, and carrying its art like any other pack, because an
+    alert-kind pack with no art/ directory wedged OBS on the CI runner -- consistently there,
+    never locally, with CreateScene timing out before this proof ran a single check. That is its
+    own question (see the task) and not one this gate needs to answer: what is being armed here
+    is "a pack with no preset this source can use must not be offered", and a filter-only pack
+    arms it exactly as well.
     """
-    pack = root / "alertonly"
+    pack = root / "filteronly"
     (pack / "effects").mkdir(parents=True)
+    (pack / "art").mkdir()
     (pack / "effects" / "art.effect").write_text(EFFECT)
+    make_art(pack / "art" / "pack.png", 512, 512)
     (pack / "pack.json").write_text(json.dumps({
-        "format": 1, "id": "alertonly", "name": "Alert only proof", "version": "0.1.0",
-        "author": "proof", "min_engine": "0.1.0", "licensed": False, "kinds": ["alert"],
-        "presets": [{"id": "a", "name": "a", "kind": "alert", "thumb": "", "heavy": False,
+        "format": 1, "id": "filteronly", "name": "Filter only proof", "version": "0.1.0",
+        "author": "proof", "min_engine": "0.1.0", "licensed": False, "kinds": ["effects"],
+        "presets": [{"id": "fx", "name": "fx", "kind": "effects", "thumb": "", "heavy": False,
                      "layers": [{"effect": "effects/art.effect", "params": {}}]}],
     }))
     return pack
@@ -211,14 +220,14 @@ async def check_pack_list_offers_nothing_dead(c):
 
     A pack offered to a source that can use none of it is a dead end the viewer has to discover
     by clicking it, and the engine already knows better -- every preset carries a `kind`. The
-    armed case is `alertonly`, installed alongside and deliberately unusable here.
+    armed case is `filteronly`, installed alongside and deliberately unusable here.
     """
     packs = await list_items(c, "pack")
     assert not isinstance(packs, str), f"the pack list itself failed: {packs}"
     ids = [v for _, v in packs]
     check("a pack whose presets are all the wrong kind is not offered at all",
-          "alertonly" not in ids,
-          f"pack dropdown = {ids}; alertonly has one preset and it is kind `alert`")
+          "filteronly" not in ids,
+          f"pack dropdown = {ids}; filteronly has one preset and it is kind `effects`")
 
     dead = []
     for pid in ids:
@@ -293,7 +302,7 @@ def main() -> int:
         proof.write_ws_config(obs_cfg)
         proof.install_plugin(repo, obs_cfg)
         proof.install_pack(pack, obs_cfg)
-        proof.install_pack(build_alert_only_pack(scratch), obs_cfg)
+        proof.install_pack(build_filter_only_pack(scratch), obs_cfg)
         proof.wait_for_port_free(proof.PORT)  # never connect to a previous run's dying OBS
         p = subprocess.Popen(
             ["xvfb-run", "-a", "-s", f"-screen 0 {proof.SCREEN}", "obs", "--multi", "--minimize-to-tray"],
