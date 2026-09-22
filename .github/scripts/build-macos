@@ -114,10 +114,12 @@ build() {
   cmake -S ${project_root} ${cmake_args}
 
   log_group "Building ${product_name}..."
-  # xcbeautify collapses a failing build to "script execution error" with no error: line and
-  # no failing file, which is a build you cannot act on -- one such failure cost a whole CI
-  # round just to find out what broke. Keep the pretty output AND tee the raw log, so the
-  # workflow can hand it over as an artifact when the build fails.
+  # A failure here surfaces as this script's own TRAPZERR line, "script execution error",
+  # with a zsh callstack and nothing about the build itself -- and xcbeautify has already
+  # dropped whatever xcodebuild said. That is a failure nobody can act on; two CI rounds went
+  # on guessing at it. Tee the raw log beside the pretty one so the workflow can hand it over
+  # as an artifact. It earned its keep immediately: the raw log said ** BUILD SUCCEEDED **,
+  # which moved the search off the compiler entirely and onto the install step below.
   local raw_log="${project_root}/xcodebuild-raw.log"
   run_xcodebuild() {
     if (( debug )) {
@@ -143,7 +145,13 @@ build() {
     -arch arm64
     -arch x86_64
     -project ${product_name}.xcodeproj
-    -target ${product_name}
+    # ALL_BUILD, not ${product_name}: this project builds TWO plugins (obs-foxfire and
+    # obs-foxfire-alerts, each installable on its own), and naming one target built one of
+    # them -- then `cmake --install` below failed looking for the other, which had never been
+    # built. Linux and Windows never hit this because `cmake --build` builds everything.
+    # ALL_BUILD is CMake's own aggregate for the Xcode generator and is the equivalent;
+    # -alltargets is not, since it would also run the generated `install` target.
+    -target ALL_BUILD
     -destination "generic/platform=macOS,name=Any Mac"
     -configuration ${config}
     -parallelizeTargets

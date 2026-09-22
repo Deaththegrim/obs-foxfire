@@ -140,6 +140,14 @@ target_sources(
     src/ff-session.c
 )
 target_link_libraries(obs-foxfire-alerts PRIVATE ff-core CURL::libcurl)
+# Windows keeps both of these out of the default link set, and the headers are already
+# included: ff-net.c calls select(), which is Winsock's (ws2_32), and ff-ws-conn.c draws the
+# WebSocket masking key from BCryptGenRandom (bcrypt) where POSIX reads /dev/urandom. Neither
+# is a portability shim -- the code was already written both ways -- they were simply never
+# linked, which only shows up at link time and only on Windows.
+if(WIN32)
+  target_link_libraries(obs-foxfire-alerts PRIVATE ws2_32 bcrypt)
+endif()
 set_target_properties_plugin(obs-foxfire-alerts PROPERTIES OUTPUT_NAME obs-foxfire-alerts)
 option(FOXFIRE_BUILD_TESTS "Build ff unit tests" OFF)
 if(FOXFIRE_BUILD_TESTS)

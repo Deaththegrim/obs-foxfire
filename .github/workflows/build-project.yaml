@@ -143,9 +143,11 @@ jobs:
           codesignIdent: ${{ steps.codesign.outputs.codesignIdent }}
 
       - name: Upload the raw xcodebuild log on failure 🪵
-        # xcbeautify reports a failed build phase as a bare "script execution error" with no
-        # file and no diagnostic, so the pretty log cannot say what broke. This is the log
-        # that can.
+        # A macOS failure surfaces as the build script's own "script execution error" trap
+        # with a zsh callstack and no build diagnostic at all, because xcbeautify has already
+        # discarded xcodebuild's output. This is the log that can say what happened -- and
+        # what it said the first time was ** BUILD SUCCEEDED **, with the real failure in the
+        # install step afterwards.
         if: failure()
         uses: actions/upload-artifact@v4
         with:
