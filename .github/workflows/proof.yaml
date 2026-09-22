@@ -15,6 +15,23 @@ jobs:
           # ffmpeg is the BINARY, for alert-proof.py's audio_rms. It is not the same thing as OBS's
           # built-in `ffmpeg_source` input kind that the other proofs use, which needs nothing
           # installed -- which is why its absence went unnoticed until the alert proof was added.
+      - name: Are the private packs checked out? 🔎
+        id: packs
+        # hashFiles() CANNOT be used for this: it refuses any path outside the workspace and
+        # errors the whole job ("Fail to hash files under directory /home/runner/work/..."),
+        # which is how every pack-dependent gate below was written. They therefore never ran
+        # once -- earlier in a run the job had already failed before the expression was
+        # evaluated, and the moment everything above went green the expression itself became
+        # the failure. A shell test can look wherever it likes.
+        run: |
+          have() { [ -f "$1" ] && echo "true" || echo "false"; }
+          {
+            echo "basics=$(have ../foxfire/packs/basics/pack.json)"
+            echo "shaders=$(have ../foxfire/packs/basics/effects/bars.effect)"
+            echo "mouth=$(have ../foxfire/packs/mouth/pack.json)"
+            echo "mouth_art=$(have ../foxfire/packs/mouth/art/mouth-strip.png)"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build
         run: |
           cmake --preset ubuntu-x86_64 -DFOXFIRE_BUILD_TESTS=ON
@@ -66,13 +83,13 @@ jobs:
         # step that always fails teaches everyone to ignore a red job, and a step that silently
         # passes on nothing inspected is worse -- so check-placement.py itself exits 2 when it
         # finds no shaders, and this only runs when the packs are actually present.
-        if: hashFiles('../foxfire/packs/basics/effects/bars.effect') != ''
+        if: steps.packs.outputs.shaders == 'true'
         run: tools/check-placement.py ../foxfire/packs
 
       - name: Say which pack gates were skipped
         # A green job must not mean two different things. The packs live in a private repo that
-        # is not checked out here, so every `hashFiles('../foxfire/...')` step above evaluates
-        # false on a stock runner -- and a skipped step and a passing step look identical once
+        # is not checked out here, so the probe at the top of this job reports every pack gate
+        # absent on a stock runner -- and a skipped step and a passing step look identical once
         # the list is collapsed. This writes the difference onto the run page.
         if: always()
         env:
@@ -104,7 +121,7 @@ jobs:
         # the one gate that will still matter when the art is redrawn, because generated art
         # (six image generations, or frames pulled out of a video model) is exactly where the
         # drift comes from.
-        if: hashFiles('../foxfire/packs/mouth/art/mouth-strip.png') != ''
+        if: steps.packs.outputs.mouth_art == 'true'
         run: |
           python3 ../foxfire/tools/check-mouth-strip.py ../foxfire/packs/mouth/art/mouth-strip.png
           python3 ../foxfire/tools/check-mouth-strip.py ../foxfire/packs/mouth/art/mouth-strip-ink.png
@@ -118,7 +135,7 @@ jobs:
         # A control that exists in the properties panel and changes nothing is this project's
         # most common defect, and no "does it render" check can see it. Skipped when the packs
         # repo is not checked out beside this one -- it is private.
-        if: hashFiles('../foxfire/packs/basics/pack.json') != ''
+        if: steps.packs.outputs.basics == 'true'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/placement-proof.py --plugin-build . --pack ../foxfire/packs/basics
@@ -133,7 +150,7 @@ jobs:
         # Conditional, because the packs are in a private repo checked out beside this one. ember
         # is licensed, so it renders blank without a licence file and is deliberately not here --
         # its shaders are covered by the pack repo's own run.
-        if: hashFiles('../foxfire/packs/basics/pack.json') != ''
+        if: steps.packs.outputs.basics == 'true'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         working-directory: ../foxfire
@@ -150,7 +167,7 @@ jobs:
         # that the shader picks the cell the number names, and a mouth stuck on one shape renders
         # perfectly well. The placeholder strip gives each shape its own hue so a screenshot can
         # say WHICH cell was drawn.
-        if: hashFiles('../foxfire/packs/mouth/pack.json') != ''
+        if: steps.packs.outputs.mouth == 'true'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/mouth-proof.py --plugin-build . --pack ../foxfire/packs/mouth
