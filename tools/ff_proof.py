@@ -65,7 +65,14 @@ QUAD_PNG = "/tmp/ff-quadrant.png"
 ALPHAHOLE_PNG = "/tmp/ff-alphahole.png"
 W, H = 640, 360
 STRESS_ROUNDS = 30
-REQ_TIMEOUT = 20  # seconds; generous for a local socket, short next to a hang
+# Seconds. Generous for a local socket, short next to a hang -- but 20 was not generous on a
+# 2-core CI runner driving OBS under Xvfb with software GL, where the FIRST request that touches
+# the UI thread can sit behind the rest of start-up. Two separate proofs died on it, both only in
+# CI and both on the first scene they asked for: alert-proof and user-image-proof, each reported
+# as `FFTimeout: CreateScene returns`. open_client's wait_until_serving already absorbs the part
+# of start-up that answers nothing at all; this covers the part that answers slowly. A genuine
+# deadlock still fails, 25 s later.
+REQ_TIMEOUT = 45
 # the number of check() calls a full, uninterrupted run makes (run() + run_filter() + run_spatial()
 # + run_transparency(); NOT counting the FFTimeout handler's own check(), which is a different,
 # additional code path that only runs instead of some of the above). Keep this in sync by hand when
@@ -244,7 +251,7 @@ async def wait_until_serving(client, what, timeout=60.0, attempt=5.0):
 
     Hello and Identify come back while OBS is still loading plugins and the scene
     collection, so an identified connection is NOT a ready one. The first real request
-    then spends the whole 20 s REQ_TIMEOUT on a cold runner and the proof dies at
+    then spends the whole REQ_TIMEOUT on a cold runner and the proof dies at
     whatever it happened to ask for first -- seen in CI once as
     `FFTimeout: CreateScene returns`, with the two checks after it reporting FAIL for
     work that never ran. Asking something trivial in a retry loop puts the waiting where
