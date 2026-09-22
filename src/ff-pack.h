@@ -48,7 +48,8 @@ struct ff_pack_list {
 	size_t nerrors;
 };
 
-/* scans data/packs/* (bundled) then obs_module_config_path("packs")/*; bad packs are skipped and named in errors */
+/* scans every pack under data/packs (bundled) then under obs_module_config_path("packs");
+   bad packs are skipped and named in errors */
 /* No clock argument, deliberately. Entitlement compares the pack's release date against the
    licence's, so scanning does not depend on what time it is and cannot change its answer while
    OBS is running. */

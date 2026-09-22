@@ -86,18 +86,27 @@ if(TARGET plugin-support)
   target_link_libraries(ff-core PUBLIC plugin-support)
 endif()
 set_property(TARGET ff-core PROPERTY POSITION_INDEPENDENT_CODE ON)
-# Vendored third-party sources trip signed/unsigned comparison warnings under this project's
-# warnings-as-error; scoped to the vendor files only, never to our own sources. cl rejects a
-# GCC flag outright rather than ignoring it ("command line error D8021: invalid numeric
-# argument '/Wno-sign-compare'"), so each compiler gets its own spelling. C4018 is MSVC's
-# -Wsign-compare and fires at /W3, which is what this build uses; its relatives C4245 and
-# C4389 are /W4-only and are deliberately not listed.
+# Vendored third-party sources are not ours to fix, so they do not get this project's
+# warnings-as-error. Scoped to these four files by name; our own sources stay strict.
+#
+# Naming individual warnings instead was a treadmill -- each compiler found a different one
+# and each cost a CI round to discover: -Wsign-compare on gcc, then C4018, then C4267 on
+# MSVC, all in code nobody here is going to edit. The specific suppressions are kept as well
+# so the build log stays quiet, but they are no longer what makes the build pass.
+#
+# The two compilers cannot share a spelling: cl REJECTS an unknown flag rather than ignoring
+# it, so '/Wno-sign-compare' is not a no-op, it is "command line error D8021".
+if(MSVC)
+  set(FF_VENDOR_COMPILE_OPTIONS /WX- /wd4018 /wd4267)
+else()
+  set(FF_VENDOR_COMPILE_OPTIONS -Wno-error -Wno-sign-compare)
+endif()
 set_source_files_properties(
   vendor/kissfft/kiss_fft.c
   vendor/kissfft/kiss_fftr.c
   vendor/monocypher/monocypher.c
   vendor/monocypher/monocypher-ed25519.c
-  PROPERTIES COMPILE_OPTIONS "$<IF:$<C_COMPILER_ID:MSVC>,/wd4018,-Wno-sign-compare>"
+  PROPERTIES COMPILE_OPTIONS "${FF_VENDOR_COMPILE_OPTIONS}"
 )
 
 # --- obs-foxfire: the visualizer source and the effects filter ---------------------------------
