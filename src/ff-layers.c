@@ -14,10 +14,10 @@
 
 /* Uniform names the engine feeds every frame. They are never exposed as properties, and a pack
    that declares one gets the engine's value, not an author-editable knob. */
-static const char *BUILTINS[] = {"ViewProj", "image",    "uv_size",     "time",       "frame_dt",      "level",
-				 "peak",     "bass",     "mid",         "treble",     "beat",          "beat_count",
-				 "spectrum", "waveform", "layer_index", "rand_frame", "rand_instance",
-				 "progress", "viseme",  "mouth_open", NULL};
+static const char *BUILTINS[] = {"ViewProj", "image",      "uv_size",     "time",       "frame_dt",      "level",
+				 "peak",     "bass",       "mid",         "treble",     "beat",          "beat_count",
+				 "spectrum", "waveform",   "layer_index", "rand_frame", "rand_instance", "progress",
+				 "viseme",   "mouth_open", NULL};
 
 static bool is_builtin(const char *n)
 {
@@ -52,11 +52,9 @@ struct mouth_ctl {
 };
 static const struct mouth_ctl MOUTH_CTLS[] = {
 	{"mouth.gate", "Foxfire.Mouth.Gate", offsetof(struct ff_viseme_params, gate), 0.0, 0.3, 0.005},
-	{"mouth.closure_ms", "Foxfire.Mouth.Closure", offsetof(struct ff_viseme_params, closure_ms), 40.0, 600.0,
-	 10.0},
+	{"mouth.closure_ms", "Foxfire.Mouth.Closure", offsetof(struct ff_viseme_params, closure_ms), 40.0, 600.0, 10.0},
 	{"mouth.hold_ms", "Foxfire.Mouth.Hold", offsetof(struct ff_viseme_params, hold_ms), 0.0, 250.0, 5.0},
-	{"mouth.release_ms", "Foxfire.Mouth.Release", offsetof(struct ff_viseme_params, release_ms), 0.0, 500.0,
-	 10.0},
+	{"mouth.release_ms", "Foxfire.Mouth.Release", offsetof(struct ff_viseme_params, release_ms), 0.0, 500.0, 10.0},
 	/* +-0.15 is the order of the 0.156 spread measured between real recordings. It is NOT
 	   about the two thresholds crossing -- they are shifted by the same bias, so their 0.08
 	   separation is rigid and they cannot cross at any value. What a bound is for here is
@@ -284,8 +282,7 @@ static void ff_param_bind_texture(struct ff_param *p, const char *pack_dir)
 	if (p->tex_user[0]) {
 		if (load_texture_file(p, p->tex_user))
 			return;
-		obs_log(LOG_WARNING, "image '%s' could not be loaded; using the pack's own art",
-			p->tex_user);
+		obs_log(LOG_WARNING, "image '%s' could not be loaded; using the pack's own art", p->tex_user);
 		/* fall through to the pack asset rather than rendering nothing: a viewer who picks
 		   a file OBS cannot read still gets the preset they paid for */
 	}
@@ -353,8 +350,7 @@ static int parse_gradient(struct ff_param *p, const char *spec, const char *whos
 			s++;
 	}
 	if (*s && n >= FF_GRAD_MAX)
-		obs_log(LOG_WARNING, "%s: more than %d gradient stops; the rest are ignored", whose,
-			FF_GRAD_MAX);
+		obs_log(LOG_WARNING, "%s: more than %d gradient stops; the rest are ignored", whose, FF_GRAD_MAX);
 	if (n < 2) {
 		obs_log(LOG_WARNING, "%s: a gradient needs at least 2 colour stops, got %d", whose, n);
 		return 0;
@@ -422,8 +418,7 @@ static void load_texture_param(struct ff_param *p, const char *pack_dir)
 		/* A gradient IS the texture. Binding a file here as well would load an image nothing
 		   ever samples and, worse, leave whichever won depending on annotation order. */
 		if (p->tex_pack[0])
-			obs_log(LOG_WARNING,
-				"param '%s' is a gradient, so its <string path=\"%s\"> is ignored",
+			obs_log(LOG_WARNING, "param '%s' is a gradient, so its <string path=\"%s\"> is ignored",
 				p->name, p->tex_pack);
 		p->grad_dirty = true;
 		memcpy(p->grad_col_preset, p->grad_col, sizeof p->grad_col_preset);
@@ -458,15 +453,14 @@ static void apply_override(struct ff_param *p, const struct ff_param_override *o
 			   because overrides are applied BEFORE the shader's own annotations are read,
 			   so grad_stops is still 0 on the first preset to do this. */
 			char whose[160];
-			snprintf(whose, sizeof whose, "preset '%s' layer %d param '%s'", preset_id,
-				 (int)layer_idx, p->name);
+			snprintf(whose, sizeof whose, "preset '%s' layer %d param '%s'", preset_id, (int)layer_idx,
+				 p->name);
 			int n = parse_gradient(p, o->str, whose);
 			if (n)
 				p->grad_stops = n;
-		}
-		else if (!ff_rel_ok(o->str))
-			obs_log(LOG_WARNING, "preset '%s' layer %d: texture path '%s' refused",
-				preset_id, (int)layer_idx, o->str);
+		} else if (!ff_rel_ok(o->str))
+			obs_log(LOG_WARNING, "preset '%s' layer %d: texture path '%s' refused", preset_id,
+				(int)layer_idx, o->str);
 		else
 			set_field(p->tex_pack, sizeof p->tex_pack, o->str);
 		return;
@@ -871,8 +865,8 @@ static void render_layer(struct ff_layer *L, gs_texture_t *src, uint32_t w, uint
 	gs_technique_end(t);
 }
 
-gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress,
-				 gs_texture_t *input, uint32_t w, uint32_t h, float dt)
+gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input,
+				 uint32_t w, uint32_t h, float dt)
 {
 	static const struct ff_frame silence = {0};
 	if (!r || !w || !h)
@@ -1081,8 +1075,7 @@ static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, cons
 		while (*q == ' ')
 			q++;
 		if (!digits || *q) {
-			obs_log(LOG_WARNING, "param '%s': list entry '%s' is not a plain number", p->name,
-				whole);
+			obs_log(LOG_WARNING, "param '%s': list entry '%s' is not a plain number", p->name, whole);
 			continue;
 		}
 		set_field(items[added].name, sizeof items[added].name, tok);
@@ -1092,8 +1085,7 @@ static bool add_named_list(obs_properties_t *grp, const struct ff_param *p, cons
 	if (!added)
 		return false; /* nothing created, so the caller's ordinary control is free to use `key` */
 
-	obs_property_t *list =
-		obs_properties_add_list(grp, key, label, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_FLOAT);
+	obs_property_t *list = obs_properties_add_list(grp, key, label, OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_FLOAT);
 	for (size_t i = 0; i < added; i++)
 		obs_property_list_add_float(list, items[i].name, items[i].value);
 	return true;
@@ -1110,8 +1102,7 @@ static void grad_key(char *out, size_t cap, const char *key, char kind, int stop
 /* A gradient becomes 2N controls: a colour and a position per stop. The position sliders are what
    make it a gradient rather than a palette -- without them a viewer can recolour the ramp but
    never move where the colours land, which is most of what tuning a visualizer actually is. */
-static void add_gradient_property(obs_properties_t *grp, const struct ff_param *p, const char *key,
-				  const char *label)
+static void add_gradient_property(obs_properties_t *grp, const struct ff_param *p, const char *key, const char *label)
 {
 	for (int s = 0; s < p->grad_stops; s++) {
 		char k[128], l[128];
@@ -1232,9 +1223,8 @@ void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props)
 		obs_properties_add_group(props, "grp.ff.mouth", obs_module_text("Foxfire.Mouth.Group"),
 					 OBS_GROUP_NORMAL, sub);
 		for (size_t i = 0; i < MOUTH_NCTLS; i++)
-			obs_properties_add_float_slider(sub, MOUTH_CTLS[i].key,
-							obs_module_text(MOUTH_CTLS[i].text), MOUTH_CTLS[i].min,
-							MOUTH_CTLS[i].max, MOUTH_CTLS[i].step);
+			obs_properties_add_float_slider(sub, MOUTH_CTLS[i].key, obs_module_text(MOUTH_CTLS[i].text),
+							MOUTH_CTLS[i].min, MOUTH_CTLS[i].max, MOUTH_CTLS[i].step);
 	}
 }
 
@@ -1254,11 +1244,10 @@ void ff_renderer_set_defaults(struct ff_renderer *r, obs_data_t *settings)
 				for (int s = 0; s < p->grad_stops; s++) {
 					char gk[128];
 					grad_key(gk, sizeof gk, key, 'c', s);
-					obs_data_set_default_int(
-						settings, gk, (long long)pack_color(p->grad_col_preset[s]));
+					obs_data_set_default_int(settings, gk,
+								 (long long)pack_color(p->grad_col_preset[s]));
 					grad_key(gk, sizeof gk, key, 'p', s);
-					obs_data_set_default_double(settings, gk,
-								    (double)p->grad_pos_preset[s]);
+					obs_data_set_default_double(settings, gk, (double)p->grad_pos_preset[s]);
 				}
 				continue;
 			}
@@ -1312,8 +1301,7 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 	ff_viseme_defaults(&m);
 	for (size_t i = 0; i < MOUTH_NCTLS; i++)
 		if (obs_data_has_user_value(settings, MOUTH_CTLS[i].key))
-			*mouth_field(&m, MOUTH_CTLS[i].off) =
-				(float)obs_data_get_double(settings, MOUTH_CTLS[i].key);
+			*mouth_field(&m, MOUTH_CTLS[i].off) = (float)obs_data_get_double(settings, MOUTH_CTLS[i].key);
 	r->viseme_params = m;
 
 	for (size_t i = 0; i < r->nlayers; i++) {
@@ -1345,8 +1333,7 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings)
 						pos = 1.f;
 					/* rebake only on a real change: apply_settings runs on every
 					   settings touch, and the bake is 256 stop-searches */
-					if (memcmp(p->grad_col[s], col, sizeof col) != 0 ||
-					    p->grad_pos[s] != pos) {
+					if (memcmp(p->grad_col[s], col, sizeof col) != 0 || p->grad_pos[s] != pos) {
 						memcpy(p->grad_col[s], col, sizeof col);
 						p->grad_pos[s] = pos;
 						p->grad_dirty = true;

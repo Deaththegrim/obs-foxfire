@@ -60,7 +60,16 @@ add_library(ff-core STATIC
   vendor/kissfft/kiss_fft.c vendor/kissfft/kiss_fftr.c vendor/monocypher/monocypher.c vendor/monocypher/monocypher-ed25519.c)
 target_include_directories(ff-core PUBLIC src vendor/kissfft vendor/monocypher)
 target_compile_definitions(ff-core PUBLIC kiss_fft_scalar=float)
-target_link_libraries(ff-core PUBLIC OBS::libobs m)  # m: the analysis is all sinf/powf/log10f
+# MSVC ships <stdatomic.h> behind an opt-in and #errors "C atomic support is not enabled"
+# without it, whatever /std: says -- and ff-handoff.h, the seqlock the audio thread hands
+# frames across, is built on atomic_uint. PUBLIC because that header is public: every target
+# linking ff-core compiles it too. CMAKE_C_STANDARD is already 17, which is the other half
+# of the requirement. (Microsoft still defines __STDC_NO_ATOMICS__ even with the flag on, so
+# do not reach for that macro to detect this.)
+target_compile_options(ff-core PUBLIC $<$<C_COMPILER_ID:MSVC>:/experimental:c11atomics>)
+# m: the analysis is all sinf/powf/log10f. There is no such library on MSVC -- the math
+# functions live in the CRT -- and asking for one that does not exist fails the link.
+target_link_libraries(ff-core PUBLIC OBS::libobs $<$<NOT:$<C_COMPILER_ID:MSVC>>:m>)
 if(TARGET plugin-support)
   target_link_libraries(ff-core PUBLIC plugin-support)
 endif()

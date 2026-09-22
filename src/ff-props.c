@@ -433,7 +433,8 @@ struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self,
 		   create from being a null dereference on the video thread. */
 		ff_require(in->capture, "the filter's capture render target");
 		if (!in->capture) {
-			snprintf(in->status, sizeof in->status, "%s", obs_module_text("Foxfire.Status.GraphicsUnavailable"));
+			snprintf(in->status, sizeof in->status, "%s",
+				 obs_module_text("Foxfire.Status.GraphicsUnavailable"));
 		}
 	}
 	obs_leave_graphics();
