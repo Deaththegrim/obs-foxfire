@@ -142,15 +142,21 @@ jobs:
         # nothing -- and every gate here was green. packforge's proof fails on a plugin warning,
         # which is what catches a shader that does not compile; it simply was not being run.
         #
-        # Conditional, because the packs are in a private repo checked out beside this one. ember
-        # is licensed, so it renders blank without a licence file and is deliberately not here --
-        # its shaders are covered by the pack repo's own run.
+        # Conditional, because the packs are in a private repo checked out beside this one.
+        #
+        # ember used to be left out here, with a comment saying its shaders were "covered by the
+        # pack repo's own run". There is no such run -- that repo has no CI at all -- so the only
+        # PAID pack in the product was the one thing nothing rendered. It was excluded because a
+        # licensed pack needs a licence.json verified against FF_PUBLIC_KEY and every CI build has
+        # an all-zero key, so it came back 7 of 7 blank. packforge now proves a throwaway
+        # unlicensed COPY of such a pack (packforge/proof.py::_renderable_copy) and says so in the
+        # log; the licence gate keeps its own tests.
         if: steps.packs.outputs.basics == 'true'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         working-directory: ../foxfire
         run: |
-          for pack in basics ring tune overlay alerts mouth; do
+          for pack in basics ring tune overlay alerts mouth ember; do
             echo "::group::$pack"
             python3 -m packforge proof --no-thumbs --engine "$GITHUB_WORKSPACE" "packs/$pack"
             echo "::endgroup::"
