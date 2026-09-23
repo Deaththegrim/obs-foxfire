@@ -102,14 +102,27 @@ static bool parse_preset(struct ff_pack *pk, obs_data_t *pd, struct ff_preset *p
 		snprintf(why, cap, "preset id '%s' must be [a-z0-9-]", pr->id);
 		return false;
 	}
-	/* "alert" joined this list when the alerts plugin landed. The list is shared by every
-	   Foxfire plugin -- they all load packs through this one loader -- so a pack carrying an
-	   alert preset stays valid even on a machine where only the visualizer is installed. It
-	   simply will not be offered anywhere, which is the right outcome: refusing the whole pack
-	   would take its visualizer presets down with it. */
-	if (strcmp(pr->kind, "visualizer") && strcmp(pr->kind, "effects") && strcmp(pr->kind, "overlay") &&
-	    strcmp(pr->kind, "alert")) {
-		snprintf(why, cap, "preset '%s': kind must be visualizer, effects, overlay or alert", pr->id);
+	/* "alert" joined this list when the alerts plugin landed, "transition" when the transition
+	   did. The list is shared by every Foxfire plugin -- they all load packs through this one
+	   loader -- so a pack carrying an alert preset stays valid even on a machine where only the
+	   visualizer is installed. It simply will not be offered anywhere, which is the right
+	   outcome: refusing the whole pack would take its visualizer presets down with it.
+
+	   That is not a hypothetical. Adding the transition kind to ff-props.c and forgetting it
+	   here refused the bundled demo pack OUTRIGHT -- "0 loaded, 1 refused" -- so the visualizer
+	   lost its bars as well, over a preset it would never have offered. Any new kind has to be
+	   added in both places, and this message has to list what it accepts or the log says only
+	   that something is wrong. */
+	static const char *KINDS[] = {"visualizer", "effects", "overlay", "alert", "transition"};
+	bool known = false;
+	for (size_t i = 0; i < sizeof KINDS / sizeof KINDS[0]; i++)
+		if (!strcmp(pr->kind, KINDS[i])) {
+			known = true;
+			break;
+		}
+	if (!known) {
+		snprintf(why, cap, "preset '%s': kind must be visualizer, effects, overlay, alert or transition",
+			 pr->id);
 		return false;
 	}
 	if (pr->thumb[0] && (!ff_rel_ok(pr->thumb) || !file_in_pack(pk->dir, pr->thumb))) {

@@ -23,7 +23,7 @@ each place that happened is called out below.
 ```json
 { "format": 1, "id": "ember", "name": "Ember", "version": "1.0.0", "author": "KitsuneStudio",
   "min_engine": "1.0.0", "licensed": true, "released": 1758412800,
-  "kinds": ["visualizer", "effects", "overlay"],
+  "kinds": ["visualizer", "effects", "overlay", "transition"],
   "presets": [ { "id": "ember-bars", "name": "Ember Bars", "kind": "visualizer",
                  "thumb": "thumbs/ember-bars.png", "heavy": false,
                  "layers": [ { "effect": "effects/bars.effect",
@@ -264,11 +264,14 @@ These two path kinds fail differently, and the difference matters:
 | `visualizer`, `overlay` | the Foxfire Visualizer **source** (obs-foxfire) |
 | `effects` | the Foxfire Effects **filter** (obs-foxfire) |
 | `alert` | the Foxfire Alert **source** (obs-foxfire-alerts) |
+| `transition` | the Foxfire **scene transition** (obs-foxfire) |
 
 Same manifest, same layer format, `kind` is just the routing — except an invalid `kind` (anything
-other than those four strings, matched exactly and in lower case) doesn't just fail to route, it
+other than those five strings, matched exactly and in lower case) doesn't just fail to route, it
 refuses the whole pack the same as any other manifest error (see "How a bad manifest fails"
-above).
+above). That is not a small blast radius: adding `transition` to the engine and forgetting it in
+the loader refused the entire bundled demo pack, so the visualizer lost its bars too, over a
+preset it would never have offered.
 
 **One list, every plugin.** Foxfire ships as separate plugins, but they all load packs through
 the same loader, so a pack carrying `alert` presets stays valid on a machine where only the
@@ -295,6 +298,33 @@ reads it there gets a defined value rather than a stale one.
 
 An alert source draws the pack's layers first and composites the **name** on top of them, so a
 preset should leave room for text rather than filling the frame with detail.
+
+### Transition presets, `progress`, `tex_a` and `tex_b`
+
+A transition gets the same `progress` — 0 as the cut begins, 1 as it ends — plus the two scenes
+it is crossing between:
+
+```hlsl
+uniform texture2d tex_a;  /* the outgoing scene */
+uniform texture2d tex_b;  /* the incoming scene */
+uniform float progress;   /* 0 at the start of the cut, 1 at the end */
+...
+return lerp(tex_a.Sample(s, v.uv), tex_b.Sample(s, v.uv), progress);
+```
+
+Both are builtins, so neither is ever a property, and off a transition they are bound to the same
+1×1 transparent texture `image` falls back to — a shader that reads them elsewhere draws nothing
+rather than whatever was last bound.
+
+Two things worth knowing before writing one. A transition has **no size of its own**: OBS hands it
+the canvas, so `uv_size` is the output resolution and there are no width/height controls in the
+panel. And the audio is not the pack's business — the engine crossfades the two scenes itself, at
+equal *power* (`sqrt`) rather than equal gain, because two uncorrelated signals summed at `1-t`
+and `t` sink to about 0.71 in the middle and that is heard as a hole in every cut.
+
+Transitions are short. A 300 ms cut is the norm, so anything that needs a second to read will
+never be seen, and audio reactivity should be a nudge — the bundled `dissolve` exposes `beat_kick`
+capped at 0.2 for exactly that reason.
 
 A preset's `thumb` field is optional — omit it, or leave it `""`, and the engine skips validating it
 entirely. Set it and it's checked exactly like an effect path (see Refused paths, above).

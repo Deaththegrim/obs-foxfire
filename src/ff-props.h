@@ -26,10 +26,35 @@
 
 /* See the threading contract at the top of ff-props.c: state_lock is what lets the UI thread read
    this while the video thread rewrites it. */
+/* Which of the three things this instance is. It was a `bool is_filter` until the transition
+   arrived and made it a bool asked to hold three states. Two independent questions were hiding
+   inside it, and they do not partition the same way -- see ff_owns_canvas and ff_needs_capture
+   below, where a transition answers no to both while a filter answers no and yes. */
+enum ff_kind {
+	FF_KIND_SOURCE = 0, /* zero, so a bzalloc'd instance is a source, as it was before the enum */
+	FF_KIND_FILTER,
+	FF_KIND_TRANSITION,
+};
+
+/* Only a source has a size of its own to read from settings. A filter takes its target's, a
+   transition takes the canvas OBS hands its render callback. */
+static inline bool ff_owns_canvas(enum ff_kind k)
+{
+	return k == FF_KIND_SOURCE;
+}
+
+/* Only a filter has to capture the image underneath it. A transition is GIVEN both of its
+   textures by libobs, which is why it needs no capture target despite also drawing over
+   something it did not render. */
+static inline bool ff_needs_capture(enum ff_kind k)
+{
+	return k == FF_KIND_FILTER;
+}
+
 struct ff_instance {
 	pthread_mutex_t state_lock;
 	obs_source_t *self;
-	bool is_filter;
+	enum ff_kind kind;
 	struct ff_audio *audio;
 	struct ff_renderer *renderer;
 	struct ff_pack_list packs;
@@ -50,12 +75,16 @@ struct ff_instance {
 	bool begin_failed_logged; /* latch: gs_texrender_begin failures are logged only once per instance */
 };
 
-struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self, bool is_filter);
+struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self, enum ff_kind kind);
 void ff_instance_destroy(struct ff_instance *in);
 void ff_instance_update(struct ff_instance *in, obs_data_t *settings);
 obs_properties_t *ff_instance_properties(struct ff_instance *in);
-void ff_instance_defaults(obs_data_t *settings, bool is_filter);
+void ff_instance_defaults(obs_data_t *settings, enum ff_kind kind);
 /* per-frame: read audio, render stack; returns final texture (NULL when nothing to draw).
    Uses in->dt, written by the caller's video_tick. Graphics context required -- call it from
    video_render only. */
 gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, uint32_t w, uint32_t h);
+/* the same render, for the kinds that have more to say: a transition passes the two scenes it is
+   crossing and where it is between them. ff_instance_render is this with NULL and 0. */
+gs_texture_t *ff_instance_render_ex(struct ff_instance *in, gs_texture_t *input, const struct ff_pair_tex *pair,
+				    float progress, uint32_t w, uint32_t h);

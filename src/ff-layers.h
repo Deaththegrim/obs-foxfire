@@ -121,9 +121,19 @@ void ff_renderer_apply_settings(struct ff_renderer *r, obs_data_t *settings);
    it means. The visualizer and the filter pass 0: they are not doing anything with a beginning
    and an end, and a shader reading `progress` there gets a defined 0 rather than a stale value.
 
+   `pair` is the two scenes a TRANSITION is crossing between, bound as the builtins `tex_a` and
+   `tex_b`. NULL for every other kind, and a shader that reads them there gets the same 1x1
+   transparent texture `image` falls back to rather than a stale or unbound one. It is a separate
+   argument from `input` because a transition genuinely has two inputs and neither is "the"
+   input -- collapsing them into `image` would make every transition shader guess which it had.
+
    graphics context required. */
+struct ff_pair_tex {
+	gs_texture_t *a;
+	gs_texture_t *b;
+};
 gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input,
-				 uint32_t w, uint32_t h, float dt);
+				 const struct ff_pair_tex *pair, uint32_t w, uint32_t h, float dt);
 /* adds the annotated params of every layer to props (one group per annotation group) */
 void ff_renderer_add_properties(struct ff_renderer *r, obs_properties_t *props);
 /* seeds the settings' defaults from the current per-param values, so a preset switch shows its

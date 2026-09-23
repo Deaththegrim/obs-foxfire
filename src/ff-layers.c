@@ -14,10 +14,11 @@
 
 /* Uniform names the engine feeds every frame. They are never exposed as properties, and a pack
    that declares one gets the engine's value, not an author-editable knob. */
-static const char *BUILTINS[] = {"ViewProj", "image",      "uv_size",     "time",       "frame_dt",      "level",
-				 "peak",     "bass",       "mid",         "treble",     "beat",          "beat_count",
-				 "spectrum", "waveform",   "layer_index", "rand_frame", "rand_instance", "progress",
-				 "viseme",   "mouth_open", NULL};
+static const char *BUILTINS[] = {"ViewProj",   "image",         "uv_size",  "time",     "frame_dt",
+				 "level",      "peak",          "bass",     "mid",      "treble",
+				 "beat",       "beat_count",    "spectrum", "waveform", "layer_index",
+				 "rand_frame", "rand_instance", "progress", "viseme",   "mouth_open",
+				 "tex_a",      "tex_b",         NULL};
 
 static bool is_builtin(const char *n)
 {
@@ -693,7 +694,7 @@ void ff_renderer_load(struct ff_renderer *r, const struct ff_pack *pack, const s
 /* ------------------------------------------------------------------ render */
 
 static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct ff_frame *f, gs_texture_t *image,
-			 int idx, float dt, float rand_frame, float progress)
+			 const struct ff_pair_tex *pair, int idx, float dt, float rand_frame, float progress)
 {
 	for (size_t i = 0; i < L->nparams; i++) {
 		struct ff_param *p = &L->params[i];
@@ -702,6 +703,12 @@ static void set_builtins(struct ff_renderer *r, struct ff_layer *L, const struct
 		const char *n = p->name;
 		if (!strcmp(n, "image")) {
 			gs_effect_set_texture(p->ep, image);
+		} else if (!strcmp(n, "tex_a")) {
+			/* the outgoing scene. r->blank off a transition, so a shader that reads it
+			   anywhere else draws nothing rather than whatever was last bound. */
+			gs_effect_set_texture(p->ep, pair ? pair->a : r->blank);
+		} else if (!strcmp(n, "tex_b")) {
+			gs_effect_set_texture(p->ep, pair ? pair->b : r->blank);
 		} else if (!strcmp(n, "uv_size")) {
 			struct vec2 v = {.x = (float)r->width, .y = (float)r->height};
 			gs_effect_set_vec2(p->ep, &v);
@@ -866,7 +873,7 @@ static void render_layer(struct ff_layer *L, gs_texture_t *src, uint32_t w, uint
 }
 
 gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input,
-				 uint32_t w, uint32_t h, float dt)
+				 const struct ff_pair_tex *pair, uint32_t w, uint32_t h, float dt)
 {
 	static const struct ff_frame silence = {0};
 	if (!r || !w || !h)
@@ -906,7 +913,7 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 		struct vec4 clear = {0};
 		gs_clear(GS_CLEAR_COLOR, &clear, 0.f, 0);
 		gs_ortho(0.f, (float)w, 0.f, (float)h, -100.f, 100.f);
-		set_builtins(r, L, f, prev, (int)i, dt, rand_frame, progress);
+		set_builtins(r, L, f, prev, pair, (int)i, dt, rand_frame, progress);
 		set_params(r, L);
 		render_layer(L, prev, w, h);
 		gs_texrender_end(dst);

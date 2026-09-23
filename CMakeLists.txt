@@ -109,8 +109,11 @@ set_source_files_properties(
   PROPERTIES COMPILE_OPTIONS "${FF_VENDOR_COMPILE_OPTIONS}"
 )
 
-# --- obs-foxfire: the visualizer source and the effects filter ---------------------------------
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/plugin-main.c src/ff-props.c src/ff-source.c src/ff-filter.c)
+# --- obs-foxfire: the visualizer source, the effects filter and the scene transition -----------
+target_sources(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE src/plugin-main.c src/ff-props.c src/ff-source.c src/ff-filter.c src/ff-transition.c
+)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ff-core)
 
 # curl carries the EventSub connection. obs-deps ships it on every platform OBS builds for, and

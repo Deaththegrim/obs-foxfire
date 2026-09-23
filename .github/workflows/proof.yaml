@@ -73,6 +73,16 @@ jobs:
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         run: python3 tools/alert-proof.py --plugin-build .
+      - name: The transition actually transitions
+        # A transition exists only DURING a cut, so nothing else in this job can see it: an idle
+        # screenshot shows a scene, and GetSourceScreenshot cannot address a transition by name at
+        # all. This drives a real cut and reads the program RECORDING -- and the audio half is the
+        # point, because libobs does not mix the two scenes for us and a transition that forgets
+        # audio_render makes the scene SILENT for its whole duration with nothing visibly wrong.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/transition-proof.py --plugin-build .
+
       - name: The shared pack control block has not drifted
         id: placement
         # Static, so it needs no display. OBS's effect language has no #include, so the

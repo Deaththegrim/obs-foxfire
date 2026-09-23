@@ -1,0 +1,64 @@
+/* The transition every other one is measured against: a straight cross-dissolve from tex_a to
+   tex_b. It is bundled rather than packed away because "dissolve" is the transition kind's default
+   preset (ff_instance_defaults), and a default that does not resolve leaves a brand new transition
+   rendering nothing at all.
+
+   `softness` widens a luminance-driven wipe into a dissolve. At 1.0 it is a plain linear
+   cross-fade; below that, brighter parts of the outgoing scene give way first, which reads as a
+   burn rather than a fade. `beat_kick` is the only audio in it, and it is deliberately small --
+   a transition lasts 300ms and anything louder than a nudge just looks like a glitch. */
+uniform float4x4 ViewProj;
+uniform texture2d image;
+uniform texture2d tex_a;
+uniform texture2d tex_b;
+uniform float2 uv_size;
+uniform float progress;
+uniform float beat;
+uniform float softness <string label = "Softness"; float minimum = 0.05; float maximum = 1.0; float step = 0.01;> = 1.0;
+uniform float beat_kick <string label = "Beat kick"; float minimum = 0.0; float maximum = 0.2; float step = 0.005;> = 0.0;
+
+sampler_state linSampler {
+	Filter = Linear;
+	AddressU = Clamp;
+	AddressV = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv = v.uv;
+	return o;
+}
+
+float4 PSDraw(VertData v) : TARGET
+{
+	float4 a = tex_a.Sample(linSampler, v.uv);
+	float4 b = tex_b.Sample(linSampler, v.uv);
+
+	/* progress is 0..1 across the transition; the beat only ever pushes it forward, and is
+	   clamped so a loud moment cannot make the cut land early or run past the end. */
+	float t = clamp(progress + beat * beat_kick, 0.0, 1.0);
+
+	/* Per-pixel threshold from the outgoing scene's luminance. softness 1.0 collapses the
+	   spread to nothing, which is an ordinary uniform cross-fade. */
+	float luma = dot(a.rgb, float3(0.299, 0.587, 0.114));
+	float spread = 1.0 - softness;
+	float edge = t * (1.0 + spread) - spread * luma;
+	float mixv = clamp(edge, 0.0, 1.0);
+
+	return lerp(a, b, mixv);
+}
+
+technique Draw
+{
+	pass {
+		vertex_shader = VSDefault(v);
+		pixel_shader = PSDraw(v);
+	}
+}

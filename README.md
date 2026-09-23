@@ -12,13 +12,17 @@ Foxfire is a free GPL OBS Studio plugin: an audio-reactive layered shader visual
 
 Foxfire ships as **two separate plugins**, so you can install one without the other:
 
-`obs-foxfire` — the visualizer, adding two OBS object types:
+`obs-foxfire` — the visualizer, adding three OBS object types:
 
 * **Foxfire Visualizer** (a source) — an audio-reactive layered shader visualizer. Add it to a
   scene, pick a pack, pick a preset, and it reacts to whatever audio you point it at (the master
   mix, or a specific source).
 * **Foxfire Effects** (a filter) — the same layered shader engine, attached to any other source, so
   its output gets the reactive treatment instead of drawing on its own.
+* **Foxfire Transition** (a scene transition) — the same engine again, given the outgoing and
+  incoming scenes as `tex_a` and `tex_b` and where it is between them. Add it from the **+** on
+  OBS's Scene Transitions box and pick a pack preset of kind `transition`; the bundled `demo` pack
+  ships `dissolve`. The audio is crossfaded at equal power, so a cut does not dip in the middle.
 
 `obs-foxfire-alerts` — the alerts engine:
 

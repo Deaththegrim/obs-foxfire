@@ -27,7 +27,7 @@ static const char *flt_name(void *d)
 
 static void *flt_create(obs_data_t *s, obs_source_t *self)
 {
-	return ff_instance_create(s, self, true);
+	return ff_instance_create(s, self, FF_KIND_FILTER);
 }
 
 static void flt_destroy(void *d)
@@ -42,7 +42,7 @@ static void flt_update(void *d, obs_data_t *s)
 
 static void flt_defaults(obs_data_t *s)
 {
-	ff_instance_defaults(s, true);
+	ff_instance_defaults(s, FF_KIND_FILTER);
 }
 
 static obs_properties_t *flt_props(void *d)

@@ -27,7 +27,7 @@ static const char *src_name(void *d)
 
 static void *src_create(obs_data_t *s, obs_source_t *self)
 {
-	return ff_instance_create(s, self, false);
+	return ff_instance_create(s, self, FF_KIND_SOURCE);
 }
 
 static void src_destroy(void *d)
@@ -42,7 +42,7 @@ static void src_update(void *d, obs_data_t *s)
 
 static void src_defaults(obs_data_t *s)
 {
-	ff_instance_defaults(s, false);
+	ff_instance_defaults(s, FF_KIND_SOURCE);
 }
 
 static obs_properties_t *src_props(void *d)

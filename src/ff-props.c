@@ -213,17 +213,23 @@ static bool licence_blocks(const struct ff_pack *pk)
 
 /* A source draws its own canvas (visualizer/overlay presets); a filter reworks another source's
    image (effects presets). Offering the wrong kind would load a stack that has nothing to read. */
-static bool preset_kind_matches(const struct ff_preset *pr, bool is_filter)
+static bool preset_kind_matches(const struct ff_preset *pr, enum ff_kind kind)
 {
-	if (is_filter)
+	switch (kind) {
+	case FF_KIND_FILTER:
 		return !strcmp(pr->kind, "effects");
-	return !strcmp(pr->kind, "visualizer") || !strcmp(pr->kind, "overlay");
+	case FF_KIND_TRANSITION:
+		return !strcmp(pr->kind, "transition");
+	case FF_KIND_SOURCE:
+	default:
+		return !strcmp(pr->kind, "visualizer") || !strcmp(pr->kind, "overlay");
+	}
 }
 
-static bool pack_has_a_preset_for(const struct ff_pack *pk, bool is_filter)
+static bool pack_has_a_preset_for(const struct ff_pack *pk, enum ff_kind kind)
 {
 	for (size_t i = 0; i < pk->npresets; i++)
-		if (preset_kind_matches(&pk->presets[i], is_filter))
+		if (preset_kind_matches(&pk->presets[i], kind))
 			return true;
 	return false;
 }
@@ -244,7 +250,7 @@ static void populate_pack_list(struct ff_instance *in, obs_property_t *p, const 
 	obs_property_list_clear(p);
 	for (size_t i = 0; i < in->packs.n; i++) {
 		const struct ff_pack *pk = &in->packs.packs[i];
-		if (pack_has_a_preset_for(pk, in->is_filter) || (current && !strcmp(pk->id, current)))
+		if (pack_has_a_preset_for(pk, in->kind) || (current && !strcmp(pk->id, current)))
 			obs_property_list_add_string(p, pk->name, pk->id);
 	}
 }
@@ -258,7 +264,7 @@ static void populate_preset_list(struct ff_instance *in, obs_property_t *p, cons
 	if (!pk)
 		return;
 	for (size_t i = 0; i < pk->npresets; i++)
-		if (preset_kind_matches(&pk->presets[i], in->is_filter))
+		if (preset_kind_matches(&pk->presets[i], in->kind))
 			obs_property_list_add_string(p, pk->presets[i].name, pk->presets[i].id);
 }
 
@@ -434,17 +440,17 @@ static void add_heavy_line(struct ff_instance *in, obs_properties_t *props)
 
 /* ------------------------------------------------------------------ lifecycle */
 
-struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self, bool is_filter)
+struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self, enum ff_kind kind)
 {
 	struct ff_instance *in = bzalloc(sizeof *in);
 	pthread_mutex_init(&in->state_lock, NULL);
 	in->self = self;
-	in->is_filter = is_filter;
+	in->kind = kind;
 	in->audio = ff_audio_create();
 	refresh_packs(in);
 	obs_enter_graphics();
 	in->renderer = ff_renderer_create();
-	if (is_filter) {
+	if (ff_needs_capture(kind)) {
 		in->capture = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		/* the one GPU object created outside ff_renderer_create; flt_render (ff-filter.c) resets
 		   and begins it every frame with no null check of its own, so a create failure here must
@@ -488,7 +494,7 @@ void ff_instance_update(struct ff_instance *in, obs_data_t *s)
 	/* a filter has no S_WIDTH/S_HEIGHT settings -- its size comes from its target every frame
 	   (flt_render sets in->width/height before calling ff_instance_render), so reading them here
 	   would either read stale zeros or, worse, some other key's leftover value */
-	if (!in->is_filter) {
+	if (ff_owns_canvas(in->kind)) {
 		in->width = (uint32_t)obs_data_get_int(s, S_WIDTH);
 		in->height = (uint32_t)obs_data_get_int(s, S_HEIGHT);
 	}
@@ -545,15 +551,23 @@ void ff_instance_update(struct ff_instance *in, obs_data_t *s)
 		obs_log(LOG_WARNING, "pack '%s' preset '%s': %s", pack, preset, warn);
 }
 
-void ff_instance_defaults(obs_data_t *s, bool is_filter)
+void ff_instance_defaults(obs_data_t *s, enum ff_kind kind)
 {
 	obs_data_set_default_string(s, S_PACK, "demo");
-	obs_data_set_default_string(s, S_PRESET, is_filter ? "glow-only" : "bars");
-	/* a filter has no S_WIDTH/S_HEIGHT property (ff_instance_properties skips them) and
-	   ff_instance_update ignores the keys for a filter too -- setting defaults nobody ever reads
-	   would just be a landmine for a future reader wondering why a filter's saved settings carry
-	   a width/height it never respects */
-	if (!is_filter) {
+	/* each kind's default preset has to be one IT can load: the pack dropdown and the preset
+	   list both filter by kind, so a default of the wrong kind would leave a new source
+	   pointing at a preset that is not in its own list. */
+	static const char *DEFAULT_PRESET[] = {
+		[FF_KIND_SOURCE] = "bars",
+		[FF_KIND_FILTER] = "glow-only",
+		[FF_KIND_TRANSITION] = "dissolve",
+	};
+	obs_data_set_default_string(s, S_PRESET, DEFAULT_PRESET[kind]);
+	/* only a source has S_WIDTH/S_HEIGHT properties (ff_instance_properties skips them
+	   otherwise) and ff_instance_update ignores the keys for the other kinds too -- setting
+	   defaults nobody ever reads would just be a landmine for a future reader wondering why a
+	   filter's saved settings carry a width/height it never respects */
+	if (ff_owns_canvas(kind)) {
 		obs_data_set_default_int(s, S_WIDTH, 1920);
 		obs_data_set_default_int(s, S_HEIGHT, 1080);
 	}
@@ -592,7 +606,7 @@ obs_properties_t *ff_instance_properties(struct ff_instance *in)
 	populate_preset_list(in, presets, in->pack_id);
 	obs_property_set_modified_callback(presets, on_preset_changed);
 
-	if (!in->is_filter) {
+	if (ff_owns_canvas(in->kind)) {
 		obs_properties_add_int(props, S_WIDTH, obs_module_text("Foxfire.Width"), 16, 8192, 1);
 		obs_properties_add_int(props, S_HEIGHT, obs_module_text("Foxfire.Height"), 16, 8192, 1);
 	}
@@ -631,6 +645,14 @@ obs_properties_t *ff_instance_properties(struct ff_instance *in)
 
 gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, uint32_t w, uint32_t h)
 {
+	/* 0 progress and no pair: a visualizer and a filter are not "doing" something with a
+	   beginning and an end -- that is the alert source's and the transition's business. */
+	return ff_instance_render_ex(in, input, NULL, 0.f, w, h);
+}
+
+gs_texture_t *ff_instance_render_ex(struct ff_instance *in, gs_texture_t *input, const struct ff_pair_tex *pair,
+				    float progress, uint32_t w, uint32_t h)
+{
 	if (!in)
 		return NULL;
 	/* a failed read can have torn the destination, so it lands in a local: the instance keeps
@@ -638,7 +660,5 @@ gs_texture_t *ff_instance_render(struct ff_instance *in, gs_texture_t *input, ui
 	struct ff_frame f;
 	if (ff_audio_read(in->audio, &f))
 		in->frame = f;
-	/* 0: a visualizer and a filter are not "doing" something with a beginning and an end --
-	   that is the alert source's business. */
-	return ff_renderer_render(in->renderer, &in->frame, 0.f, input, w, h, in->dt);
+	return ff_renderer_render(in->renderer, &in->frame, progress, input, pair, w, h, in->dt);
 }

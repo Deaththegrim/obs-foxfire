@@ -721,7 +721,7 @@ static void alert_render(void *d, gs_effect_t *effect)
 	/* the pack's art first, underneath */
 	if (a->renderer) {
 		gs_texture_t *art =
-			ff_renderer_render(a->renderer, NULL, progress, NULL, a->width, a->height, 1.f / 60.f);
+			ff_renderer_render(a->renderer, NULL, progress, NULL, NULL, a->width, a->height, 1.f / 60.f);
 		if (art) {
 			gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 			gs_eparam_t *img = gs_effect_get_param_by_name(def, "image");
