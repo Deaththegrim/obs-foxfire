@@ -62,6 +62,7 @@ import base64
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -87,6 +88,35 @@ FF_MAX_PRESETS = 64
 VISUALIZER_KINDS = {"visualizer", "overlay"}
 EFFECTS_KINDS = {"effects"}
 ALERT_KINDS = {"alert"}
+# Rendered elsewhere: a transition exists only during a cut and cannot be screenshotted at all
+# (it is not in the canvas by name). tools/transition-proof.py drives a real one.
+TRANSITION_KINDS = {"transition"}
+
+
+def _kinds_the_loader_accepts(repo: Path) -> set[str]:
+    """The accepted kinds, read out of src/ff-pack.c rather than written here a second time.
+
+    This list has now drifted twice in one day. Adding `transition` to the engine and not to the
+    loader refused the whole bundled pack; adding it to the loader and not to THIS file failed
+    every run of the render proof. A third hand-maintained copy would drift a third time, so the
+    C source is the single source of truth and the assertion below is what notices.
+    """
+    src = (repo / "src" / "ff-pack.c").read_text()
+    m = re.search(r"static const char \*KINDS\[\] = \{([^}]*)\}", src)
+    if not m:
+        raise RuntimeError("could not find KINDS[] in src/ff-pack.c -- if it moved or was renamed, "
+                           "this check has to follow it rather than be deleted")
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+
+def check_kind_lists_agree(repo: Path) -> None:
+    mine = VISUALIZER_KINDS | EFFECTS_KINDS | ALERT_KINDS | TRANSITION_KINDS
+    theirs = _kinds_the_loader_accepts(repo)
+    ff_proof.check("this proof knows every preset kind the loader accepts",
+                   mine == theirs,
+                   f"proof.py has {sorted(mine)}, src/ff-pack.c accepts {sorted(theirs)}"
+                   + (f"; MISSING HERE: {sorted(theirs - mine)}" if theirs - mine else "")
+                   + (f"; NOT ACCEPTED THERE: {sorted(mine - theirs)}" if mine - theirs else ""))
 
 WARN_TAG = "[obs-foxfire] warn: "
 ERROR_TAG = "[obs-foxfire] error: "
@@ -325,9 +355,19 @@ async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Pa
             (out / f"{pack_id}-{pr['id']}.png").write_bytes(raw)
             ratio, hue = analyse(raw)
             unit = "nonblank"
+        elif kind in TRANSITION_KINDS:
+            # Skipped here, and SAID rather than passed over: a transition renders only during a
+            # cut between two scenes, so there is no screenshot of one to take. Covered by
+            # tools/transition-proof.py, which drives a real cut and reads the recording.
+            print(f"  [skip] {pack_id}/{pr['id']}: kind 'transition' -- covered by transition-proof.py")
+            report["presets"].append({"pack": pack_id, "id": pr["id"], "kind": kind,
+                                      "nonblank_ratio": None, "dominant_hue": None,
+                                      "ok": None, "skipped": "rendered by transition-proof.py"})
+            continue
         else:
             ff_proof.check(f"pack preset {pack_id}/{pr['id']} has a recognised kind", False,
-                            f"kind={kind!r} not in {sorted(VISUALIZER_KINDS | EFFECTS_KINDS | ALERT_KINDS)}")
+                            f"kind={kind!r} not in "
+                            f"{sorted(VISUALIZER_KINDS | EFFECTS_KINDS | ALERT_KINDS | TRANSITION_KINDS)}")
             report["presets"].append({"pack": pack_id, "id": pr["id"], "kind": kind,
                                        "nonblank_ratio": 0.0, "dominant_hue": -1.0, "ok": False})
             continue
@@ -375,7 +415,10 @@ async def drive(pack_dir: Path | None, probe_dir: Path | None, out: Path, port: 
                                 f"{n} preset(s) in pack.json, expected 1..{FF_MAX_PRESETS} "
                                 f"(matches the engine's own refusal, src/ff-pack.c:196)")
             else:
-                expected += n
+                # Only presets this proof can actually render arm a check. A transition arms one
+                # in transition-proof.py instead, and counting it here would make expected
+                # permanently exceed armed -- which is the signal that something did not run.
+                expected += sum(1 for d in preset_decls if d.get("kind") not in TRANSITION_KINDS)
                 try:
                     await enumerate_pack(client, pack_id, preset_decls, out, report)
                 except Exception as e:
@@ -387,7 +430,7 @@ async def drive(pack_dir: Path | None, probe_dir: Path | None, out: Path, port: 
             # +1 below is the "found and enumerated" check() itself, so a fully successful run's
             # armed count still equals expected exactly (Important 2's armed-vs-expected gate).
             probe_id, probe_decls = _load_manifest(probe_dir)
-            expected += len(probe_decls) + 1
+            expected += sum(1 for d in probe_decls if d.get("kind") not in TRANSITION_KINDS) + 1
             try:
                 await enumerate_pack(client, probe_id, probe_decls, out, report)
             except Exception as e:
@@ -443,6 +486,9 @@ def terminate_process_group(proc: subprocess.Popen) -> None:
 
 async def run(args) -> int:
     repo = Path(args.plugin_build).resolve()
+    # Before OBS is even started: this costs nothing and its failure explains every
+    # "unrecognised kind" below it, which otherwise read as broken packs.
+    check_kind_lists_agree(repo)
     out = Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     pack_dir = Path(args.pack).resolve() if args.pack else None
@@ -512,13 +558,22 @@ async def run(args) -> int:
 
     (out / "report.json").write_text(json.dumps(report, indent=2))
 
-    bad_presets = [p for p in report["presets"] if not p["ok"]]
+    # `ok is None` means SKIPPED, not failed: a transition preset cannot be screenshotted here
+    # and is covered by transition-proof.py. Counting it as blank put "2 blank preset(s)" on a
+    # completely clean run, which is the kind of false alarm that teaches people to ignore the
+    # summary line.
+    skipped_presets = [p for p in report["presets"] if p.get("ok") is None]
+    bad_presets = [p for p in report["presets"] if p.get("ok") is False]
     checks = report["checks"]
     print(f"proof: checks_armed={report['checks_armed']} "
           f"({report['presets_inspected']} pack preset(s) incl. install-probe, "
           f"{checks['passed']}/{checks['armed']} passed, {checks['expected']} expected); "
-          f"{len(bad_presets)} blank preset(s); {len(report['warnings'])} warning(s)")
+          f"{len(bad_presets)} blank preset(s); "
+          f"{len(skipped_presets)} not renderable here; {len(report['warnings'])} warning(s)")
     for p in report["presets"]:
+        if p.get("ok") is None:
+            print(f"  {p['pack']}/{p['id']:<14} {p['kind']:<10} {p.get('skipped', 'not rendered here')}")
+            continue
         print(f"  {p['pack']}/{p['id']:<14} {p['kind']:<10} nonblank={p['nonblank_ratio']:.3f} "
               f"hue={p['dominant_hue']:.0f} {'OK' if p['ok'] else 'BLANK'}")
     for w in report["warnings"]:
