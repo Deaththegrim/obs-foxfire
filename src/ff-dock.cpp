@@ -49,6 +49,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFontMetrics>
 #include <QPainter>
 #include <QResizeEvent>
+#include <QFrame>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
@@ -105,7 +107,12 @@ public:
 	void setFrame(const struct ff_frame &f)
 	{
 		frame_ = f;
-		update();
+		/* Only if it is actually on screen. With every transition listed a collection can carry
+		   thirty-odd rows, and repainting the ones scrolled out of the viewport is thirty
+		   widgets a tick doing work nobody can see. visibleRegion() is empty for a widget the
+		   scroll area has clipped away, and Qt repaints it on scroll anyway. */
+		if (!visibleRegion().isEmpty())
+			update();
 	}
 
 	/* Drawn even with no data: an empty meter is a meter reading silence, which is information.
@@ -254,12 +261,19 @@ public:
 		if (valid)
 			meter_->setFrame(f);
 
+		/* A proc call that did not dispatch tells us NOTHING about audio, so it must not feed
+		   the staleness counter: calldata_int on a key nobody set returns 0, which looks exactly
+		   like a frozen counter, and the row would then blame the user's audio routing for a
+		   dock that cannot read the tap at all. Two different problems, two different fixes. */
+		tap_ok_ = called;
+		if (!called)
+			return;
+
 		/* Is audio still FLOWING? Not answerable from the frame: a source being fed silence and
 		   a source nothing is feeding publish the same 64 zeroes, and the panel rendered both as
 		   a flat meter under a grey "Master audio" -- so an instance that had gone deaf looked
 		   exactly like a quiet stream. The publish counter is the only thing that differs, and it
-		   moves whether the audio is loud or silent, so this cannot fire during normal operation
-		   the way a level threshold would. */
+		   moves whether the audio is loud or silent. */
 		if (seq != last_seq_) {
 			last_seq_ = seq;
 			still_ = 0;
@@ -268,8 +282,18 @@ public:
 		}
 	}
 
-	/* true once no new frame has arrived for STALE_TICKS meter ticks (~1 s) */
+	/* No new frame for STALE_TICKS meter ticks.
+	
+	   Only MEANINGFUL in MASTER mode, and tickStatus is what applies that condition. In MASTER
+	   mode the pump is guaranteed by our own audio_output_connect, so a counter that stops is
+	   genuinely broken. In SOURCE mode it is not a fault at all: a media source that finished
+	   playing, a stopped VLC source, an application capture whose app closed and a browser source
+	   between cues all simply stop delivering callbacks, and every one of those is a normal,
+	   correct state that would otherwise have turned the row permanently red. A detector that
+	   fires when the design is WORKING is worse than no detector. */
 	bool audioStalled() const { return still_ >= STALE_TICKS; }
+	/* whether the meter tap answered at all on the last tick */
+	bool tapOk() const { return tap_ok_; }
 
 	void tickStatus(obs_source_t *src)
 	{
@@ -318,9 +342,14 @@ public:
 		add_fault(st.status);
 		if (st.install_failed)
 			add_fault(st.install_msg);
-		if (audioStalled())
-			add_fault("No audio has reached this source for a second; the meter is frozen, "
-				  "not silent.");
+		/* MASTER only -- see SourceRow::audioStalled for why this would otherwise fire on
+		   perfectly normal source-mode setups. No duration in the sentence: `still_` counts
+		   ticks since the ROW was built, a rescan rebuild resets it, and Qt coalesces missed
+		   timeouts, so any number here would be a claim the code cannot back. */
+		if (!tapOk())
+			add_fault(obs_module_text("Foxfire.Dock.NoTap"));
+		else if (st.audio_mode == FF_AUDIO_MASTER && audioStalled())
+			add_fault(obs_module_text("Foxfire.Dock.Frozen"));
 		status_->setStyleSheet(faulted ? "color: #ff6a4d;" : QString());
 		status_->setText(line);
 		/* Logged so the gate can read the COMPOSED line. Nothing else can: the grab is never
@@ -490,6 +519,7 @@ private:
 	QString last_logged_;   /* so the status line is logged on CHANGE, not 30 times a second */
 	unsigned last_seq_ = 0; /* the instance's publish counter at the previous meter tick */
 	int still_ = 0;         /* consecutive ticks with no new frame; see tickMeter */
+	bool tap_ok_ = true;    /* did the meter proc dispatch on the last tick */
 	int pending_ = 0;
 };
 
@@ -498,10 +528,29 @@ public:
 	explicit FoxfireDock(QWidget *parent = nullptr) : QWidget(parent)
 	{
 		setObjectName("foxfire_dock_root");
-		layout_ = new QVBoxLayout(this);
+		/* SCROLLED. Every transition a collection defines gets a row, and a collection with a
+		   pack's worth of them is thirty-odd -- which without this simply runs off the bottom of
+		   the dock with no way to reach the rows below, since a QDockWidget clips rather than
+		   scrolls. widgetResizable lets the inner widget follow the dock's width so the combos
+		   and meters still stretch. */
+		auto *outer = new QVBoxLayout(this);
+		outer->setContentsMargins(0, 0, 0, 0);
+		outer->setSpacing(0);
+		scroll_ = new QScrollArea(this);
+		scroll_->setWidgetResizable(true);
+		scroll_->setFrameShape(QFrame::NoFrame);
+				/* AsNeeded, not AlwaysOff: a row cannot shrink below ~285 px (margins plus two combos
+		   held at setMinimumContentsLength(9)), so a dock dragged narrower than that clipped the
+		   preset combo's right edge with no way to reach it. */
+		scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+		auto *inner = new QWidget(scroll_);
+		scroll_->setWidget(inner);
+		outer->addWidget(scroll_);
+
+		layout_ = new QVBoxLayout(inner);
 		layout_->setContentsMargins(0, 0, 0, 0);
 		layout_->setSpacing(0);
-		empty_ = new QLabel(obs_module_text("Foxfire.Dock.NoSources"), this);
+		empty_ = new QLabel(obs_module_text("Foxfire.Dock.NoSources"), inner);
 		empty_->setWordWrap(true);
 		empty_->setContentsMargins(8, 8, 8, 8);
 		layout_->addWidget(empty_);
@@ -565,11 +614,19 @@ public:
 		});
 	}
 
-	/* see grab_to -- one line per meter, in the grab's own coordinates */
+	/* The widget the rows actually live on -- the scroll area's inner widget, not the dock.
+	   Under widgetResizable that is sized to the full CONTENT height, while the dock itself is
+	   only the viewport: QAbstractScrollArea::sizeHint caps at 24 line-heights, so the dock
+	   measured 432 px tall no matter how many rows existed. Grabbing the dock therefore
+	   photographed the first three rows of six. */
+	QWidget *contentWidget() const { return scroll_->widget(); }
+
+	/* see grab_to -- one line per meter, in the CONTENT widget's coordinates, which is what
+	   grab_to captures */
 	void logMeterRects()
 	{
 		for (size_t i = 0; i < rows_.size(); i++) {
-			const QRect r = rows_[i]->meterRectIn(this);
+			const QRect r = rows_[i]->meterRectIn(contentWidget());
 			obs_log(LOG_INFO, "dock-grab: meter %d at %d,%d %dx%d", int(i), r.x(), r.y(),
 				r.width(), r.height());
 		}
@@ -586,7 +643,6 @@ private:
 	struct Found {
 		std::vector<QString> names;
 		std::vector<obs_weak_source_t *> weaks; /* owned until handed to a row or released */
-		obs_source_t *current_transition = nullptr; /* borrowed for the length of the scan */
 	};
 
 	static bool collect(void *param, obs_source_t *s)
@@ -594,13 +650,11 @@ private:
 		auto *f = static_cast<Found *>(param);
 		if (!is_foxfire(s))
 			return true;
-		/* Transitions: only the one that is actually in use. Every transition a collection
-		   defines is a live source, so enumerating all of them put one row per CONFIGURED
-		   transition in the panel -- measured at 31 rows for a collection with two scenes,
-		   twenty-nine of them transitions nobody was using, each metering at 30 Hz. A streamer
-		   cuts with one at a time, and that one is worth a row. */
-		if (strcmp(obs_source_get_id(s), "foxfire_transition") == 0 && s != f->current_transition)
-			return true;
+		/* EVERY Foxfire object, transitions included, whether or not the transition is the one
+		   currently selected -- junkie's call, so a preset can be retuned without switching to
+		   that transition first. It makes the panel long (a pack's worth of transitions is
+		   thirty-odd rows), which is why the dock scrolls and why a meter scrolled out of view
+		   does not repaint. */
 		const char *n = obs_source_get_name(s);
 		f->names.emplace_back(QString::fromUtf8(n ? n : ""));
 		/* the enumerator does not keep the source alive past this call; obs.h names
@@ -617,12 +671,7 @@ private:
 		   narrow one never yields a filter or a transition, and two of the three ids is_foxfire
 		   matches were unreachable. The dock listed only visualizers while telling anyone with a
 		   Foxfire filter or transition that there were no Foxfire sources at all. */
-		/* A strong ref for the scan only; collect compares against it and never keeps it. */
-		found.current_transition = obs_frontend_get_current_transition();
 		obs_enum_all_sources(collect, &found);
-		if (found.current_transition)
-			obs_source_release(found.current_transition);
-		found.current_transition = nullptr;
 
 		/* Rebuild only when the set actually changed: replacing the rows every second would
 		   throw away the peak-hold state the meters are carrying and flicker the layout. */
@@ -644,7 +693,7 @@ private:
 			rows_.clear();
 			for (size_t i = 0; i < found.names.size(); i++) {
 				/* the row takes ownership of the weak ref */
-				auto *row = new SourceRow(found.names[i], found.weaks[i], this);
+				auto *row = new SourceRow(found.names[i], found.weaks[i], layout_->parentWidget());
 				layout_->insertWidget(int(i), row);
 				rows_.push_back(row);
 				withSource(row, [row](obs_source_t *src) {
@@ -844,6 +893,7 @@ private:
 		obs_source_release(s);
 	}
 
+	QScrollArea *scroll_;
 	QVBoxLayout *layout_;
 	QLabel *empty_;
 	QTimer *rescan_;
@@ -864,7 +914,11 @@ void grab_to(const char *path)
 	if (!g_dock)
 		return;
 	g_dock->seedMeters();
-	const QImage img = g_dock->grab().toImage();
+	/* the CONTENT widget, not the dock -- see FoxfireDock::contentWidget. Grabbing the dock
+	   captured only the scroll viewport, so every row past the third was missing from the
+	   picture while the gate went on counting six meter rects. */
+	QWidget *content = g_dock->contentWidget();
+	const QImage img = (content ? content : static_cast<QWidget *>(g_dock))->grab().toImage();
 	const bool saved = !img.isNull() && img.save(QString::fromUtf8(path), "PNG");
 	obs_log(LOG_INFO, "dock-grab: %dx%d saved=%s -> %s", img.width(), img.height(), saved ? "TRUE" : "FALSE", path);
 	/* Where the meters are, so the gate can count bar pixels somewhere it KNOWS is a meter. The

@@ -25,14 +25,17 @@ Foxfire ships as **two separate plugins**, so you can install one without the ot
   ships `dissolve`. The audio is crossfaded at equal power, so a cut does not dip in the middle.
 * **Foxfire** (a dock) — a panel inside OBS listing every Foxfire object in the current scene
   collection, each with its live meters, what audio is feeding it, and pack/preset dropdowns you
-  can switch from without opening Properties. Open it from **View → Docks → Foxfire**. Scene
-  transitions appear only while they are the one selected in Scene Transitions, since every
-  transition a collection defines is a live object and listing all of them buries the rest.
+  can switch from without opening Properties. Open it from **View → Docks → Foxfire**. Every
+  Foxfire object is listed, scene transitions included and whether or not a transition is the one
+  currently selected, so a preset can be retuned without switching to it first — the panel scrolls,
+  because a collection with a pack's worth of transitions runs to thirty-odd rows.
   Built only when the plugin is configured with `ENABLE_QT` and `ENABLE_FRONTEND_API`; the
   per-source meter tap it reads is plain libobs and is in every build, so anything holding an
-  `obs_source_t *` — an obs-websocket script, another plugin — can read the same values. A row
-  whose audio has stopped arriving says so rather than sitting at a flat meter, which otherwise
-  looks exactly like a quiet stream.
+  `obs_source_t *` — an obs-websocket script, another plugin — can read the same values. A row on
+  the master mix whose audio stops arriving says so, rather than sitting at a flat meter that looks
+  exactly like a quiet stream. (Only the master mix: a source-mode row follows something that is
+  entitled to fall silent — a media source that finished, a capture whose app closed — so silence
+  there is not a fault.)
 
 `obs-foxfire-alerts` — the alerts engine:
 

@@ -138,8 +138,13 @@ def main() -> int:
     tsources = [src(f"FF {pack}/{pid}", "foxfire_transition", {"pack": pack, "preset": pid})
                 for pack, pid in trans]
 
+    # The name MUST equal the FILENAME STEM or OBS ignores the collection outright -- so it is
+    # taken FROM the file being written, not from a constant. Hardcoding STEM while leaving --out
+    # free meant `--out .../Foxfire_Review_2.json` wrote a collection named Foxfire_Review into a
+    # file named Foxfire_Review_2, printed "wrote <path>", exited 0, and OBS silently ignored it:
+    # the exact failure this module's docstring exists to warn about, reachable through its own CLI.
     doc = {
-        "name": STEM,  # MUST equal the filename stem -- see the module docstring
+        "name": a.out.stem,
         "current_scene": "1 — Visualizer",
         "current_program_scene": "1 — Visualizer",
         "current_transition": tsources[0]["name"],
@@ -157,8 +162,15 @@ def main() -> int:
         shutil.copy(a.out, a.out.with_suffix(".json.bak"))
     a.out.write_text(json.dumps(doc, indent=4))
     print(f"wrote {a.out}")
-    print(f"  3 scenes, {len([s for s in sources if s['id'] != 'scene'])} sources "
-          f"(1 visualizer, 1 effects filter, 2 plain), {len(tsources)} transitions")
+    plain = [s for s in sources if s["id"] == "color_source_v3"]
+    filters = [f for s in sources for f in s.get("filters", [])]
+    viz_srcs = [s for s in sources if s["id"] == "foxfire_visualizer"]
+    # Counted, not asserted in a hardcoded string: the old line said "2 plain" when there were
+    # three, and implied the effects filter was one of the top-level sources when it is nested in
+    # the plate's `filters`. Someone checking "did the filter make it in" was told yes by a
+    # sentence that was not counting it.
+    print(f"  3 scenes, {len(viz_srcs)} visualizer, {len(filters)} effects filter(s) (nested), "
+          f"{len(plain)} plain colour source(s), {len(tsources)} transitions")
     print(f"  visualizer preset '{viz[0]}', effects preset '{fx[0]}'")
     print("  NOT made active: pick it under Scene Collection in the OBS menu bar.")
     return 0

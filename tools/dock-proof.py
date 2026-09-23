@@ -74,13 +74,13 @@ FILTER_PRESET = "bloom-soft"
 TRANSITION_PRESETS = ["wipe-linear", "wipe-diagonal", "wipe-iris"]
 FAULT_AUDIO = "ff-no-such-audio-source"
 STALE_TEXT = "the meter is frozen"
-# visualizer + faulted visualizer + the effects filter + the CURRENT transition (and only that one,
-# though three are defined). Asserted exactly, not as a floor: `>= 1` passed for the old
-# inputs-only enumerator, for this, and for the 31-row bug alike.
-EXPECTED_ROWS = 4
+# visualizer + faulted visualizer + the effects filter + all THREE transitions. Asserted exactly,
+# not as a floor: `>= 1` passed for the old inputs-only enumerator and for this alike, and only an
+# exact count can see a filter or a transition going missing.
+EXPECTED_ROWS = 6
 # Mirrors EXPECTED_CHECKS for the dock half, which counted its checks and compared them to nothing --
 # a check deleted or made unreachable by a branch simply lowered the total and still exited 0.
-EXPECTED_DOCK_CHECKS = 16
+EXPECTED_DOCK_CHECKS = 19
 
 
 def _item(name: str, i: int) -> dict:
@@ -116,11 +116,12 @@ def write_minimal_collection(obs_cfg: Path) -> None:
 
       * a visualizer          -- an input
       * an effects FILTER on an ordinary colour source -- NOT an input, invisible to obs_enum_sources
-      * THREE transitions, one of them current -- also not inputs, and only the current one may
-        appear, which is what pins the filtering rather than merely the enumerator
+      * THREE transitions -- also not inputs, and all three must appear: junkie chose every
+        configured transition over only the active one, so a preset can be retuned without
+        switching to that transition first
 
-    Expected rows: exactly EXPECTED_ROWS. Reverting to obs_enum_sources gives 1; dropping the
-    current-transition filter gives 5. Both fail.
+    Expected rows: exactly EXPECTED_ROWS. Reverting to obs_enum_sources gives 2 -- only the two
+    visualizers, since a filter and a transition are not inputs.
 
     A second visualizer is deliberately FAULTED (it follows an audio source that does not exist),
     because the status line's fault path is otherwise never taken in a healthy collection -- so
@@ -231,12 +232,18 @@ def _measure(png: Path, rects):
     near = (np.abs(a - np.array(BAR_RGB, dtype=float)) <= 12).all(axis=2)
     img_h, img_w = a.shape[0], a.shape[1]
     inside = np.zeros((img_h, img_w), dtype=bool)
+    # How many rects actually LANDED in the image, which is not the same as how many were logged.
+    # A rect clipped entirely outside contributes no pixels and used to vanish silently, so the
+    # gate counted six meters while reading three -- it printed its own coverage wrongly, which is
+    # the one thing a coverage line must never do.
+    hit = 0
     for (x, y, w, h) in rects:
         x0, y0 = max(x, 0), max(y, 0)
         x1, y1 = min(x + w, img_w), min(y + h, img_h)
         if x1 > x0 and y1 > y0:
             inside[y0:y1, x0:x1] = True
-    return a.shape[1], a.shape[0], float(a.std()), int((near & inside).sum())
+            hit += 1
+    return a.shape[1], a.shape[0], float(a.std()), int((near & inside).sum()), hit
 
 
 def main() -> int:
@@ -352,11 +359,10 @@ def main() -> int:
     # completely wrong. Pixels cannot tell those apart; this line can.
     #
     # EXACT, not `>= 1`. The collection holds a visualizer, a faulted visualizer, an effects filter
-    # and three transitions of which one is current, so the only right answer is 4: the
-    # inputs-only enumerator gives 2, and listing every transition gives 6.
+    # and three transitions, ALL of which are listed, so the only right answer is 6 -- the
+    # inputs-only enumerator gives 2, because a filter and a transition are not inputs.
     dcheck("and finds every kind of Foxfire object in the scene", n == EXPECTED_ROWS,
-           f"{n} row(s), expected {EXPECTED_ROWS} (2 visualizers + 1 filter + the current "
-           f"transition, of 3 defined)" if n >= 0 else "the dock never reported a source count")
+           f"{n} row(s), expected {EXPECTED_ROWS} (2 visualizers + 1 filter + 3 transitions)" if n >= 0 else "the dock never reported a source count")
     g = DOCK_GRAB.search(text)
     dcheck("and draws itself to a picture", bool(g) and g.group(3) == "TRUE",
            f"{g.group(1)}x{g.group(2)} saved={g.group(3)}" if g else "no grab line")
@@ -368,7 +374,14 @@ def main() -> int:
     dcheck("and reports where its meters are", len(meter_rects) == n and n > 0,
            f"{len(meter_rects)} meter rect(s) for {n} row(s): {meter_rects}")
     if grab_stats:
-        w, h, std, bars = grab_stats
+        w, h, std, bars, hit = grab_stats
+        # EVERY meter has to be inside the picture, not merely logged. The scroll area made the
+        # dock's own sizeHint the VIEWPORT height (Qt caps QAbstractScrollArea::sizeHint at 24
+        # line-heights), so a six-row dock grabbed at 432 px and the last three meters sat below
+        # the image entirely -- measured. The bar count still passed, because one visible meter
+        # clears the threshold seventy times over.
+        dcheck("and every meter is inside the picture", hit == len(meter_rects) and hit == n,
+               f"{hit} of {len(meter_rects)} logged rect(s) landed in the {w}x{h} grab, {n} row(s)")
         # 0.00 is what an empty widget of the same size measures; a laid-out one measured 39-41.
         dcheck("and the picture is not a blank panel", std > 5.0, f"{w}x{h} pixel std {std:.2f}")
         # The meters specifically. Before the grab the dock seeds every meter with a known ramp
@@ -377,9 +390,10 @@ def main() -> int:
         # MeterWidget::paintEvent that returns immediately passed the std check above with room to
         # spare, because the labels carry the variance. Counting the bar colour INSIDE the meter
         # rects is what tells them apart; see BAR_RGB for why the restriction matters.
-        dcheck("and the meters actually drew their bars", bars > 50 and len(meter_rects) >= 1,
-               f"{bars} pixel(s) of the bar colour {BAR_RGB} inside {len(meter_rects)} meter rect(s)")
+        dcheck("and the meters actually drew their bars", bars > 50 and hit >= 1,
+               f"{bars} pixel(s) of the bar colour {BAR_RGB} inside {hit} inspected meter rect(s)")
     else:
+        dcheck("and every meter is inside the picture", False, "no PNG was produced")
         dcheck("and the picture is not a blank panel", False, "no PNG was produced")
         dcheck("and the meters actually drew their bars", False, "no PNG was produced")
 
@@ -458,10 +472,15 @@ def main() -> int:
                f"{len(healthy)} healthy line(s), "
                f"{sum(STALE_TEXT in l for l in healthy)} wrongly called stalled"
                if healthy else "no healthy status line was logged")
-        dcheck("and a row nothing is feeding IS reported as stalled",
-               any(STALE_TEXT in l for l in faulted),
-               f"{sum(STALE_TEXT in l for l in faulted)} of {len(faulted)} faulted line(s) "
-               f"say the meter is frozen")
+        # The SOURCE-mode row is fed by nothing and its counter never moves -- and it must STILL
+        # not be called frozen. A media source that finished playing, a stopped VLC source, a
+        # closed application capture and a browser source between cues all look exactly like this
+        # and are all normal. Staleness is only a fault in MASTER mode, where our own connection
+        # guarantees the pump; this is the check that holds that line.
+        dcheck("and a source-mode row with no audio is NOT called frozen",
+               bool(faulted) and not any(STALE_TEXT in l for l in faulted),
+               f"{sum(STALE_TEXT in l for l in faulted)} of {len(faulted)} source-mode line(s) "
+               f"wrongly say the meter is frozen")
         dcheck("a faulted row still says which preset it is on", bool(faulted) and
                any(f"{PICK_PACK} / {PICK_FROM}" in l for l in faulted),
                f"{len(faulted)} faulted line(s): {faulted[:2]}" if faulted
@@ -472,14 +491,14 @@ def main() -> int:
         dcheck("clicking a preset: it was not already there", False, "not run")
         dcheck("a faulted row still says which preset it is on", False, "not run")
         dcheck("and a healthy row is not reported as stalled", False, "not run")
-        dcheck("and a row nothing is feeding IS reported as stalled", False, "not run")
+        dcheck("and a source-mode row with no audio is NOT called frozen", False, "not run")
     else:
         print(f"  [SKIP] the preset switch: pack '{PICK_PACK}' not found")
         skipped += ["clicking a preset switches the source",
                     "clicking a preset: it was not already there",
                     "a faulted row still says which preset it is on",
                     "and a healthy row is not reported as stalled",
-                    "and a row nothing is feeding IS reported as stalled"]
+                    "and a source-mode row with no audio is NOT called frozen"]
 
     # The PACK half, in its own boot. It takes a different path through apply(): the pack is
     # written, the preset list is rebuilt for the new pack, and the source then has to end up on a
@@ -487,9 +506,14 @@ def main() -> int:
     # canvas blank when it goes wrong -- ff_instance_update answers a preset that is not in the
     # pack by loading zero layers.
     if missing and not a.allow_skips:
+        # All FOUR the else-branch runs, not two: a short count here made the total disagree with
+        # EXPECTED_DOCK_CHECKS and the run exited 2 saying "a dock check has gone missing", which
+        # is false -- a private pack simply was not installed, the default state in CI.
         dcheck("switching pack lands on a preset the new pack has", False,
                f"pack(s) not found: {', '.join(missing)} -- pass --allow-skips if that is expected")
         dcheck("switching pack: it was not already there", False, "not run")
+        dcheck("the dock can tell that the new pack dropped the preset", False, "not run")
+        dcheck("and the pack-switch run came down cleanly", False, "not run")
     elif missing:
         print(f"  [SKIP] the pack switch: pack(s) not found: {', '.join(missing)}")
         skipped += ["switching pack lands on a preset the new pack has",
@@ -530,6 +554,20 @@ def main() -> int:
                f"kept={k.group(1)} preset='{k.group(2)}' (expected FALSE / '{PICK_FROM}')" if k
                else "the dock never logged whether the pack kept the preset")
         _check_exit("the pack-switch run", prc)
+
+    # The case the feature is FOR, and the one nothing could reach before: master audio that
+    # flowed and then stopped. Headless OBS pumps the master mix for as long as anything is
+    # connected, so the only way to produce a genuinely deaf MASTER instance is to make one go
+    # deaf -- FOXFIRE_STALL_MS in ff-audio.c stops publishing a set time after the first frame.
+    # Its own boot, because it silences every source and would fail the healthy check above.
+    stext, _, _, src_ = boot({"FOXFIRE_STALL_MS": "3000"}, want_grab=False)
+    slines = STATUS_LINE.findall(stext)
+    master = [l for l in slines if FAULT_AUDIO not in l]
+    dcheck("a master row whose audio STOPS is reported as frozen",
+           any(STALE_TEXT in l for l in master),
+           f"{sum(STALE_TEXT in l for l in master)} of {len(master)} master-mode line(s) "
+           f"report the meter frozen after the feed was cut")
+    _check_exit("the stall run", src_)
 
     _check_exit("the main run", rc)
 

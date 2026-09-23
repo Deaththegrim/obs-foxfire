@@ -19,7 +19,12 @@ So every check runs against EVERY shader in the pack, and reports which ones it 
 Measured, over the six shipped packs (one preset per distinct shader file):
 
     basics   19/19    4 shaders   rotation not measurable on 1 (radial, a ring)
-    ember    14/14    3 shaders   rotation not measurable on 1 (foxfire-ring)
+    ember    --/--    2 shaders   baseline STALE: foxfire-ring was removed 2026-09-23 along with
+                                  the shader and sigil it owned, so the 14/14 over 3 shaders below
+                                  no longer describes this pack. Re-measure before trusting an
+                                  ember number -- a fresh run printing a smaller clean sweep must
+                                  not read as a pass against a baseline that counted a preset that
+                                  no longer exists.
     tune     10/10    2 shaders   rotation measurable on both
     ring      4/4     1 shader    rotation not measurable on 1 (the ring itself)
     overlay   5/5     1 shader    rotation measurable

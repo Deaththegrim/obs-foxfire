@@ -4,6 +4,8 @@
 #include <media-io/audio-io.h>
 #include <util/threading.h>
 #include <string.h>
+#include <stdlib.h>
+#include <util/platform.h>
 #include <plugin-support.h>
 
 struct ff_audio {
@@ -19,10 +21,30 @@ struct ff_audio {
 	bool master_connected;
 	float mono[FF_HOP];
 	struct ff_frame scratch;
+	uint64_t first_feed_ns; /* see stall_after_ns -- diagnostic only */
 };
+
+/* Diagnostic hook, same shape as FOXFIRE_PROC_PROOF and FOXFIRE_DOCK_PICK: stop publishing this
+   many milliseconds after the first frame, so the dock's staleness detector has a real "audio
+   flowed and then stopped" to fire on. Nothing else can produce that state headlessly -- the
+   master mix is pumped for as long as anything is connected to it, which is exactly why a frozen
+   counter in MASTER mode means something is broken. */
+static uint64_t stall_after_ns(void)
+{
+	const char *ms = getenv("FOXFIRE_STALL_MS");
+	return ms ? (uint64_t)atoll(ms) * 1000000ULL : 0;
+}
 
 static void feed(struct ff_audio *a, const float *l, const float *r, uint32_t frames)
 {
+	const uint64_t stall = stall_after_ns();
+	if (stall) {
+		const uint64_t now = os_gettime_ns();
+		if (!a->first_feed_ns)
+			a->first_feed_ns = now;
+		else if (now - a->first_feed_ns > stall)
+			return; /* deliberately deaf from here on */
+	}
 	while (frames) {
 		uint32_t n = frames > FF_HOP ? FF_HOP : frames;
 		for (uint32_t i = 0; i < n; i++)
