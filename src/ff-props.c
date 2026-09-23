@@ -71,6 +71,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
    "every field of this struct", not "every byte the two threads touch". */
 
 #include "ff-props.h"
+#include "ff-dock-proto.h"
 #include <plugin-support.h>
 #include "ff-compat.h"
 #include <util/darray.h>
@@ -470,6 +471,46 @@ static void add_heavy_line(struct ff_instance *in, obs_properties_t *props)
 
 /* ------------------------------------------------------------------ lifecycle */
 
+/* The two per-source procedures. See ff-dock-proto.h for why they exist and why they are not a Qt
+   feature: proc_handler is bare libobs, so this tap is in every build and anything holding an
+   obs_source_t * can read it -- a dock, an obs-websocket script, another plugin.
+   Both run on WHATEVER THREAD CALLS THEM, which in practice is the caller's UI or timer thread.
+   That is a third thread reaching an ff_instance, so each takes exactly the lock the threading
+   contract above assigns to what it touches, and neither touches anything the contract leaves
+   unlocked (in->frame, in->width/height, in->dt are single-writer by construction and stay that
+   way -- the frame here comes from the audio tap's own seqlock, not from in->frame). */
+static void ff_proc_meter_read(void *data, calldata_t *cd)
+{
+	struct ff_instance *in = data;
+	struct ff_frame *out = calldata_ptr(cd, FF_CD_OUT_FRAME);
+	/* No lock: ff_audio_read goes through the handoff seqlock, which is safe to read from any
+	   number of threads at once and never blocks the audio thread that writes it. */
+	calldata_set_bool(cd, FF_CD_VALID, out && ff_audio_read(in->audio, out));
+}
+
+static void ff_proc_dock_status(void *data, calldata_t *cd)
+{
+	struct ff_instance *in = data;
+	struct ff_dock_status *out = calldata_ptr(cd, FF_CD_OUT_STATUS);
+	if (!out)
+		return;
+	memset(out, 0, sizeof *out);
+	pthread_mutex_lock(&in->state_lock);
+	snprintf(out->pack_id, sizeof out->pack_id, "%s", in->pack_id);
+	snprintf(out->preset_id, sizeof out->preset_id, "%s", in->preset_id);
+	snprintf(out->status, sizeof out->status, "%s", in->status);
+	snprintf(out->install_msg, sizeof out->install_msg, "%s", in->install_msg);
+	out->install_failed = in->install_failed;
+	pthread_mutex_unlock(&in->state_lock);
+	/* AFTER the unlock, never inside it: ff_audio_describe takes ff_audio's conn_lock, and the
+	   lock order this file documents is that conn_lock is taken OUTSIDE state_lock, never nested
+	   under it. Nesting here would invert it against every other path and deadlock against a
+	   configure() running the other way round. */
+	ff_audio_describe(in->audio, &out->audio_mode, out->audio_source, sizeof out->audio_source, out->audio_msg,
+			  sizeof out->audio_msg);
+	out->audio_ok = out->audio_msg[0] == 0;
+}
+
 struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self, enum ff_kind kind)
 {
 	struct ff_instance *in = bzalloc(sizeof *in);
@@ -477,6 +518,15 @@ struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self,
 	in->self = self;
 	in->kind = kind;
 	in->audio = ff_audio_create();
+	/* Registered for the source's lifetime and never removed: callback/proc.h has no per-proc
+	   unregister, only proc_handler_destroy for the whole handler, which the obs_source_t owns
+	   and frees with itself. That is safe by construction rather than by luck -- reaching this
+	   handler from outside requires a live strong reference to the source, and libobs cannot be
+	   freeing the source (and with it the `in` captured here) while one is held. It is the same
+	   refcount discipline ff-audio.c's connect_source/have_live_source already depends on. */
+	proc_handler_t *ph = obs_source_get_proc_handler(self);
+	proc_handler_add(ph, "void " FF_PROC_METER_READ "(in ptr out_frame, out bool valid)", ff_proc_meter_read, in);
+	proc_handler_add(ph, "void " FF_PROC_DOCK_STATUS "(in ptr out_status)", ff_proc_dock_status, in);
 	refresh_packs(in);
 	obs_enter_graphics();
 	in->renderer = ff_renderer_create();

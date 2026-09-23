@@ -92,6 +92,20 @@ jobs:
             python3 tools/transition-proof.py --plugin-build . --allow-skips
           fi
 
+      - name: Every source exposes its live meters
+        id: tap
+        # The per-source proc handlers (ff-props.c) are how anything outside an instance reaches
+        # its analysis -- a dock, an obs-websocket script, another plugin -- without the plugin
+        # growing a global registry of live instances. They are the first proc handler in this
+        # project, and nothing else in this job can see them: the unit tests cannot build an
+        # instance (ff_instance_create needs a graphics context) and obs-websocket has no generic
+        # "call this proc" request. So the plugin checks itself on a real source in a real OBS and
+        # this reads the verdict out of the log. NOT gated on Qt -- proc handlers are bare libobs,
+        # so this runs in the default build.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/dock-proof.py --plugin-build .
+
       - name: The shared pack control block has not drifted
         id: placement
         # Static, so it needs no display. OBS's effect language has no #include, so the

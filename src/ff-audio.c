@@ -192,16 +192,31 @@ bool ff_audio_read(struct ff_audio *a, struct ff_frame *out)
 	return ff_handoff_read(&a->ho, out);
 }
 
-bool ff_audio_status(struct ff_audio *a, char *msg, size_t cap)
+bool ff_audio_describe(struct ff_audio *a, enum ff_audio_mode *mode, char *name, size_t name_cap, char *msg,
+		       size_t msg_cap)
 {
 	pthread_mutex_lock(&a->conn_lock);
 	bool ok = true;
+	if (mode)
+		*mode = a->mode;
+	if (name && name_cap)
+		/* empty in MASTER mode: source_name keeps whatever was last followed, and a panel
+		   showing that next to "Master audio" names a source it is not listening to */
+		snprintf(name, name_cap, "%s", a->mode == FF_AUDIO_SOURCE ? a->source_name : "");
 	if (a->mode == FF_AUDIO_SOURCE && !have_live_source(a)) {
-		snprintf(msg, cap, "Audio source '%s' not found; showing silence.", a->source_name);
+		if (msg && msg_cap)
+			snprintf(msg, msg_cap, "Audio source '%s' not found; showing silence.", a->source_name);
 		ok = false;
 	}
 	pthread_mutex_unlock(&a->conn_lock);
-	if (ok && cap)
+	if (ok && msg && msg_cap)
 		msg[0] = 0;
 	return ok;
+}
+
+/* One sentence, produced in one place. The properties panel and the dock both describe the same
+   fault, and two wordings of it are two bug reports about the same thing. */
+bool ff_audio_status(struct ff_audio *a, char *msg, size_t cap)
+{
+	return ff_audio_describe(a, NULL, NULL, 0, msg, cap);
 }
