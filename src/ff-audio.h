@@ -27,3 +27,7 @@ bool ff_audio_describe(struct ff_audio *a, enum ff_audio_mode *mode, char *name,
 		       size_t msg_cap);
 /* status for the properties: returns false and fills msg when following a source that is missing */
 bool ff_audio_status(struct ff_audio *a, char *msg, size_t cap);
+
+/* How many frames this instance has ever published, for staleness. Takes no lock -- it is one
+   atomic load through the handoff, the same way ff_audio_read goes. */
+unsigned ff_audio_seq(struct ff_audio *a);

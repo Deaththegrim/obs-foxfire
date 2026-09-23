@@ -31,3 +31,8 @@ bool ff_handoff_read(struct ff_handoff *h, struct ff_frame *out)
 	}
 	return false; /* reader lost the race FF_HANDOFF_MAX_TRIES times; caller keeps previous frame */
 }
+
+unsigned ff_handoff_seq(const struct ff_handoff *h)
+{
+	return atomic_load_explicit(&h->seq, memory_order_acquire);
+}

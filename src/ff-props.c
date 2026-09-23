@@ -486,6 +486,10 @@ static void ff_proc_meter_read(void *data, calldata_t *cd)
 	/* No lock: ff_audio_read goes through the handoff seqlock, which is safe to read from any
 	   number of threads at once and never blocks the audio thread that writes it. */
 	calldata_set_bool(cd, FF_CD_VALID, out && ff_audio_read(in->audio, out));
+	/* Published alongside the frame, not derived from it: a silent frame and a frame that never
+	   arrived are byte-identical, so the only evidence a reader has that audio is still FLOWING
+	   is that this number moved since last time. */
+	calldata_set_int(cd, FF_CD_SEQ, (long long)ff_audio_seq(in->audio));
 }
 
 static void ff_proc_dock_status(void *data, calldata_t *cd)
@@ -525,7 +529,7 @@ struct ff_instance *ff_instance_create(obs_data_t *settings, obs_source_t *self,
 	   freeing the source (and with it the `in` captured here) while one is held. It is the same
 	   refcount discipline ff-audio.c's connect_source/have_live_source already depends on. */
 	proc_handler_t *ph = obs_source_get_proc_handler(self);
-	proc_handler_add(ph, "void " FF_PROC_METER_READ "(in ptr out_frame, out bool valid)", ff_proc_meter_read, in);
+	proc_handler_add(ph, "void " FF_PROC_METER_READ "(in ptr out_frame, out bool valid, out int seq)", ff_proc_meter_read, in);
 	proc_handler_add(ph, "void " FF_PROC_DOCK_STATUS "(in ptr out_status)", ff_proc_dock_status, in);
 	refresh_packs(in);
 	obs_enter_graphics();

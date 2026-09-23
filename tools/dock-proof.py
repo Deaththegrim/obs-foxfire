@@ -52,7 +52,10 @@ PICK_ASK = re.compile(r"dock-pick: asked for (pack|preset) '([^']*)'")
 PICK_WAS = re.compile(r"dock-pick: source was on '([^']*)' / '([^']*)'")
 PICK_GOT = re.compile(r"dock-pick: source now on '([^']*)' / '([^']*)'")
 PACK_KEPT = re.compile(r"dock: pack switch kept=(TRUE|FALSE) preset='([^']*)'")
-STATUS_LINE = re.compile(r"dock-status: '([^']*)'")
+# To END OF LINE, not to the next quote: the composed status line contains the fault sentence,
+# which itself quotes the source name ("Audio source 'Mic' not found"), so a quote-delimited
+# capture stopped at that apostrophe and the check was matching a truncated string.
+STATUS_LINE = re.compile(r"dock-status: (.*)$", re.M)
 PICK_ERR = re.compile(r"dock-pick: (no rows|'[^']*' is not in the (?:preset|pack) list"
                       r"|the row went away before the write landed)")
 
@@ -70,13 +73,14 @@ PICK_PACK_TO = "ring"
 FILTER_PRESET = "bloom-soft"
 TRANSITION_PRESETS = ["wipe-linear", "wipe-diagonal", "wipe-iris"]
 FAULT_AUDIO = "ff-no-such-audio-source"
+STALE_TEXT = "the meter is frozen"
 # visualizer + faulted visualizer + the effects filter + the CURRENT transition (and only that one,
 # though three are defined). Asserted exactly, not as a floor: `>= 1` passed for the old
 # inputs-only enumerator, for this, and for the 31-row bug alike.
 EXPECTED_ROWS = 4
 # Mirrors EXPECTED_CHECKS for the dock half, which counted its checks and compared them to nothing --
 # a check deleted or made unreachable by a branch simply lowered the total and still exited 0.
-EXPECTED_DOCK_CHECKS = 14
+EXPECTED_DOCK_CHECKS = 16
 
 
 def _item(name: str, i: int) -> dict:
@@ -440,7 +444,24 @@ def main() -> int:
         # audio source that does not exist, so exactly one row must show BOTH its pack/preset and
         # the refusal sentence. Replacing the line with the fault -- the behaviour before this --
         # drops the "basics / bars" half, and nothing else in the harness could see the difference.
-        faulted = [l for l in STATUS_LINE.findall(text) if FAULT_AUDIO in l]
+        lines = STATUS_LINE.findall(text)
+        faulted = [l for l in lines if FAULT_AUDIO in l]
+        # The FALSE-POSITIVE half, and the more important one. A staleness detector that fires
+        # during normal operation is worse than none: it would put a red "the meter is frozen"
+        # under every healthy source. The master-mix rows are being fed (silence, headless, but
+        # fed), so their publish counter moves and they must NOT be called stalled. Checked
+        # explicitly rather than assumed, because whether OBS pumps the master mix with no audio
+        # device is exactly the sort of thing that is plausible and wrong.
+        healthy = [l for l in lines if FAULT_AUDIO not in l]
+        dcheck("and a healthy row is not reported as stalled", bool(healthy) and
+               not any(STALE_TEXT in l for l in healthy),
+               f"{len(healthy)} healthy line(s), "
+               f"{sum(STALE_TEXT in l for l in healthy)} wrongly called stalled"
+               if healthy else "no healthy status line was logged")
+        dcheck("and a row nothing is feeding IS reported as stalled",
+               any(STALE_TEXT in l for l in faulted),
+               f"{sum(STALE_TEXT in l for l in faulted)} of {len(faulted)} faulted line(s) "
+               f"say the meter is frozen")
         dcheck("a faulted row still says which preset it is on", bool(faulted) and
                any(f"{PICK_PACK} / {PICK_FROM}" in l for l in faulted),
                f"{len(faulted)} faulted line(s): {faulted[:2]}" if faulted
@@ -450,11 +471,15 @@ def main() -> int:
                f"pack '{PICK_PACK}' not found -- pass --allow-skips if that is expected")
         dcheck("clicking a preset: it was not already there", False, "not run")
         dcheck("a faulted row still says which preset it is on", False, "not run")
+        dcheck("and a healthy row is not reported as stalled", False, "not run")
+        dcheck("and a row nothing is feeding IS reported as stalled", False, "not run")
     else:
         print(f"  [SKIP] the preset switch: pack '{PICK_PACK}' not found")
         skipped += ["clicking a preset switches the source",
                     "clicking a preset: it was not already there",
-                    "a faulted row still says which preset it is on"]
+                    "a faulted row still says which preset it is on",
+                    "and a healthy row is not reported as stalled",
+                    "and a row nothing is feeding IS reported as stalled"]
 
     # The PACK half, in its own boot. It takes a different path through apply(): the pack is
     # written, the preset list is rebuilt for the new pack, and the source then has to end up on a

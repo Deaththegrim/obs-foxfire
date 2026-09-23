@@ -52,6 +52,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define FF_PROC_METER_READ "ff_meter_read"
 #define FF_CD_OUT_FRAME "out_frame"
 #define FF_CD_VALID "valid"
+/* The instance's publish counter, so a reader can tell a source being fed SILENCE from one nothing
+   is feeding at all. Both look identical in the frame -- every band zero -- and the panel used to
+   render them identically too: a flat meter under a grey "Master audio". */
+#define FF_CD_SEQ "seq"
 
 /* void ff_dock_status(in ptr out_status)
    Fills the caller's `struct ff_dock_status`. */

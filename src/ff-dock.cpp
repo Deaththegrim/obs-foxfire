@@ -69,6 +69,11 @@ constexpr int METER_MS = 33;
    expensive thing this dock does. */
 constexpr int RESCAN_MS = 1000;
 
+/* ~1 s of meter ticks with no new frame before a source is called stalled. Generous on purpose:
+   a couple of missed polls is the seqlock race doing its job, not a fault, and a detector that
+   cries wolf during normal operation is worse than none. */
+constexpr int STALE_TICKS = 30;
+
 /* Which combos a row is waiting to write. A bitmask, so a pack change and a preset change landing
    in the same tick are both honoured -- see SourceRow::chosen. */
 constexpr int FF_PENDING_PACK = 1;
@@ -241,13 +246,30 @@ public:
 		calldata_set_ptr(&cd, FF_CD_OUT_FRAME, &f);
 		const bool called = proc_handler_call(obs_source_get_proc_handler(src), FF_PROC_METER_READ, &cd);
 		const bool valid = called && calldata_bool(&cd, FF_CD_VALID);
+		const unsigned seq = unsigned(calldata_int(&cd, FF_CD_SEQ));
 		calldata_free(&cd);
 		/* An invalid read is not an error and must not blank the meter: nothing has been
 		   published yet, or this poll lost the seqlock race. Either way the last frame is
 		   still the truest thing we have. */
 		if (valid)
 			meter_->setFrame(f);
+
+		/* Is audio still FLOWING? Not answerable from the frame: a source being fed silence and
+		   a source nothing is feeding publish the same 64 zeroes, and the panel rendered both as
+		   a flat meter under a grey "Master audio" -- so an instance that had gone deaf looked
+		   exactly like a quiet stream. The publish counter is the only thing that differs, and it
+		   moves whether the audio is loud or silent, so this cannot fire during normal operation
+		   the way a level threshold would. */
+		if (seq != last_seq_) {
+			last_seq_ = seq;
+			still_ = 0;
+		} else if (still_ < STALE_TICKS) {
+			still_++;
+		}
 	}
+
+	/* true once no new frame has arrived for STALE_TICKS meter ticks (~1 s) */
+	bool audioStalled() const { return still_ >= STALE_TICKS; }
 
 	void tickStatus(obs_source_t *src)
 	{
@@ -296,6 +318,9 @@ public:
 		add_fault(st.status);
 		if (st.install_failed)
 			add_fault(st.install_msg);
+		if (audioStalled())
+			add_fault("No audio has reached this source for a second; the meter is frozen, "
+				  "not silent.");
 		status_->setStyleSheet(faulted ? "color: #ff6a4d;" : QString());
 		status_->setText(line);
 		/* Logged so the gate can read the COMPOSED line. Nothing else can: the grab is never
@@ -463,6 +488,8 @@ private:
 	MeterWidget *meter_;
 	QString list_pack_;     /* the pack the preset list was built for; see syncSelection */
 	QString last_logged_;   /* so the status line is logged on CHANGE, not 30 times a second */
+	unsigned last_seq_ = 0; /* the instance's publish counter at the previous meter tick */
+	int still_ = 0;         /* consecutive ticks with no new frame; see tickMeter */
 	int pending_ = 0;
 };
 

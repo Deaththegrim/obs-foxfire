@@ -228,3 +228,8 @@ bool ff_audio_status(struct ff_audio *a, char *msg, size_t cap)
 {
 	return ff_audio_describe(a, NULL, NULL, 0, msg, cap);
 }
+
+unsigned ff_audio_seq(struct ff_audio *a)
+{
+	return ff_handoff_seq(&a->ho);
+}
