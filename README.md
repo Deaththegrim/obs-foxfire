@@ -23,6 +23,14 @@ Foxfire ships as **two separate plugins**, so you can install one without the ot
   incoming scenes as `tex_a` and `tex_b` and where it is between them. Add it from the **+** on
   OBS's Scene Transitions box and pick a pack preset of kind `transition`; the bundled `demo` pack
   ships `dissolve`. The audio is crossfaded at equal power, so a cut does not dip in the middle.
+* **Foxfire** (a dock) — a panel inside OBS listing every Foxfire object in the current scene
+  collection, each with its live meters, what audio is feeding it, and pack/preset dropdowns you
+  can switch from without opening Properties. Open it from **View → Docks → Foxfire**. Scene
+  transitions appear only while they are the one selected in Scene Transitions, since every
+  transition a collection defines is a live object and listing all of them buries the rest.
+  Built only when the plugin is configured with `ENABLE_QT` and `ENABLE_FRONTEND_API`; the
+  per-source meter tap it reads is plain libobs and is in every build, so anything holding an
+  `obs_source_t *` — an obs-websocket script, another plugin — can read the same values.
 
 `obs-foxfire-alerts` — the alerts engine:
 
