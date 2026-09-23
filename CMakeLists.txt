@@ -55,6 +55,44 @@ endif()
 # Licence verification belongs here and NOWHERE ELSE. It has to produce bytes identical to what
 # packforge signs, and tools/licence-interop.py exists to catch that drifting; a second copy would
 # double the surface that gate has to cover.
+# --- libwebp: animated WebP, which nothing else in the stack can decode ---------------------
+#
+# libobs decodes GIF with libnsgif and every other image through ffmpeg, and ffmpeg has no
+# animated-webp decoder -- `ffprobe` refuses an animated .webp on its own. So an animated WebP did
+# not merely fail to animate in Foxfire, it failed to LOAD. GIF is not a substitute for art: 256
+# colours and one bit of alpha ruin the gradients and soft edges an overlay is made of.
+#
+# FETCHED AND BUILT, not found on the system. obs-deps does not document whether it ships libwebp,
+# the Windows build is already this project's release blocker, and a dependency that might be
+# absent there is exactly the wrong risk to add. Pinned to a tag so the build is reproducible.
+# BSD-2-Clause, which GPL-2.0-or-later can link.
+#
+# Only the decoder and the demuxer are wanted: every tool, example, encoder extra and test is
+# switched off, both to keep the build short and so nothing ships that nobody calls.
+include(FetchContent)
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_LINK_STATIC ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  libwebp
+  # the project's own GitHub mirror; chromium.googlesource.com is the canonical host but
+  # clones from it stalled here, and a dependency that hangs the configure is a dependency
+  # nobody can build
+  GIT_REPOSITORY https://github.com/webmproject/libwebp.git
+  GIT_TAG v1.4.0
+  GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(libwebp)
+
 add_library(
   ff-core
   STATIC
@@ -65,6 +103,7 @@ add_library(
   src/ff-audio.c
   src/ff-pack.c
   src/ff-layers.c
+  src/ff-webp.c
   vendor/kissfft/kiss_fft.c
   vendor/kissfft/kiss_fftr.c
   vendor/monocypher/monocypher.c
@@ -82,6 +121,8 @@ target_compile_options(ff-core PUBLIC $<$<C_COMPILER_ID:MSVC>:/experimental:c11a
 # m: the analysis is all sinf/powf/log10f. There is no such library on MSVC -- the math
 # functions live in the CRT -- and asking for one that does not exist fails the link.
 target_link_libraries(ff-core PUBLIC OBS::libobs $<$<NOT:$<C_COMPILER_ID:MSVC>>:m>)
+# webpdemux pulls in webp itself; both are static, so nothing extra ships beside the plugin.
+target_link_libraries(ff-core PUBLIC webpdemux webp)
 if(TARGET plugin-support)
   target_link_libraries(ff-core PUBLIC plugin-support)
 endif()

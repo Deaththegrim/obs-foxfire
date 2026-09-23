@@ -38,6 +38,10 @@ struct ff_param {
 	float def[4];             /* live value: preset default, then the user's setting if there is one */
 	float preset_def[4];      /* the pristine preset value; what "Restore Defaults" must come back to */
 	gs_image_file_t *tex;     /* TEXTURE params only: whatever is currently bound */
+	/* An ANIMATED WebP, which libobs cannot load at all (ffmpeg has no animated-webp decoder).
+	   When this is set it owns the picture and `tex` is NULL: anim_tex is what gets bound. */
+	struct ff_webp *anim;
+	gs_texture_t *anim_tex;
 	char tex_pack[512];       /* the pack's own asset, from <string path="...">; "" if none */
 	char tex_user[512];       /* the file the VIEWER picked; "" if none. Wins over tex_pack. */
 	bool tex_user_allowed;    /* the shader opted in with <bool user = true;> */

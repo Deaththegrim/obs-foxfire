@@ -1,4 +1,5 @@
 #include "ff-layers.h"
+#include "ff-webp.h"
 #include "ff-pack.h"
 #include <plugin-support.h>
 #include "ff-compat.h"
@@ -242,6 +243,14 @@ static void free_texture(struct ff_param *p)
 		p->grad_tex = NULL;
 		p->grad_dirty = true; /* so a reused param rebakes rather than binding the blank */
 	}
+	if (p->anim) {
+		ff_webp_close(p->anim);
+		p->anim = NULL;
+	}
+	if (p->anim_tex) {
+		gs_texture_destroy(p->anim_tex);
+		p->anim_tex = NULL;
+	}
 	if (!p->tex)
 		return;
 	gs_image_file_free(p->tex);
@@ -252,6 +261,24 @@ static void free_texture(struct ff_param *p)
 /* Loads one absolute file into p->tex. Graphics context required. */
 static bool load_texture_file(struct ff_param *p, const char *full)
 {
+	/* Animated WebP first, because libobs cannot load one AT ALL -- not "loads but does not
+	   animate": ffmpeg has no animated-webp decoder, so gs_image_file_init fails outright and
+	   the source renders blank. ff_webp_open takes only files that genuinely have more than one
+	   frame and hands everything else straight back, so a PNG costs one header sniff. */
+	p->anim = ff_webp_open(full);
+	if (p->anim) {
+		const uint8_t *rgba = ff_webp_advance(p->anim, 0);
+		const uint32_t w = ff_webp_width(p->anim), h = ff_webp_height(p->anim);
+		if (rgba)
+			p->anim_tex = gs_texture_create(w, h, GS_RGBA, 1, &rgba, GS_DYNAMIC);
+		if (p->anim_tex)
+			return true;
+		obs_log(LOG_WARNING, "animated webp '%s' decoded but no texture could be created", full);
+		ff_webp_close(p->anim);
+		p->anim = NULL;
+		return false;
+	}
+
 	p->tex = bzalloc(sizeof(gs_image_file_t));
 	gs_image_file_init(p->tex, full);
 	gs_image_file_init_texture(p->tex);
@@ -842,7 +869,8 @@ static void set_params(struct ff_renderer *r, struct ff_layer *L)
 				break;
 			}
 			/* an unbound texture2d would sample NULL, which is undefined on both backends */
-			gs_effect_set_texture(p->ep, p->tex ? p->tex->texture : r->blank);
+			gs_effect_set_texture(p->ep, p->anim_tex ? p->anim_tex
+							       : (p->tex ? p->tex->texture : r->blank));
 			if (p->tex_size_ep) {
 				/* 1x1 for the blank stand-in, so a shader dividing by it cannot divide
 				   by zero when no image is bound */
@@ -898,6 +926,14 @@ static void tick_animations(struct ff_renderer *r, float dt)
 		struct ff_layer *L = &r->layers[i];
 		for (size_t k = 0; k < L->nparams; k++) {
 			struct ff_param *p = &L->params[k];
+			if (p->anim) {
+				/* our own decoder; it returns a canvas only when the frame changed */
+				const uint8_t *rgba = ff_webp_advance(p->anim, ns);
+				if (rgba && p->anim_tex)
+					gs_texture_set_image(p->anim_tex, rgba,
+							     ff_webp_width(p->anim) * 4, false);
+				continue;
+			}
 			if (!p->tex || !p->tex->loaded || !p->tex->texture)
 				continue;
 			/* tick reports whether the frame moved; uploading unconditionally would push a

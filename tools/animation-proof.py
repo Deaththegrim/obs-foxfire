@@ -46,15 +46,15 @@ SHOT_GAP = 0.12  # 9 x 120ms = ~1.08s, three full loops of a 300ms animation
 #   "1"  -- must render and hold still
 #   "0"  -- must FAIL to load; recorded as a capability, not skipped
 #
-# Animated WebP is the "0". Not an oversight and not OBS's fault: libobs decodes everything except
-# GIF through ffmpeg, and ffmpeg's webp decoder does not handle the animated (VP8X/ANMF) container
-# at all -- `ffprobe anim.webp` says "image data not found" on its own, before OBS is involved.
-# GIF animates because libobs decodes it separately, with libnsgif. It is asserted rather than
-# dropped so that the day it starts working, this check fails and says so.
+# Animated WebP was a "0" until the engine grew its own decoder, and the flip is exactly what that
+# expectation was written for. libobs still cannot do it -- it decodes GIF with libnsgif, routes
+# every other image through ffmpeg, and ffmpeg has no animated-webp decoder, so `ffprobe` refuses
+# such a file on its own. ff-webp.c carries libwebp's WebPAnimDecoder instead. GIF is not an
+# acceptable substitute for art: 256 colours and one bit of alpha ruin gradients and soft edges.
 PRESETS = [
     ("anim-gif", "art.gif", ">1"),
+    ("anim-webp", "art.webp", ">1"),
     ("still-webp", "still.webp", "1"),
-    ("anim-webp", "art.webp", "0"),
     ("still-png", "art.png", "1"),  # the dead control -- must render and NOT move
 ]
 
