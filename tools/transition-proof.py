@@ -38,10 +38,30 @@ from PIL import Image  # noqa: E402
 
 FAILS: list[str] = []
 CHECKS: list[str] = []
+SKIPS: list[str] = []
 
 A_RGB = (220, 40, 40)
 B_RGB = (40, 60, 220)
 DURATION_MS = 4000
+
+# The packs live in a separate private repo. When it is not checked out, the wipe half of this
+# proof cannot run -- and says so, rather than passing with one fewer check and the same exit 0.
+# Two default locations because there are two layouts: CI checks the packs repo out beside this
+# one, and on junkie's machine both live under ~/vault/projects.
+def _find_packs() -> Path:
+    here = Path(__file__).resolve().parent.parent
+    for c in ([Path(os.environ["FF_PACKS"])] if os.environ.get("FF_PACKS") else []) + [
+            here.parent / "foxfire" / "packs",
+            Path.home() / "vault" / "projects" / "foxfire" / "packs"]:
+        if (c / "basics").is_dir():
+            return c
+    return here.parent / "foxfire" / "packs"
+
+
+WIPE_PACK = _find_packs() / "basics"
+WIPE_PRESET = "wipe-linear"
+WIPE_SOFTNESS = 0.15
+SWEEP_PRESET = "sweep-liquid"
 
 
 def check(name, ok, detail):
@@ -49,6 +69,11 @@ def check(name, ok, detail):
     print(f"  [{'PASS' if ok else 'FAIL'}] {name}: {detail}")
     if not ok:
         FAILS.append(name)
+
+
+def skip(name, why):
+    SKIPS.append(name)
+    print(f"  [SKIP] {name}: {why}")
 
 
 def bgra(rgb) -> int:
@@ -121,9 +146,16 @@ def scene_collection(name: str, tone_a: Path, tone_b: Path) -> dict:
         "sources": [colour("solidA", A_RGB), colour("solidB", B_RGB),
                     media("toneA", tone_a), media("toneB", tone_b),
                     scene("A", "solidA"), scene("B", "solidB")],
-        # The plugin transition, seeded here because obs-websocket cannot create one.
+        # The plugin transitions, seeded here because obs-websocket cannot create one. Two of
+        # them, selected in turn inside one recording: the bundled dissolve, which needs no pack
+        # installed, and the basics pack's mask-driven wipe, whose whole point is that the shape
+        # comes from a PNG and which therefore cannot be checked by "is this frame a mix".
         "transitions": [{"name": "FF", "id": "foxfire_transition",
-                         "settings": {"pack": "demo", "preset": "dissolve"}}],
+                         "settings": {"pack": "demo", "preset": "dissolve"}},
+                        {"name": "FFW", "id": "foxfire_transition",
+                         "settings": {"pack": "basics", "preset": WIPE_PRESET}},
+                        {"name": "FFS", "id": "foxfire_transition",
+                         "settings": {"pack": "basics", "preset": SWEEP_PRESET}}],
         "groups": [], "quick_transitions": [], "saved_projectors": [], "canvases": [],
         "preview_locked": False, "scaling_enabled": False, "scaling_level": 0,
         "scaling_off_x": 0.0, "scaling_off_y": 0.0, "virtual-camera": {"type2": 3},
@@ -209,6 +241,82 @@ def audio_rms(path: Path, start: float, length: float) -> float:
     return (sum(float(v) * v for v in a) / len(a)) ** 0.5 / 32768.0
 
 
+def load_sweep_generator():
+    """tools/make-sweep-thumbs.py out of the packs repo, or None when it is not checked out."""
+    import importlib.util
+    gen = WIPE_PACK.parent.parent / "tools" / "make-sweep-thumbs.py"
+    if not gen.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("make_sweep_thumbs", gen)
+    if not spec or not spec.loader:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def load_generator():
+    """tools/make-wipe-masks.py out of the packs repo, or None when it is not checked out.
+
+    Imported rather than reimplemented: the point of the check below is that the numpy `wipe()`
+    those thumbnails are drawn with and the HLSL one OBS runs are the same function. A second
+    copy written here would agree with neither.
+    """
+    import importlib.util
+    gen = WIPE_PACK.parent.parent / "tools" / "make-wipe-masks.py"
+    if not gen.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("make_wipe_masks", gen)
+    if not spec or not spec.loader:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def coverage_profile(img: Image.Image, out_rgb, in_rgb):
+    """Per column, how far that column has travelled from the outgoing scene to the incoming one.
+
+    Averaged down the column because the linear mask is constant in y, so noise from the video
+    encoder averages out while the wipe's shape does not.
+    """
+    import numpy as np
+    a = np.asarray(img, dtype=float)
+    span = np.array(in_rgb, float) - np.array(out_rgb, float)
+    # project each pixel onto the A->B line; the two colours differ in every channel, so this is
+    # far steadier than reading one of them
+    cov = ((a - np.array(out_rgb, float)) @ span) / float(span @ span)
+    return cov.mean(axis=0)
+
+
+def mask_row(png: Path, columns: int):
+    """The shipped mask PNG, sampled at the canvas's column centres exactly as `fit = 0` does."""
+    import numpy as np
+    m = np.asarray(Image.open(png).convert("L"), dtype=float) / 255.0
+    src = (np.arange(m.shape[1]) + 0.5) / m.shape[1]
+    dst = (np.arange(columns) + 0.5) / columns
+    return np.interp(dst, src, m.mean(axis=0))
+
+
+def fit_progress(mw, observed, mask, softness):
+    """The progress value that best explains the recorded frame, and how well it does.
+
+    A fit rather than an assertion about a fixed moment: the frame comes out of a video file at a
+    requested timestamp, so which instant of the transition it caught is known only to within a
+    frame or two. What is being measured is the SHAPE -- that the frame is this mask at some point
+    in its travel -- and the residual is what says so.
+    """
+    import numpy as np
+    zero = np.zeros(mask.shape + (1,))
+    one = np.ones(mask.shape + (1,))
+    best = (1e9, 0.0)
+    for t in np.arange(0.0, 1.0001, 0.002):
+        pred = mw.wipe(zero, one, mask, float(t), softness)[:, 0]
+        rms = float(np.sqrt(np.mean((pred - observed) ** 2)))
+        best = min(best, (rms, float(t)))
+    return best
+
+
 def mean_rgb(img: Image.Image):
     px = img.load()
     w, h = img.size
@@ -248,10 +356,30 @@ async def drive(rec_dir: Path):
         await asyncio.sleep(DURATION_MS / 1000.0 + 0.5)
         await c.request("SetRecordDirectory", {"recordDirectory": str(rec_dir)})
 
+        secs = DURATION_MS / 1000.0
+        wipe_ok = "FFW" in names and WIPE_PACK.is_dir()
+
         await start_recording(c)
         await asyncio.sleep(2.0)                    # settled on A
         await c.request("SetCurrentProgramScene", {"sceneName": "B"})
-        await asyncio.sleep(DURATION_MS / 1000.0 + 2.0)   # through the cut and settled on B
+        await asyncio.sleep(secs + 2.0)             # through the cut and settled on B
+        # The second cut, B back to A, with the mask-driven wipe selected. In the same recording:
+        # booting OBS twice to measure two transitions would double the slowest part of the run.
+        wipe_mid = 2.0 + secs + 2.0 + secs / 2.0
+        sweep_ok = "FFS" in names and WIPE_PACK.is_dir()
+        sweep_mid = wipe_mid + secs / 2.0 + 2.0 + secs / 2.0
+        if wipe_ok:
+            await c.request("SetCurrentSceneTransition", {"transitionName": "FFW"})
+            await c.request("SetCurrentSceneTransitionDuration", {"transitionDuration": DURATION_MS})
+            await c.request("SetCurrentProgramScene", {"sceneName": "A"})
+            await asyncio.sleep(secs + 2.0)
+        # The third cut, A to B again, with the covering sweep. Its whole claim is that the middle
+        # of the cut shows NEITHER scene, which no other check in this file can see.
+        if sweep_ok:
+            await c.request("SetCurrentSceneTransition", {"transitionName": "FFS"})
+            await c.request("SetCurrentSceneTransitionDuration", {"transitionDuration": DURATION_MS})
+            await c.request("SetCurrentProgramScene", {"sceneName": "B"})
+            await asyncio.sleep(secs + 2.0)
         path = Path((await c.request("StopRecord"))["outputPath"])
         await wait_recording_stopped(c)
 
@@ -289,6 +417,97 @@ async def drive(rec_dir: Path):
               f"mid/before = {during / max(quiet_ref, 1e-9):.2f}; summing two uncorrelated signals "
               f"at (1-t) and t sinks to about 0.71 in the middle, which is the hole this uses "
               f"sqrt to avoid")
+
+        # --- the mask-driven wipe -------------------------------------------------------------
+        # Everything above would pass on a transition that ignored its mask entirely: a uniform
+        # blend is "neither scene" and "about halfway" too. What separates a wipe from a dissolve
+        # is that the frame has SHAPE, and the shape is the PNG.
+        mw = load_generator()
+        if not wipe_ok:
+            skip("the basics pack's mask-driven wipe renders its mask",
+                 f"'FFW' in OBS's list: {'FFW' in names}; pack dir {WIPE_PACK}: {WIPE_PACK.is_dir()} "
+                 f"-- set FF_PACKS to the packs repo's packs/ to run this half")
+        elif mw is None:
+            skip("the basics pack's mask-driven wipe renders its mask",
+                 "tools/make-wipe-masks.py not found next to the pack; nothing to compare against")
+        else:
+            import numpy as np
+            frame = frame_at(path, wipe_mid)
+            # B is outgoing this time and A incoming -- the second cut runs the other way
+            observed = coverage_profile(frame, B_RGB, A_RGB)
+            # the mask the PRESET selects, read from the manifest rather than guessed from its id
+            manifest = json.loads((WIPE_PACK / "pack.json").read_text())
+            preset = next(p for p in manifest["presets"] if p["id"] == WIPE_PRESET)
+            mask = mask_row(WIPE_PACK / preset["layers"][0]["params"]["mask"], frame.size[0])
+            rms, t = fit_progress(mw, observed, mask, WIPE_SOFTNESS)
+            # Measured, by pinning the shader's luma to a constant: an uncovered frame fits
+            # progress 0.000 with an RMS of 0.0034. A flat profile is not unfittable, it is
+            # PERFECTLY fittable at either end, where every mask predicts the same flat frame.
+            # So the residual only means something inside the travel, and the shape check says so
+            # rather than leaving a green line next to a transition that ignores its mask.
+            in_flight = 0.15 < t < 0.85
+            check("the wipe was caught in flight, not at either end",
+                  in_flight,
+                  f"best-fit progress {t:.3f} -- at 0 or 1 the frame is flat and EVERY mask fits "
+                  f"it exactly, so a residual measured there says nothing about the shape")
+            check("the recorded frame is this mask, at some point in its travel",
+                  in_flight and rms < 0.06,
+                  f"RMS {rms:.4f} against make-wipe-masks.py's own wipe() at progress {t:.3f}"
+                  + ("" if in_flight else " -- REJECTED: that is an endpoint, see above"))
+            left = float(observed[: frame.size[0] // 4].mean())
+            right = float(observed[-frame.size[0] // 4:].mean())
+            check("and it travels the way the mask's greys run, left to right",
+                  left - right > 0.35,
+                  f"left quarter {left:.2f} vs right quarter {right:.2f} -- equal means no wipe, "
+                  f"reversed means the mask is being read inverted")
+            np.save("/tmp/ff-wipe-profile.npy", observed)
+            frame.save("/tmp/ff-wipe-mid.png")
+            print("  wipe frame: /tmp/ff-wipe-mid.png")
+
+        # --- the covering sweep ----------------------------------------------------------------
+        # A sweep is not judged by its shape but by what it HIDES. In the middle of the cut the
+        # frame must contain no trace of either scene: that is the one thing a bought video
+        # stinger does that a blend cannot, and the reason this preset exists.
+        msw = load_sweep_generator()
+        if not sweep_ok or msw is None:
+            skip("the covering sweep hides the cut completely",
+                 f"'FFS' in OBS's list: {'FFS' in names}; generator found: {msw is not None}; "
+                 f"pack dir {WIPE_PACK}")
+        else:
+            import numpy as np
+            sframe = frame_at(path, sweep_mid)
+            got = np.asarray(sframe, dtype=float)
+            near_a = (np.abs(got - np.array(A_RGB, float)).max(axis=2) < 24).sum()
+            near_b = (np.abs(got - np.array(B_RGB, float)).max(axis=2) < 24).sum()
+            total = got.shape[0] * got.shape[1]
+            check("mid-sweep the frame keeps no trace of either scene",
+                  (near_a + near_b) / total < 0.005,
+                  f"{near_a} px near A and {near_b} px near B out of {total} "
+                  f"({100.0 * (near_a + near_b) / total:.2f}%) -- anything above a rounding "
+                  f"fraction means the cut is visible through the cover")
+            pr = msw.SWEEPS[SWEEP_PRESET]
+            # Fitted across the hold, not assumed at its centre. The fill DRIFTS as the sweep
+            # travels, so the frame is a function of progress even while coverage is complete, and
+            # the recording's own start latency put the captured frame at about 0.575 of a cut
+            # requested at 0.5 -- a 12px offset that read as a total mismatch (RMS 0.19) until it
+            # was aligned (0.03). Same treatment as the wipe above: measure the shape, fit the
+            # moment.
+            blank = np.zeros((sframe.size[1], sframe.size[0], 3))
+            lo, hi = pr["swap_point"] - pr["hold"] / 2, pr["swap_point"] + pr["hold"] / 2
+            best = (1e9, 0.0)
+            for t in np.linspace(lo, hi, 21):
+                want = msw.render(WIPE_PACK / "art", pr, float(t), sframe.size, blank).astype(float)
+                best = min(best, (float(np.sqrt(np.mean(((got - want) / 255.0) ** 2))), float(t)))
+            rms, at = best
+            check("and it is the fill art the preset asks for",
+                  rms < 0.06,
+                  f"RMS {rms:.4f} against make-sweep-thumbs.py's own render of this preset, best "
+                  f"fit at progress {at:.3f} -- the scene colours are flat, so a frame that failed "
+                  f"to cover would be nowhere near it at any progress")
+            want = msw.render(WIPE_PACK / "art", pr, at, sframe.size, blank).astype(float)
+            sframe.save("/tmp/ff-sweep-mid.png")
+            Image.fromarray(want.clip(0, 255).astype(np.uint8), "RGB").save("/tmp/ff-sweep-want.png")
+            print("  sweep frame: /tmp/ff-sweep-mid.png  (predicted: /tmp/ff-sweep-want.png)")
     finally:
         await ws.close()
 
@@ -311,6 +530,8 @@ def main() -> int:
     try:
         proof.write_ws_config(obs_cfg)
         proof.install_plugin(repo, obs_cfg)
+        if WIPE_PACK.is_dir():
+            proof.install_pack(WIPE_PACK, obs_cfg)
         write_collection(obs_cfg, tone_a, tone_b)
         proof.wait_for_port_free(proof.PORT)
         p = subprocess.Popen(
@@ -330,7 +551,8 @@ def main() -> int:
         shutil.rmtree(cfg, ignore_errors=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
-    print(f"\ntransition proof: {len(CHECKS) - len(FAILS)}/{len(CHECKS)} passed")
+    print(f"\ntransition proof: {len(CHECKS) - len(FAILS)}/{len(CHECKS)} passed"
+          + (f", {len(SKIPS)} SKIPPED ({', '.join(SKIPS)})" if SKIPS else ""))
     if not CHECKS:
         print("transition proof: NOTHING INSPECTED")
         return 2
