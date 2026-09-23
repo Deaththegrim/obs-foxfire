@@ -46,7 +46,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QFontMetrics>
 #include <QPainter>
+#include <QResizeEvent>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
@@ -149,10 +151,17 @@ public:
 		  weak_(weak)
 	{
 		auto *lay = new QVBoxLayout(this);
-		lay->setContentsMargins(6, 4, 6, 6);
+		lay->setContentsMargins(8, 4, 8, 8);
 		lay->setSpacing(2);
 		title_ = new QLabel(name, this);
 		title_->setStyleSheet("font-weight: bold;");
+		/* OBS source names are freeform and a dock can be dragged narrower than this label's
+		   hint. Without this the name clips with no ellipsis and no way to read the rest;
+		   status_ already wraps, so the title was the one unbounded string in the row. Elided
+		   rather than wrapped because a long name would otherwise grow every row's height. */
+		title_->setTextFormat(Qt::PlainText);
+		title_->setToolTip(name);
+		title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
 		status_ = new QLabel(QString(), this);
 		status_->setWordWrap(true);
 
@@ -187,6 +196,20 @@ public:
 		if (weak_)
 			obs_weak_source_release(weak_);
 	}
+
+protected:
+	/* QLabel does not elide on its own -- setSizePolicy only lets it be squeezed, it does not
+	   change what is drawn -- so the text is re-elided whenever the row's width changes. The
+	   full name stays reachable as the tooltip. */
+	void resizeEvent(QResizeEvent *e) override
+	{
+		QWidget::resizeEvent(e);
+		const int w = title_->width();
+		if (w > 0)
+			title_->setText(QFontMetrics(title_->font()).elidedText(name_, Qt::ElideRight, w));
+	}
+
+public:
 
 	const QString &sourceName() const { return name_; }
 	obs_weak_source_t *weak() const { return weak_; }
@@ -255,14 +278,33 @@ public:
 		   preset is loaded, and the two together are what tell a missing pack apart from a
 		   missing audio source. The panel and the dock say the same sentence about the same
 		   problem because both get it from ff_audio_describe -- see ff-audio.c. */
-		const char *fault = (!st.audio_ok && st.audio_msg[0]) ? st.audio_msg : (st.status[0] ? st.status : nullptr);
-		if (fault) {
-			line += QStringLiteral("  ·  %1").arg(QString::fromUtf8(fault));
-			status_->setStyleSheet("color: #ff6a4d;");
-		} else {
-			status_->setStyleSheet(QString());
-		}
+		/* EVERY fault, not the first. These are independent -- a renamed mic and a pack that is
+		   not installed are both true at once -- and showing only the audio one meant the user
+		   fixed the mic, waited, and only then learned about the pack: two debugging round trips
+		   for one glance. install_msg is here too; it was carried across the proc boundary and
+		   then read by nobody, so a refused pack install showed an ordinary grey line in the one
+		   panel whose job it is to say so. */
+		bool faulted = false;
+		const auto add_fault = [&](const char *msg) {
+			if (!msg || !msg[0])
+				return;
+			line += QStringLiteral("  ·  %1").arg(QString::fromUtf8(msg));
+			faulted = true;
+		};
+		if (!st.audio_ok)
+			add_fault(st.audio_msg);
+		add_fault(st.status);
+		if (st.install_failed)
+			add_fault(st.install_msg);
+		status_->setStyleSheet(faulted ? "color: #ff6a4d;" : QString());
 		status_->setText(line);
+		/* Logged so the gate can read the COMPOSED line. Nothing else can: the grab is never
+		   OCR'd, so "append the fault" and "replace the line with it" were indistinguishable to
+		   every check in the harness. */
+		if (line != last_logged_) {
+			last_logged_ = line;
+			obs_log(LOG_INFO, "dock-status: '%s'", line.toUtf8().constData());
+		}
 	}
 
 	/* The pack and preset lists, taken from the source's OWN properties rather than scanned here.
@@ -285,6 +327,9 @@ public:
 		fill(pack_, obs_properties_get(props, S_PACK), want_pack);
 		const bool have = fill(preset_, obs_properties_get(props, S_PRESET), want_preset);
 		obs_properties_destroy(props);
+		/* which pack the preset list now belongs to -- syncSelection compares against this to
+		   tell "re-select" from "rebuild" */
+		list_pack_ = QString::fromUtf8(want_pack ? want_pack : "");
 		return have;
 	}
 
@@ -295,8 +340,20 @@ public:
 		return preset_->count() > 0 ? preset_->itemData(0).toString() : QString();
 	}
 
-	void syncSelection(const char *pack, const char *preset)
+	/* Keeps the combos showing what the instance actually has. Takes the source because it may
+	   have to REBUILD rather than just re-select: the preset list belongs to one pack, and when
+	   the pack changed underneath us -- properties panel, obs-websocket, a collection load -- a
+	   bare select() moved the pack combo (every pack is in that list) while leaving the preset
+	   list full of the OLD pack's presets. A preset clicked from that stale list then wrote the
+	   new pack together with a preset the new pack does not have, which ff_instance_update
+	   answers by loading zero layers: the blank source the pack path exists to prevent, produced
+	   by the path that was hardened against it. */
+	void syncSelection(obs_source_t *src, const char *pack, const char *preset)
 	{
+		if (list_pack_ != QString::fromUtf8(pack)) {
+			refreshLists(src, pack, preset);
+			return;
+		}
 		const QSignalBlocker b1(pack_), b2(preset_);
 		select(pack_, pack);
 		select(preset_, preset);
@@ -310,6 +367,14 @@ public:
 			return false;
 		preset_->setCurrentIndex(i); /* fires chosen(false), setting pending_ */
 		return true;
+	}
+
+	/* Selects a preset WITHOUT recording a pending write -- for apply(), which is already
+	   servicing the pending it would otherwise set. false if the list does not offer it. */
+	bool selectPresetQuiet(const char *preset_id)
+	{
+		const QSignalBlocker b(preset_);
+		return select(preset_, preset_id);
 	}
 
 	/* the same, for the pack combo -- fires chosen(true) */
@@ -396,6 +461,8 @@ private:
 	QComboBox *pack_;
 	QComboBox *preset_;
 	MeterWidget *meter_;
+	QString list_pack_;     /* the pack the preset list was built for; see syncSelection */
+	QString last_logged_;   /* so the status line is logged on CHANGE, not 30 times a second */
 	int pending_ = 0;
 };
 
@@ -554,10 +621,15 @@ private:
 				layout_->insertWidget(int(i), row);
 				rows_.push_back(row);
 				withSource(row, [row](obs_source_t *src) {
+					/* copied first -- see the same hazard in apply(): refreshLists
+					   runs on_pack_changed, which rewrites this very storage, and a
+					   collection naming a preset the pack no longer has is exactly
+					   when that write happens */
 					obs_data_t *st = obs_source_get_settings(src);
-					row->refreshLists(src, obs_data_get_string(st, S_PACK),
-							  obs_data_get_string(st, S_PRESET));
+					const QByteArray pk = obs_data_get_string(st, S_PACK);
+					const QByteArray pr = obs_data_get_string(st, S_PRESET);
 					obs_data_release(st);
+					row->refreshLists(src, pk.constData(), pr.constData());
 				});
 			}
 			found.weaks.clear(); /* every one handed to a row */
@@ -589,11 +661,13 @@ private:
 				   already had and appear to do nothing. See SourceRow::hasPending. */
 				if (r->hasPending())
 					return;
+				/* copied before the call -- syncSelection may rebuild, and a rebuild
+				   rewrites this storage; see apply() */
 				obs_data_t *st = obs_source_get_settings(s);
-				/* keep the combos showing what the instance actually has: the properties
-				   panel, obs-websocket or a scene-collection load can all change it */
-				r->syncSelection(obs_data_get_string(st, S_PACK), obs_data_get_string(st, S_PRESET));
+				const QByteArray pk = obs_data_get_string(st, S_PACK);
+				const QByteArray pr = obs_data_get_string(st, S_PRESET);
 				obs_data_release(st);
+				r->syncSelection(s, pk.constData(), pr.constData());
 			});
 	}
 
@@ -603,9 +677,14 @@ private:
 			/* Applied here rather than in the combo's own signal handler: writing a setting
 			   calls into libobs, and doing that from inside the widget's update is how a
 			   re-entrant repaint turns into a crash. The next tick is 33 ms away. */
-			const int pending = r->takePending();
-			if (pending)
-				withSource(r, [r, pending](obs_source_t *s) { apply(r, s, pending); });
+			/* The flag is consumed only once the source has been RESOLVED. Taking it first
+			   meant every path that bailed afterwards -- a weak ref that no longer resolves,
+			   a row whose weak ref was never obtained -- swallowed the click for good: the
+			   next tick saw nothing pending and nothing retried, so the combo moved, the
+			   setting never changed, and a second later the rescan snapped it back with no
+			   line anywhere saying why. */
+			if (r->hasPending())
+				withSource(r, [r](obs_source_t *s) { apply(r, s, r->takePending()); });
 			withSource(r, [r](obs_source_t *s) { r->tickMeter(s); });
 		}
 	}
@@ -618,6 +697,9 @@ private:
 		const QByteArray pk = row->chosenPack().toUtf8();
 		if (pk.isEmpty())
 			return;
+		/* Read BEFORE anything below rebuilds the lists, because refreshLists re-selects the
+		   preset combo from the source and would overwrite the user's choice. */
+		const QByteArray want_pr = row->chosenPreset().toUtf8();
 
 		if (pending & FF_PENDING_PACK) {
 			/* Send the pack ALONE first. The preset combo still holds the old pack's
@@ -646,13 +728,49 @@ private:
 			   inside the "ring" pack -- a preset that does not exist, which ff_instance_update
 			   answers by loading zero layers. That is a blank canvas, and tools/dock-proof.py
 			   now fails on it. */
+			/* COPIED, not passed through. obs_source_get_settings addrefs and returns the
+			   source's live obs_data_t, not a snapshot, and obs_data_get_string hands back a
+			   pointer into that object's own storage. refreshLists then calls
+			   obs_source_properties, which runs obs_properties_apply_settings -- i.e.
+			   on_pack_changed, which does obs_data_set_string(S_PRESET) on that same object.
+			   Measured against the installed libobs: for a value of 32 bytes or fewer that
+			   write lands IN PLACE, so the pointer passed as `want_preset` silently spells the
+			   REPAIRED preset by the time fill() reads it. `kept` then compared the repaired
+			   value against the list it had just been repaired against -- always true, and the
+			   fallback below was dead code for every preset id in every pack. Above 32 bytes
+			   the block is reallocated and the old pointer is freed, which is worse. */
 			obs_data_t *now = obs_source_get_settings(src);
-			const bool kept = row->refreshLists(src, obs_data_get_string(now, S_PACK),
-							    obs_data_get_string(now, S_PRESET));
+			const QByteArray now_pack = obs_data_get_string(now, S_PACK);
+			const QByteArray now_preset = obs_data_get_string(now, S_PRESET);
 			obs_data_release(now);
+			const bool kept = row->refreshLists(src, now_pack.constData(), now_preset.constData());
+
+			/* The user's OWN preset pick, when they changed both inside one 33 ms tick. It has
+			   to be re-applied here because refreshLists just re-selected the combo from the
+			   source, overwriting what they chose -- without this the pack branch discards the
+			   preset bit entirely and the bitmask buys nothing over the bool it replaced. */
+			if ((pending & FF_PENDING_PRESET) && !want_pr.isEmpty() &&
+			    row->selectPresetQuiet(want_pr.constData())) {
+				obs_log(LOG_INFO, "dock: pack switch also honouring the preset picked with it: '%s'",
+					want_pr.constData());
+				obs_data_t *both = obs_data_create();
+				obs_data_set_string(both, S_PRESET, want_pr.constData());
+				obs_source_update(src, both);
+				obs_data_release(both);
+				return;
+			}
+			/* Logged unconditionally so the gate can see whether this ran at all: a backstop
+			   that quietly becomes unreachable is exactly what the aliasing bug above did. */
+			obs_log(LOG_INFO, "dock: pack switch kept=%s preset='%s'", kept ? "TRUE" : "FALSE",
+				now_preset.constData());
 			if (!kept) {
 				const QByteArray first = row->firstPreset().toUtf8();
-				obs_log(LOG_INFO, "dock: pack '%s' does not keep the preset; falling back to '%s'",
+				/* WARNING, not INFO, when there is nothing to fall back to: that leaves the
+				   source on the new pack with the old pack's preset, i.e. a blank render, and
+				   an INFO line in a log file is not where a streamer finds that out. The row
+				   also goes red -- ff_instance_update sets a status and tickStatus appends it. */
+				obs_log(first.isEmpty() ? LOG_WARNING : LOG_INFO,
+					"dock: pack '%s' does not keep the preset; falling back to '%s'",
 					pk.constData(), first.isEmpty() ? "(none)" : first.constData());
 				if (!first.isEmpty()) {
 					obs_data_t *fix = obs_data_create();
@@ -670,8 +788,7 @@ private:
 		   migrate a source whose pack was changed underneath us (properties panel, websocket, a
 		   collection load) between the rescan and this tick -- and a pack change is not free, it
 		   runs erase_layer_keys and drops the instance's per-layer settings. */
-		const QByteArray pr = row->chosenPreset().toUtf8();
-		if (pr.isEmpty())
+		if (want_pr.isEmpty())
 			return;
 		obs_data_t *cur = obs_source_get_settings(src);
 		const bool same_pack = pk == obs_data_get_string(cur, S_PACK);
@@ -680,7 +797,7 @@ private:
 		obs_data_t *st = obs_data_create();
 		if (same_pack)
 			obs_data_set_string(st, S_PACK, pk.constData());
-		obs_data_set_string(st, S_PRESET, pr.constData());
+		obs_data_set_string(st, S_PRESET, want_pr.constData());
 		obs_source_update(src, st);
 		obs_data_release(st);
 	}

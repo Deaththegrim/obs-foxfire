@@ -51,6 +51,8 @@ METER_RECT = re.compile(r"dock-grab: meter (\d+) at (-?\d+),(-?\d+) (\d+)x(\d+)"
 PICK_ASK = re.compile(r"dock-pick: asked for (pack|preset) '([^']*)'")
 PICK_WAS = re.compile(r"dock-pick: source was on '([^']*)' / '([^']*)'")
 PICK_GOT = re.compile(r"dock-pick: source now on '([^']*)' / '([^']*)'")
+PACK_KEPT = re.compile(r"dock: pack switch kept=(TRUE|FALSE) preset='([^']*)'")
+STATUS_LINE = re.compile(r"dock-status: '([^']*)'")
 PICK_ERR = re.compile(r"dock-pick: (no rows|'[^']*' is not in the (?:preset|pack) list"
                       r"|the row went away before the write landed)")
 
@@ -63,6 +65,18 @@ PICK_TO = "wave"
 # The pack half needs a second pack that also has a visualizer preset, and one whose preset ids do
 # NOT overlap basics' -- the whole point is to land on a pack that cannot keep "bars".
 PICK_PACK_TO = "ring"
+
+# The rest of the fixture, see write_minimal_collection.
+FILTER_PRESET = "bloom-soft"
+TRANSITION_PRESETS = ["wipe-linear", "wipe-diagonal", "wipe-iris"]
+FAULT_AUDIO = "ff-no-such-audio-source"
+# visualizer + faulted visualizer + the effects filter + the CURRENT transition (and only that one,
+# though three are defined). Asserted exactly, not as a floor: `>= 1` passed for the old
+# inputs-only enumerator, for this, and for the 31-row bug alike.
+EXPECTED_ROWS = 4
+# Mirrors EXPECTED_CHECKS for the dock half, which counted its checks and compared them to nothing --
+# a check deleted or made unreachable by a branch simply lowered the total and still exited 0.
+EXPECTED_DOCK_CHECKS = 14
 
 
 def _item(name: str, i: int) -> dict:
@@ -84,12 +98,29 @@ def _src(name: str, sid: str, settings: dict) -> dict:
 
 
 def write_minimal_collection(obs_cfg: Path) -> None:
-    """One scene holding a real Foxfire visualizer.
+    """One scene holding every kind of Foxfire object the dock has to find.
 
-    The proc-proof half creates its own source in-process, but the DOCK half cannot: the dock only
-    ever sees what obs_enum_sources returns, so a collection with no Foxfire source in it proves
-    only that the dock can say "nothing here" -- which it renders perfectly well, and which any
-    is-it-blank check would pass. The source has to exist before OBS starts.
+    The proc-proof half creates its own source in-process, but the DOCK half cannot: it only sees
+    what the enumerator returns, so a collection with no Foxfire source in it proves only that the
+    dock can say "nothing here" -- which it renders perfectly well, and which any is-it-blank check
+    would pass. The objects have to exist before OBS starts.
+
+    NOT just a visualizer, and that is the point. A visualizer is an INPUT, so a collection holding
+    only one is satisfied by `obs_enum_sources` (inputs only) and by `obs_enum_all_sources` alike --
+    the row count was `>= 1` and could not tell them apart, nor could it see the 31-row explosion
+    that came from listing every configured transition. So:
+
+      * a visualizer          -- an input
+      * an effects FILTER on an ordinary colour source -- NOT an input, invisible to obs_enum_sources
+      * THREE transitions, one of them current -- also not inputs, and only the current one may
+        appear, which is what pins the filtering rather than merely the enumerator
+
+    Expected rows: exactly EXPECTED_ROWS. Reverting to obs_enum_sources gives 1; dropping the
+    current-transition filter gives 5. Both fail.
+
+    A second visualizer is deliberately FAULTED (it follows an audio source that does not exist),
+    because the status line's fault path is otherwise never taken in a healthy collection -- so
+    "append the fault" and "replace the line with it" behaved identically and neither was gated.
 
     Named Untitled, matching transition-proof.py: OBS resolves the collection by that name out of
     global.ini, and a collection named anything else was measured to be ignored entirely ("No scene
@@ -99,11 +130,24 @@ def write_minimal_collection(obs_cfg: Path) -> None:
     d.mkdir(parents=True, exist_ok=True)
     viz = _src("ff_dock_viz", "foxfire_visualizer",
                {"pack": PICK_PACK, "preset": PICK_FROM, "width": 640, "height": 360, "audio_mode": 0})
-    scene = _src("A", "scene", {"id_counter": 2, "custom_size": False, "items": [_item("ff_dock_viz", 1)]})
+    # audio_mode 1 = FF_AUDIO_SOURCE, pointed at a name nothing will ever create. Same fixture
+    # plugin-main.c's proc-proof already uses, so the fault sentence is known to be produced.
+    bad = _src("ff_dock_faulted", "foxfire_visualizer",
+               {"pack": PICK_PACK, "preset": PICK_FROM, "width": 640, "height": 360,
+                "audio_mode": 1, "audio_source": FAULT_AUDIO})
+    plate = _src("ff_dock_plate", "color_source_v3", {"color": 0xFF202020, "width": 640, "height": 360})
+    plate["filters"] = [_src("ff_dock_filter", "foxfire_effects",
+                             {"pack": PICK_PACK, "preset": FILTER_PRESET})]
+    trans = [_src(f"ff_dock_tr{i}", "foxfire_transition", {"pack": PICK_PACK, "preset": p})
+             for i, p in enumerate(TRANSITION_PRESETS)]
+    scene = _src("A", "scene", {"id_counter": 4, "custom_size": False,
+                                "items": [_item("ff_dock_viz", 1), _item("ff_dock_faulted", 2),
+                                          _item("ff_dock_plate", 3)]})
     scene["versioned_id"] = "scene"
     (d / "Untitled.json").write_text(json.dumps(
         {"name": "Untitled", "current_scene": "A", "current_program_scene": "A",
-         "scene_order": [{"name": "A"}], "sources": [viz, scene], "transitions": [],
+         "current_transition": trans[0]["name"], "transition_duration": 300,
+         "scene_order": [{"name": "A"}], "sources": [viz, bad, plate, scene], "transitions": trans,
          "groups": [], "quick_transitions": [], "saved_projectors": [], "canvases": [],
          "resolution": {"x": 640, "y": 360}, "version": 2, "modules": {}}, indent=2))
     p = obs_cfg / "basic" / "profiles" / "Untitled"
@@ -132,7 +176,8 @@ def _find_pack(name: str):
     return None
 
 
-def _build_has_dock(plugin_build: Path) -> bool:
+def _build_has_dock(plugin_build: Path):
+    """True / False / None when no plugin was found at all."""
     """Whether the BUILT plugin contains a dock, read off the artefact rather than guessed.
 
     The harness has to run against both a Qt build and a Qt-off one, and it used to decide which by
@@ -141,9 +186,18 @@ def _build_has_dock(plugin_build: Path) -> bool:
     frontend event never fired, FF_HAVE_DOCK not defined) looked exactly like "ENABLE_QT is off"
     and exited 0. The dock id is a string constant in ff-dock.cpp, so it is in the .so when the
     dock is compiled in and absent when it is not."""
-    for so in plugin_build.rglob("obs-foxfire.so"):
+    found = [so for so in plugin_build.rglob("obs-foxfire.so")]
+    if not found:
+        # Not "no dock" -- no PLUGIN. Returning False here would report the whole dock half as
+        # "ENABLE_QT off" and exit 0, which is the same silent-skip this function exists to stop,
+        # moved one level up. The caller turns None into a hard failure.
+        return None
+    # ANY match, not the first: rglob order is arbitrary, so a stale or install-tree copy turning
+    # up first must not decide the answer for the one that was actually built.
+    for so in found:
         try:
-            return b"foxfire_dock" in so.read_bytes()
+            if b"foxfire_dock" in so.read_bytes():
+                return True
         except OSError:
             continue
     return False
@@ -195,6 +249,10 @@ def main() -> int:
 
     build = Path(a.plugin_build).resolve()
     has_dock = _build_has_dock(build)
+    if has_dock is None:
+        print(f"dock proof: no obs-foxfire.so anywhere under {build} -- nothing was inspected. "
+              f"Is --plugin-build pointing at the repo root?")
+        return 2
     packs = {n: _find_pack(n) for n in (PICK_PACK, PICK_PACK_TO)}
     missing = sorted(n for n, p in packs.items() if p is None)
 
@@ -288,16 +346,23 @@ def main() -> int:
     # THE check. A dock showing "No Foxfire sources" renders perfectly well and passes every
     # is-it-blank test there is -- measured: 321x72, pixel std 39.43, 1328 distinct colours, and
     # completely wrong. Pixels cannot tell those apart; this line can.
-    dcheck("and finds the Foxfire source in the scene", n >= 1,
-           f"{n} source(s) reported" if n >= 0 else "the dock never reported a source count")
+    #
+    # EXACT, not `>= 1`. The collection holds a visualizer, a faulted visualizer, an effects filter
+    # and three transitions of which one is current, so the only right answer is 4: the
+    # inputs-only enumerator gives 2, and listing every transition gives 6.
+    dcheck("and finds every kind of Foxfire object in the scene", n == EXPECTED_ROWS,
+           f"{n} row(s), expected {EXPECTED_ROWS} (2 visualizers + 1 filter + the current "
+           f"transition, of 3 defined)" if n >= 0 else "the dock never reported a source count")
     g = DOCK_GRAB.search(text)
     dcheck("and draws itself to a picture", bool(g) and g.group(3) == "TRUE",
            f"{g.group(1)}x{g.group(2)} saved={g.group(3)}" if g else "no grab line")
     # How much of the grab the bar count below is allowed to look at. Without at least one rect the
     # count is taken over nothing and 0 is indistinguishable from a meter that did not paint, so
     # the gate has to state its own coverage rather than quietly inspecting an empty region.
-    dcheck("and reports where its meters are", len(meter_rects) >= 1,
-           f"{len(meter_rects)} meter rect(s): {meter_rects}")
+    # Tied to the row count, not `>= 1`: with a floor, two of four rows failing to report a rect
+    # still passed and the bar count below then inspected only a quarter of the panel.
+    dcheck("and reports where its meters are", len(meter_rects) == n and n > 0,
+           f"{len(meter_rects)} meter rect(s) for {n} row(s): {meter_rects}")
     if grab_stats:
         w, h, std, bars = grab_stats
         # 0.00 is what an empty widget of the same size measures; a laid-out one measured 39-41.
@@ -324,10 +389,17 @@ def main() -> int:
         likely to produce is a crash at UNLOAD, after every log line the checks read has already
         been written. Without this the harness reads a perfect log off a process that segfaulted."""
         import signal as _sig
-        ok = code in (0, None, -_sig.SIGTERM, -_sig.SIGKILL)
+        # SIGKILL and None are FAILURES, not clean exits. terminate_process_group only escalates
+        # to SIGKILL after SIGTERM was ignored for twenty seconds -- that is a hang, and a hang in
+        # teardown is exactly what ff_dock_unregister could produce -- and `None` means it survived
+        # SIGTERM, SIGKILL and a ten-second reap, which is the worst outcome available. Both used
+        # to be in the pass set, one of them printed as "still running" under the word "cleanly".
+        ok = code in (0, -_sig.SIGTERM)
         dcheck(f"and {which} came down cleanly", ok,
-               "still running" if code is None else
-               (f"exit {code}" if code >= 0 else f"killed by {_sig.Signals(-code).name}"))
+               "STILL RUNNING after SIGTERM, SIGKILL and a reap" if code is None else
+               (f"exit {code}" if code >= 0 else
+                f"killed by {_sig.Signals(-code).name}" +
+                (" -- it ignored SIGTERM for 20s, i.e. it hung" if -code == _sig.SIGKILL else "")))
 
     def check_pick(log: str, label: str, want_pack: str, want_preset: str, moved: str):
         """One switch, judged on what the SOURCE was on before and after.
@@ -361,27 +433,44 @@ def main() -> int:
 
     # Both switch halves drive combos the PACKS fill. Without them the combo is empty and every
     # pick is refused, so they skip together -- loudly, and only when the caller has said it knows.
+    skipped = []
     if PICK_PACK not in missing:
         check_pick(text, "clicking a preset", PICK_PACK, PICK_TO, "preset")
+        # The faulted row's composed status line. The collection carries a visualizer following an
+        # audio source that does not exist, so exactly one row must show BOTH its pack/preset and
+        # the refusal sentence. Replacing the line with the fault -- the behaviour before this --
+        # drops the "basics / bars" half, and nothing else in the harness could see the difference.
+        faulted = [l for l in STATUS_LINE.findall(text) if FAULT_AUDIO in l]
+        dcheck("a faulted row still says which preset it is on", bool(faulted) and
+               any(f"{PICK_PACK} / {PICK_FROM}" in l for l in faulted),
+               f"{len(faulted)} faulted line(s): {faulted[:2]}" if faulted
+               else "no status line mentioned the missing audio source")
     elif not a.allow_skips:
         dcheck("clicking a preset switches the source", False,
                f"pack '{PICK_PACK}' not found -- pass --allow-skips if that is expected")
         dcheck("clicking a preset: it was not already there", False, "not run")
+        dcheck("a faulted row still says which preset it is on", False, "not run")
     else:
         print(f"  [SKIP] the preset switch: pack '{PICK_PACK}' not found")
+        skipped += ["clicking a preset switches the source",
+                    "clicking a preset: it was not already there",
+                    "a faulted row still says which preset it is on"]
 
     # The PACK half, in its own boot. It takes a different path through apply(): the pack is
     # written, the preset list is rebuilt for the new pack, and the source then has to end up on a
     # preset that EXISTS in it. Nothing gated that before, and it is the path that leaves the
     # canvas blank when it goes wrong -- ff_instance_update answers a preset that is not in the
     # pack by loading zero layers.
-    skipped = bool(missing)
     if missing and not a.allow_skips:
         dcheck("switching pack lands on a preset the new pack has", False,
                f"pack(s) not found: {', '.join(missing)} -- pass --allow-skips if that is expected")
         dcheck("switching pack: it was not already there", False, "not run")
     elif missing:
         print(f"  [SKIP] the pack switch: pack(s) not found: {', '.join(missing)}")
+        skipped += ["switching pack lands on a preset the new pack has",
+                    "switching pack: it was not already there",
+                    "the dock can tell that the new pack dropped the preset",
+                    "and the pack-switch run came down cleanly"]
     else:
         ptext, _, _, prc = boot({"FOXFIRE_DOCK_PICK_PACK": PICK_PACK_TO}, want_grab=False)
         to_dir = packs[PICK_PACK_TO]
@@ -403,12 +492,35 @@ def main() -> int:
                    f"'{pgot.group(1)}/{landed}'; {PICK_PACK_TO} offers {ring_presets}")
             dcheck("switching pack: it was not already there", pwas.group(1) != pgot.group(1),
                    f"pack went '{pwas.group(1)}' -> '{pgot.group(1)}'")
+        # `kept` is the dock's own answer to "did the new pack keep the preset the source was
+        # on". basics/bars -> ring, and ring has no `bars`, so the only correct answer is FALSE.
+        # This is the ONE observable difference the aliasing bug made: passing the live settings
+        # pointer through to refreshLists let on_pack_changed rewrite it in place, so `kept`
+        # compared the REPAIRED preset against the list it had just been repaired against and read
+        # TRUE. The end-to-end outcome was right either way -- which is why nothing caught it --
+        # but this flag is wrong, and the fallback it guards was unreachable.
+        k = PACK_KEPT.search(ptext)
+        dcheck("the dock can tell that the new pack dropped the preset",
+               bool(k) and k.group(1) == "FALSE" and k.group(2) == PICK_FROM,
+               f"kept={k.group(1)} preset='{k.group(2)}' (expected FALSE / '{PICK_FROM}')" if k
+               else "the dock never logged whether the pack kept the preset")
         _check_exit("the pack-switch run", prc)
 
     _check_exit("the main run", rc)
 
-    print(f"\ndock proof: {passed}/{total} tap checks, {dock_checks - dock_fails}/{dock_checks} "
-          f"dock checks{' (pack switch SKIPPED)' if skipped else ''}")
+    # The dock half states its own coverage, the way the tap half does with EXPECTED_CHECKS. It
+    # used to count whatever ran and compare it to nothing: with --allow-skips and no packs it
+    # printed "7/7 dock checks" -- which reads as a clean sweep -- and exited 0 with five checks
+    # that never happened. The denominator must not shrink with the skips.
+    print(f"\ndock proof: {passed}/{total} tap checks, "
+          f"{dock_checks - dock_fails}/{dock_checks} dock checks run, "
+          f"{len(skipped)} skipped, of {EXPECTED_DOCK_CHECKS} expected")
+    for s in skipped:
+        print(f"  [SKIP] {s}")
+    if dock_checks + len(skipped) != EXPECTED_DOCK_CHECKS:
+        print(f"dock proof: {dock_checks} ran + {len(skipped)} skipped != {EXPECTED_DOCK_CHECKS} "
+              f"expected -- a dock check has gone missing or was added without updating the count")
+        return 2
     return 0 if (passed == total and dock_fails == 0) else 1
 
 

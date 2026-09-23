@@ -89,8 +89,18 @@ def main() -> int:
 
     viz = presets("basics", "visualizer")
     fx = presets("basics", "effects")
-    trans = [("basics", t) for t in presets("basics", "transition")]
-    trans += [("kitsune-transitions", t) for t in presets("kitsune-transitions", "transition")]
+
+    # Checked per PACK, not on the merged list. Merged, an absent kitsune-transitions was hidden
+    # entirely by basics' transitions being present: the tool printed a cheerful "wrote ... N
+    # transitions" and the pack junkie had just built was simply not in the collection he opened
+    # to look at it -- the exact failure this file exists to prevent, committed by the file itself.
+    trans = []
+    for name in ("basics", "kitsune-transitions"):
+        got = presets(name, "transition")
+        if got:
+            trans += [(name, t) for t in got]
+        else:
+            print(f"  NOT INCLUDED: pack '{name}' has no installed transition presets under {PACKS}")
 
     missing = [n for n, got in (("basics visualizer", viz), ("basics effects", fx),
                                 ("transitions", trans)) if not got]
