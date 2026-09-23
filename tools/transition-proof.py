@@ -50,18 +50,35 @@ DURATION_MS = 4000
 # one, and on junkie's machine both live under ~/vault/projects.
 def _find_packs() -> Path:
     here = Path(__file__).resolve().parent.parent
-    for c in ([Path(os.environ["FF_PACKS"])] if os.environ.get("FF_PACKS") else []) + [
-            here.parent / "foxfire" / "packs",
-            Path.home() / "vault" / "projects" / "foxfire" / "packs"]:
+    # FF_PACKS is a DIRECTIVE, not a hint. Falling through from an explicit path that happens not
+    # to exist silently proves a different checkout: edit a shader in a worktree, mistype the
+    # path, and this reports RMS 0.004 on the OLD pack while you conclude the edit is proven.
+    if os.environ.get("FF_PACKS"):
+        p = Path(os.environ["FF_PACKS"])
+        if not (p / "basics").is_dir():
+            raise SystemExit(f"FF_PACKS={p} has no basics/ in it; refusing to silently measure a "
+                             f"different checkout")
+        return p
+    for c in (here.parent / "foxfire" / "packs",
+              Path.home() / "vault" / "projects" / "foxfire" / "packs"):
         if (c / "basics").is_dir():
             return c
     return here.parent / "foxfire" / "packs"
 
 
-WIPE_PACK = _find_packs() / "basics"
+PACKS = _find_packs()
+WIPE_PACK = PACKS / "basics"
 WIPE_PRESET = "wipe-linear"
 WIPE_SOFTNESS = 0.15
+# The sweeps are in the PAID pack: the shader is free and takes any PNG, the liquid art is not.
+# It still loads here because the dev build's public key is all zeros (pubkey_is_zero in
+# src/ff-pack.c), which is the same reason the render proof can prove ember at all.
+SWEEP_PACK = PACKS / "ember"
 SWEEP_PRESET = "sweep-liquid"
+
+# Kept in step by hand, same as tools/proof.py's own EXPECTED_CHECKS: 8 for the bundled dissolve
+# and its audio, 3 for the mask wipe, 3 for the covering sweep. Raise it when you add a check.
+EXPECTED_CHECKS = 15
 
 
 def check(name, ok, detail):
@@ -155,7 +172,7 @@ def scene_collection(name: str, tone_a: Path, tone_b: Path) -> dict:
                         {"name": "FFW", "id": "foxfire_transition",
                          "settings": {"pack": "basics", "preset": WIPE_PRESET}},
                         {"name": "FFS", "id": "foxfire_transition",
-                         "settings": {"pack": "basics", "preset": SWEEP_PRESET}}],
+                         "settings": {"pack": "ember", "preset": SWEEP_PRESET}}],
         "groups": [], "quick_transitions": [], "saved_projectors": [], "canvases": [],
         "preview_locked": False, "scaling_enabled": False, "scaling_level": 0,
         "scaling_off_x": 0.0, "scaling_off_y": 0.0, "virtual-camera": {"type2": 3},
@@ -241,10 +258,35 @@ def audio_rms(path: Path, start: float, length: float) -> float:
     return (sum(float(v) * v for v in a) / len(a)) ** 0.5 / 32768.0
 
 
+def unlicense_installed_copy(obs_cfg: Path, pack_id: str) -> None:
+    """Clears `licensed` on the SANDBOX copy of a paid pack so its art can be rendered.
+
+    A licensed pack needs a licence.json verified against FF_PUBLIC_KEY, and every dev and CI
+    build has an all-zero key, so ff_licence_verify can never pass there -- measured: `packforge
+    proof` over the real ember pack reports 7 of 7 presets blank, with "This pack needs its
+    licence file" for each. That is the licence gate working; it also means no paid pack's SHADER
+    or ART has ever been rendered by anything.
+
+    This is deliberately NOT a licence bypass: it edits a throwaway copy inside the proof's own
+    temporary OBS config, never the repo, and the gate itself is tested elsewhere (packforge's
+    licence tests, and the engine's own refusal path). What it buys is the other half -- that the
+    art a buyer pays for actually draws.
+    """
+    man = obs_cfg.joinpath(*proof.PACKS_DIR) / pack_id / "pack.json"
+    if not man.is_file():
+        return
+    d = json.loads(man.read_text())
+    if d.get("licensed"):
+        d["licensed"] = False
+        man.write_text(json.dumps(d))
+        print(f"proof sandbox: '{pack_id}' copy set unlicensed so its art can be rendered "
+              f"(the licence gate itself is tested elsewhere)")
+
+
 def load_sweep_generator():
     """tools/make-sweep-thumbs.py out of the packs repo, or None when it is not checked out."""
     import importlib.util
-    gen = WIPE_PACK.parent.parent / "tools" / "make-sweep-thumbs.py"
+    gen = SWEEP_PACK.parent.parent / "tools" / "make-sweep-thumbs.py"
     if not gen.is_file():
         return None
     spec = importlib.util.spec_from_file_location("make_sweep_thumbs", gen)
@@ -366,7 +408,7 @@ async def drive(rec_dir: Path):
         # The second cut, B back to A, with the mask-driven wipe selected. In the same recording:
         # booting OBS twice to measure two transitions would double the slowest part of the run.
         wipe_mid = 2.0 + secs + 2.0 + secs / 2.0
-        sweep_ok = "FFS" in names and WIPE_PACK.is_dir()
+        sweep_ok = "FFS" in names and SWEEP_PACK.is_dir()
         sweep_mid = wipe_mid + secs / 2.0 + 2.0 + secs / 2.0
         if wipe_ok:
             await c.request("SetCurrentSceneTransition", {"transitionName": "FFW"})
@@ -408,6 +450,17 @@ async def drive(rec_dir: Path):
         # to silence for the whole duration and no pixel above would notice.
         quiet_ref = audio_rms(path, 0.5, 1.0)
         during = audio_rms(path, 2.0 + half - 0.4, 0.8)
+        # Both checks below are RATIOS. If the two media sources never loaded -- a path that went
+        # with the scratch dir, a libobs without ffmpeg_source -- the programme audio is silence,
+        # a silent stream still decodes, and 3e-5 over 4e-5 satisfies both of them while nothing
+        # was ever playing. The tone is written at amp 0.5, so ~0.35 RMS is what a working fixture
+        # reads; under 0.05 the FIXTURE is broken, and a proof must not blur that with a verdict
+        # about the plugin.
+        check("the fixture tone is actually playing before the cut",
+              quiet_ref > 0.05,
+              f"RMS {quiet_ref:.5f} on scene A before anything happens -- below 0.05 means the "
+              f"tone sources never loaded, and the two ratio checks below would both pass on "
+              f"silence")
         check("the audio does not disappear across the cut",
               during > quiet_ref * 0.4,
               f"RMS {during:.5f} mid-transition against {quiet_ref:.5f} before it -- a transition "
@@ -472,7 +525,7 @@ async def drive(rec_dir: Path):
         if not sweep_ok or msw is None:
             skip("the covering sweep hides the cut completely",
                  f"'FFS' in OBS's list: {'FFS' in names}; generator found: {msw is not None}; "
-                 f"pack dir {WIPE_PACK}")
+                 f"pack dir {SWEEP_PACK}")
         else:
             import numpy as np
             sframe = frame_at(path, sweep_mid)
@@ -480,6 +533,14 @@ async def drive(rec_dir: Path):
             near_a = (np.abs(got - np.array(A_RGB, float)).max(axis=2) < 24).sum()
             near_b = (np.abs(got - np.array(B_RGB, float)).max(axis=2) < 24).sum()
             total = got.shape[0] * got.shape[1]
+            # Measured: when the pack failed to load, the frame came back pure black -- which
+            # "keeps no trace of either scene" with room to spare. Coverage on its own cannot
+            # tell a cover from a crash.
+            spread = float(got.std())
+            check("the mid-sweep frame is a picture at all",
+                  spread > 8.0,
+                  f"pixel std {spread:.2f} -- a flat frame passes the coverage check below "
+                  f"trivially, and a pack that failed to load renders exactly that")
             check("mid-sweep the frame keeps no trace of either scene",
                   (near_a + near_b) / total < 0.005,
                   f"{near_a} px near A and {near_b} px near B out of {total} "
@@ -496,7 +557,7 @@ async def drive(rec_dir: Path):
             lo, hi = pr["swap_point"] - pr["hold"] / 2, pr["swap_point"] + pr["hold"] / 2
             best = (1e9, 0.0)
             for t in np.linspace(lo, hi, 21):
-                want = msw.render(WIPE_PACK / "art", pr, float(t), sframe.size, blank).astype(float)
+                want = msw.render(SWEEP_PACK / "textures", pr, float(t), sframe.size, blank).astype(float)
                 best = min(best, (float(np.sqrt(np.mean(((got - want) / 255.0) ** 2))), float(t)))
             rms, at = best
             check("and it is the fill art the preset asks for",
@@ -504,7 +565,7 @@ async def drive(rec_dir: Path):
                   f"RMS {rms:.4f} against make-sweep-thumbs.py's own render of this preset, best "
                   f"fit at progress {at:.3f} -- the scene colours are flat, so a frame that failed "
                   f"to cover would be nowhere near it at any progress")
-            want = msw.render(WIPE_PACK / "art", pr, at, sframe.size, blank).astype(float)
+            want = msw.render(SWEEP_PACK / "textures", pr, at, sframe.size, blank).astype(float)
             sframe.save("/tmp/ff-sweep-mid.png")
             Image.fromarray(want.clip(0, 255).astype(np.uint8), "RGB").save("/tmp/ff-sweep-want.png")
             print("  sweep frame: /tmp/ff-sweep-mid.png  (predicted: /tmp/ff-sweep-want.png)")
@@ -515,6 +576,8 @@ async def drive(rec_dir: Path):
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plugin-build", required=True)
+    ap.add_argument("--allow-skips", action="store_true",
+                    help="exit 0 even when a half of the proof could not run (local use only)")
     args = ap.parse_args()
     repo = Path(args.plugin_build).resolve()
     scratch = Path(tempfile.mkdtemp(prefix="ff-trans-src-"))
@@ -530,8 +593,10 @@ def main() -> int:
     try:
         proof.write_ws_config(obs_cfg)
         proof.install_plugin(repo, obs_cfg)
-        if WIPE_PACK.is_dir():
-            proof.install_pack(WIPE_PACK, obs_cfg)
+        for pk in (WIPE_PACK, SWEEP_PACK):
+            if pk.is_dir():
+                proof.install_pack(pk, obs_cfg)
+        unlicense_installed_copy(obs_cfg, SWEEP_PACK.name)
         write_collection(obs_cfg, tone_a, tone_b)
         proof.wait_for_port_free(proof.PORT)
         p = subprocess.Popen(
@@ -556,7 +621,24 @@ def main() -> int:
     if not CHECKS:
         print("transition proof: NOTHING INSPECTED")
         return 2
-    return 1 if FAILS else 0
+    if FAILS:
+        return 1
+    # A SKIP is not a pass. Without this the run printed "8/8 passed, 2 SKIPPED" and exited 0 with
+    # every measurement this file exists to make -- the wipe's shape, the sweep's cover -- never
+    # taken. `8/8` is success arithmetic, and a parenthetical does not survive being read as the
+    # tail of a CI log. The `if not CHECKS` guard above cannot help: the first check runs before
+    # anything can skip, so it protects the case that cannot happen.
+    if SKIPS and not args.allow_skips:
+        print(f"transition proof: {len(SKIPS)} HALF/HALVES NEVER RAN -- that is not a pass. "
+              f"Check the packs repo out beside this one, or pass --allow-skips.")
+        return 2
+    # The count is asserted, not just printed: a check silently deleted or made unreachable by an
+    # early return is the same defect as a skip, and neither FAILS nor SKIPS would show it.
+    if not SKIPS and len(CHECKS) < EXPECTED_CHECKS:
+        print(f"transition proof: only {len(CHECKS)} check(s) ran against the {EXPECTED_CHECKS} "
+              f"this harness is meant to make, and nothing was skipped -- a check has gone missing")
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

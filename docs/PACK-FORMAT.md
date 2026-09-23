@@ -378,9 +378,41 @@ float open_at   = min(swap_point + half_hold, 0.999);   /* the other one starts 
 ```
 
 `hold` is a fraction of the transition, so it has to beat one frame of the shortest cut a streamer
-will use — 0.2 of 300 ms is 60 ms, two frames at 30 fps and nearly four at 60. This is the
-equivalent of a video stinger's *transition point*, and it is a per-preset number in the manifest
-rather than an engine control, because only the pack knows how long its own art takes to close.
+will use. One frame at 30 fps is 33.3 ms, which is **0.111** of a 300 ms cut — so the slider's
+minimum is 0.12, not 0. A control that can be dialled down to the defect it exists to prevent is
+not a control. It is the equivalent of a video stinger's *transition point*, and it is a per-preset
+number in the manifest rather than an engine control, because only the pack knows how long its own
+art takes to close.
+
+Both sides of it matter: `hold` being long enough says nothing about what is *left*. `hold = 0.6`
+with `swap_point = 0.35` is arithmetically fine for coverage and leaves 15 ms of sweep-in, half a
+frame — the art never visibly travels, the frame just pops.
+
+### Three things about art the shaders cannot check for you
+
+* **A leading edge must reach its own edge.** The band's alpha at `u = 0` sits exactly where the
+  solid fill stops, so transparent columns there are a stripe of the outgoing scene running the
+  whole length of the sweep. The first art shipped here had 17.5% of them. Crop to the alpha
+  bounding box.
+* **A fill does not have to tile, and must not be asked to.** The drift shrinks its sample window
+  by `1/(1 + fill_drift)` and slides it *inside* the art, so a wrap seam is impossible whatever
+  the streamer supplies. Wrapping instead put the bundled swirl's first column against its last —
+  a 32/255 line down the middle of the fully-covered hold.
+* **The tint window has to match the art's actual luminance.** The bundled swirl only runs
+  0.63–1.00; a window starting at 0.60 left the ramp's first stop unreachable, so "Ink flood"
+  never showed its black. This is the sweep's version of the mask's 0–255 rule.
+
+### The beat drives a look, never the clock
+
+`progress + beat * kick` is the obvious way to make a transition audio-reactive and it is wrong.
+`beat` spikes to 1 on an onset and decays with a 200 ms half-life (`ff-analysis.c`), so an offset
+built on it runs the transition **backwards** as the beat falls: a wipe that reverses mid-travel,
+and — where a discrete scene swap is taken off the same value — the incoming scene, then the
+outgoing one, then the incoming one again. Clamping bounds the number and fixes neither.
+
+So the beat widens an edge (`beat_flare` on the wipe) or adds a highlight (`beat_flare` on the
+sweep), where decaying back to nothing is exactly what a flare should do, and the scene swap is
+taken off `progress` and nothing else.
 
 The property is testable and worth testing: render the same moment over two completely different
 scenes and require the results to be **identical**. Any pixel that differs is a pixel the cut
