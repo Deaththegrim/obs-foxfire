@@ -30,7 +30,9 @@ Foxfire ships as **two separate plugins**, so you can install one without the ot
   transition a collection defines is a live object and listing all of them buries the rest.
   Built only when the plugin is configured with `ENABLE_QT` and `ENABLE_FRONTEND_API`; the
   per-source meter tap it reads is plain libobs and is in every build, so anything holding an
-  `obs_source_t *` — an obs-websocket script, another plugin — can read the same values.
+  `obs_source_t *` — an obs-websocket script, another plugin — can read the same values. A row
+  whose audio has stopped arriving says so rather than sitting at a flat meter, which otherwise
+  looks exactly like a quiet stream.
 
 `obs-foxfire-alerts` — the alerts engine:
 
