@@ -116,6 +116,17 @@ target_sources(
 )
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ff-core)
 
+# The dock is the only C++ in the project and the only thing that needs Qt. It goes on THIS target
+# and never into ff-core, which obs-foxfire-alerts also links -- an alerts plugin has no business
+# gaining a Qt dependency.
+#
+# The per-source meter tap it consumes is NOT behind this: proc handlers are bare libobs, so the
+# tap is in every build and is proved by tools/dock-proof.py with ENABLE_QT off.
+if(ENABLE_QT AND ENABLE_FRONTEND_API)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/ff-dock.cpp)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE FF_HAVE_DOCK)
+endif()
+
 # curl carries the EventSub connection. obs-deps ships it on every platform OBS builds for, and
 # curl's own WebSocket API is experimental and absent from the libcurl here (measured), so
 # CONNECT_ONLY hands over the TLS socket and src/ff-ws*.c do the framing. Only the alerts plugin

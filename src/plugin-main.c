@@ -20,6 +20,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include "ff-pack.h"
 #include "ff-dock-proto.h"
+#if defined(FF_HAVE_DOCK)
+#include "ff-dock.h"
+#endif
 #include "ff-frame.h"
 #include <string.h>
 
@@ -166,10 +169,17 @@ bool obs_module_load(void)
 	obs_register_source(&ff_source_info);
 	obs_register_source(&ff_filter_info);
 	obs_register_source(&ff_transition_info);
+#if defined(FF_HAVE_DOCK)
+	/* Only registers the frontend callback; the widget cannot exist this early. */
+	ff_dock_register();
+#endif
 	return true;
 }
 
 void obs_module_unload(void)
 {
+#if defined(FF_HAVE_DOCK)
+	ff_dock_unregister();
+#endif
 	obs_log(LOG_INFO, "plugin unloaded");
 }
