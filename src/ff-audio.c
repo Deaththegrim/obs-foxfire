@@ -207,6 +207,14 @@ bool ff_audio_describe(struct ff_audio *a, enum ff_audio_mode *mode, char *name,
 		if (msg && msg_cap)
 			snprintf(msg, msg_cap, "Audio source '%s' not found; showing silence.", a->source_name);
 		ok = false;
+	} else if (a->mode == FF_AUDIO_MASTER && !a->master_connected) {
+		/* connect_master logs this failure and carries on, so the instance stays alive and
+		   renders silence. Without this branch MASTER mode reported healthy unconditionally --
+		   the one mode that cannot name a missing source was also the one that could never say
+		   anything was wrong, and a panel that is right by construction is telling you nothing. */
+		if (msg && msg_cap)
+			snprintf(msg, msg_cap, "Not connected to the master mix; showing silence.");
+		ok = false;
 	}
 	pthread_mutex_unlock(&a->conn_lock);
 	if (ok && msg && msg_cap)

@@ -101,10 +101,21 @@ jobs:
         # instance (ff_instance_create needs a graphics context) and obs-websocket has no generic
         # "call this proc" request. So the plugin checks itself on a real source in a real OBS and
         # this reads the verdict out of the log. NOT gated on Qt -- proc handlers are bare libobs,
-        # so this runs in the default build.
+        # so this runs in the default build, and the harness reads whether a dock was compiled in
+        # off the built .so rather than inferring it from the log.
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
-        run: python3 tools/dock-proof.py --plugin-build .
+        # Same shape as the transition step above, and for the same reason. The dock half drives
+        # the pack and preset COMBOS, which the packs fill -- without them every switch check is
+        # refused, so this is no longer the "nicety" it was when the harness only listed sources.
+        # --allow-skips downgrades the pack switch to a loud SKIP; with the packs present it must
+        # actually run.
+        run: |
+          if [ "${{ steps.packs.outputs.basics }}" = "true" ]; then
+            python3 tools/dock-proof.py --plugin-build .
+          else
+            python3 tools/dock-proof.py --plugin-build . --allow-skips
+          fi
 
       - name: The shared pack control block has not drifted
         id: placement

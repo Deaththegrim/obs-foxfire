@@ -53,6 +53,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -65,6 +66,11 @@ constexpr int METER_MS = 33;
 /* The source list changes at human speed. Rescanning it 30 times a second would be the only
    expensive thing this dock does. */
 constexpr int RESCAN_MS = 1000;
+
+/* Which combos a row is waiting to write. A bitmask, so a pack change and a preset change landing
+   in the same tick are both honoured -- see SourceRow::chosen. */
+constexpr int FF_PENDING_PACK = 1;
+constexpr int FF_PENDING_PRESET = 2;
 
 const char *const kDockId = "foxfire_dock";
 
@@ -244,13 +250,14 @@ public:
 			line += QStringLiteral("  ·  %1 / %2")
 					.arg(QString::fromUtf8(st.pack_id), QString::fromUtf8(st.preset_id));
 
-		/* A fault wins the line. The panel and the dock say the same sentence about the same
+		/* A fault is APPENDED, not substituted. Replacing the line dropped the pack and preset
+		   exactly when they matter most: "Audio source 'Mic' not found" alone does not say which
+		   preset is loaded, and the two together are what tell a missing pack apart from a
+		   missing audio source. The panel and the dock say the same sentence about the same
 		   problem because both get it from ff_audio_describe -- see ff-audio.c. */
-		if (!st.audio_ok && st.audio_msg[0]) {
-			line = QString::fromUtf8(st.audio_msg);
-			status_->setStyleSheet("color: #ff6a4d;");
-		} else if (st.status[0]) {
-			line = QString::fromUtf8(st.status);
+		const char *fault = (!st.audio_ok && st.audio_msg[0]) ? st.audio_msg : (st.status[0] ? st.status : nullptr);
+		if (fault) {
+			line += QStringLiteral("  ·  %1").arg(QString::fromUtf8(fault));
 			status_->setStyleSheet("color: #ff6a4d;");
 		} else {
 			status_->setStyleSheet(QString());
@@ -267,15 +274,25 @@ public:
 	   Not called per tick: obs_source_properties runs a full pack rescan (readdir, JSON parse and
 	   an Ed25519 verify per pack), which at 1 Hz per source would be the most expensive thing this
 	   dock does. Called when the row is built and when the pack actually changes. */
-	void refreshLists(obs_source_t *src, const char *want_pack, const char *want_preset)
+	/* Returns whether `want_preset` was in the rebuilt list. The pack switch needs that answer:
+	   see FoxfireDock::apply. */
+	bool refreshLists(obs_source_t *src, const char *want_pack, const char *want_preset)
 	{
 		obs_properties_t *props = obs_source_properties(src);
 		if (!props)
-			return;
+			return false;
 		const QSignalBlocker b1(pack_), b2(preset_);
 		fill(pack_, obs_properties_get(props, S_PACK), want_pack);
-		fill(preset_, obs_properties_get(props, S_PRESET), want_preset);
+		const bool have = fill(preset_, obs_properties_get(props, S_PRESET), want_preset);
 		obs_properties_destroy(props);
+		return have;
+	}
+
+	/* The first preset the list offers, or empty if it offers none -- the fallback when a pack
+	   change leaves the old preset with nowhere to land. */
+	QString firstPreset() const
+	{
+		return preset_->count() > 0 ? preset_->itemData(0).toString() : QString();
 	}
 
 	void syncSelection(const char *pack, const char *preset)
@@ -295,44 +312,82 @@ public:
 		return true;
 	}
 
+	/* the same, for the pack combo -- fires chosen(true) */
+	bool choosePack(const char *pack_id)
+	{
+		const int i = pack_->findData(QString::fromUtf8(pack_id));
+		if (i < 0)
+			return false;
+		pack_->setCurrentIndex(i);
+		return true;
+	}
+
 	QString chosenPack() const { return pack_->currentData().toString(); }
 	QString chosenPreset() const { return preset_->currentData().toString(); }
-	/* which combo the user just touched, consumed by the dock's apply step */
+	/* which combos the user just touched, consumed by the dock's apply step */
 	int takePending()
 	{
 		const int p = pending_;
 		pending_ = 0;
 		return p;
 	}
+	/* A selection the user has made and the dock has not written yet. The 1 Hz rescan must not
+	   overwrite the combo while one is outstanding: its syncSelection would put the OLD value back
+	   from the source's settings, and the apply a few ms later would then read that old value back
+	   out of the combo and write the setting the source already had -- the click would silently do
+	   nothing, roughly once in every sixty, whenever a rescan landed inside the 33 ms window. */
+	bool hasPending() const { return pending_ != 0; }
+
+	/* Where this row's meter sits in `root`'s coordinates, for the grab gate -- which has to count
+	   bar pixels somewhere it knows is a meter. The bars are #ff6a4d, and so is the fault status
+	   label two widgets up, so counting that colour over the whole dock counts red TEXT: a meter
+	   that painted nothing still passed whenever a row was showing a fault, which is exactly when
+	   the gate is worth having. */
+	QRect meterRectIn(const QWidget *root) const
+	{
+		const QPoint tl = meter_->mapTo(root, QPoint(0, 0));
+		return QRect(tl, meter_->size());
+	}
 
 private:
-	static void fill(QComboBox *box, obs_property_t *p, const char *want)
+	static bool fill(QComboBox *box, obs_property_t *p, const char *want)
 	{
 		box->clear();
 		if (!p)
-			return;
+			return false;
 		const size_t n = obs_property_list_item_count(p);
 		for (size_t i = 0; i < n; i++) {
 			const char *nm = obs_property_list_item_name(p, i);
 			const char *val = obs_property_list_item_string(p, i);
 			box->addItem(QString::fromUtf8(nm ? nm : ""), QString::fromUtf8(val ? val : ""));
 		}
-		select(box, want);
+		return select(box, want);
 	}
 
-	static void select(QComboBox *box, const char *want)
+	/* false when the list does not offer `want` -- which leaves the combo on whatever item 0 is,
+	   showing a selection the source does not have. Returned rather than silently ignored because
+	   the pack switch below has to know: it is the difference between "the new pack kept the
+	   preset" and "the preset is gone and something has to choose another one". */
+	static bool select(QComboBox *box, const char *want)
 	{
 		if (!want || !*want)
-			return;
+			return false;
 		const int i = box->findData(QString::fromUtf8(want));
-		if (i >= 0 && i != box->currentIndex())
+		if (i < 0)
+			return false;
+		if (i != box->currentIndex())
 			box->setCurrentIndex(i);
+		return true;
 	}
 
-	/* 1 = the pack changed (the preset list must be rebuilt for it), 2 = only the preset did.
+	/* A BITMASK: bit 0 = the pack changed (the preset list must be rebuilt for it), bit 1 = the
+	   preset did. Both can be outstanding at once -- a pack change rebuilds the preset list, and
+	   the user can pick from it inside the same 33 ms tick -- and an assignment would have kept
+	   only whichever arrived last, applying a pack with the old pack's preset.
+
 	   Recorded rather than acted on: applying a setting reaches into libobs, and doing that from
 	   inside a Qt signal handler means it happens in the middle of the combo's own update. */
-	void chosen(bool isPack) { pending_ = isPack ? 1 : 2; }
+	void chosen(bool isPack) { pending_ |= isPack ? FF_PENDING_PACK : FF_PENDING_PRESET; }
 
 	QString name_;
 	obs_weak_source_t *weak_;
@@ -370,26 +425,60 @@ public:
 		rescan();
 	}
 
-	/* see the FOXFIRE_DOCK_PICK hook */
-	void pickPreset(const char *preset_id)
+	/* see the FOXFIRE_DOCK_PICK / FOXFIRE_DOCK_PICK_PACK hooks */
+	void pick(const char *want, bool isPack)
 	{
+		const char *what = isPack ? "pack" : "preset";
 		if (rows_.empty()) {
 			obs_log(LOG_INFO, "dock-pick: no rows");
 			return;
 		}
 		SourceRow *row = rows_.front();
-		if (!row->choosePreset(preset_id)) {
-			obs_log(LOG_INFO, "dock-pick: '%s' is not in the preset list", preset_id);
-			return;
-		}
-		const int pending = row->takePending();
-		obs_log(LOG_INFO, "dock-pick: asked for '%s' (pending=%d)", preset_id, pending);
-		withSource(row, [row, pending](obs_source_t *s) {
-			apply(row, s, pending == 1);
+
+		/* Logged BEFORE anything is written, and read off the SOURCE rather than the combo.
+		   The gate needs to know what the source started on: without it, "it ended on what we
+		   asked for" also passes when it was already there and nothing happened -- the check
+		   passing for the exact reason it exists to rule out. */
+		withSource(row, [](obs_source_t *s) {
 			obs_data_t *st = obs_source_get_settings(s);
-			obs_log(LOG_INFO, "dock-pick: source now on '%s'", obs_data_get_string(st, S_PRESET));
+			obs_log(LOG_INFO, "dock-pick: source was on '%s' / '%s'",
+				obs_data_get_string(st, S_PACK), obs_data_get_string(st, S_PRESET));
 			obs_data_release(st);
 		});
+
+		if (!(isPack ? row->choosePack(want) : row->choosePreset(want))) {
+			obs_log(LOG_INFO, "dock-pick: '%s' is not in the %s list", want, what);
+			return;
+		}
+		obs_log(LOG_INFO, "dock-pick: asked for %s '%s'", what, want);
+
+		/* Deliberately NOT applied here. A click sets the pending flag and returns; the write
+		   happens on a later tick, and a rescan can land in between. Consuming the flag here
+		   would skip both, so the hook would take a path no click takes -- and the race between
+		   the rescan and the pending apply is exactly the one worth gating. This wait spans
+		   several ticks and at least two full rescans. */
+		QTimer::singleShot(2500, this, [this, row]() {
+			if (std::find(rows_.begin(), rows_.end(), row) == rows_.end()) {
+				obs_log(LOG_INFO, "dock-pick: the row went away before the write landed");
+				return;
+			}
+			withSource(row, [](obs_source_t *s) {
+				obs_data_t *st = obs_source_get_settings(s);
+				obs_log(LOG_INFO, "dock-pick: source now on '%s' / '%s'",
+					obs_data_get_string(st, S_PACK), obs_data_get_string(st, S_PRESET));
+				obs_data_release(st);
+			});
+		});
+	}
+
+	/* see grab_to -- one line per meter, in the grab's own coordinates */
+	void logMeterRects()
+	{
+		for (size_t i = 0; i < rows_.size(); i++) {
+			const QRect r = rows_[i]->meterRectIn(this);
+			obs_log(LOG_INFO, "dock-grab: meter %d at %d,%d %dx%d", int(i), r.x(), r.y(),
+				r.width(), r.height());
+		}
 	}
 
 	/* see SourceRow::seedTestFrame -- the grab diagnostic's half of gating the paint path */
@@ -403,25 +492,43 @@ private:
 	struct Found {
 		std::vector<QString> names;
 		std::vector<obs_weak_source_t *> weaks; /* owned until handed to a row or released */
+		obs_source_t *current_transition = nullptr; /* borrowed for the length of the scan */
 	};
 
 	static bool collect(void *param, obs_source_t *s)
 	{
-		if (is_foxfire(s)) {
-			auto *f = static_cast<Found *>(param);
-			const char *n = obs_source_get_name(s);
-			f->names.emplace_back(QString::fromUtf8(n ? n : ""));
-			/* obs_enum_sources does not keep the source alive past this call; obs.h names
-			   obs_source_get_weak_source as the way to retain one, which is what a row needs. */
-			f->weaks.push_back(obs_source_get_weak_source(s));
-		}
+		auto *f = static_cast<Found *>(param);
+		if (!is_foxfire(s))
+			return true;
+		/* Transitions: only the one that is actually in use. Every transition a collection
+		   defines is a live source, so enumerating all of them put one row per CONFIGURED
+		   transition in the panel -- measured at 31 rows for a collection with two scenes,
+		   twenty-nine of them transitions nobody was using, each metering at 30 Hz. A streamer
+		   cuts with one at a time, and that one is worth a row. */
+		if (strcmp(obs_source_get_id(s), "foxfire_transition") == 0 && s != f->current_transition)
+			return true;
+		const char *n = obs_source_get_name(s);
+		f->names.emplace_back(QString::fromUtf8(n ? n : ""));
+		/* the enumerator does not keep the source alive past this call; obs.h names
+		   obs_source_get_weak_source as the way to retain one, which is what a row needs. */
+		f->weaks.push_back(obs_source_get_weak_source(s));
 		return true; /* keep enumerating */
 	}
 
 	void rescan()
 	{
 		Found found;
-		obs_enum_sources(collect, &found);
+		/* ALL sources, not obs_enum_sources. obs.h: obs_enum_sources "Enumerates all INPUT
+		   sources", obs_enum_all_sources "Enumerates all sources (regardless of type)" -- so the
+		   narrow one never yields a filter or a transition, and two of the three ids is_foxfire
+		   matches were unreachable. The dock listed only visualizers while telling anyone with a
+		   Foxfire filter or transition that there were no Foxfire sources at all. */
+		/* A strong ref for the scan only; collect compares against it and never keeps it. */
+		found.current_transition = obs_frontend_get_current_transition();
+		obs_enum_all_sources(collect, &found);
+		if (found.current_transition)
+			obs_source_release(found.current_transition);
+		found.current_transition = nullptr;
 
 		/* Rebuild only when the set actually changed: replacing the rows every second would
 		   throw away the peak-hold state the meters are carrying and flicker the layout. */
@@ -475,6 +582,13 @@ private:
 		for (auto *r : rows_)
 			withSource(r, [r](obs_source_t *s) {
 				r->tickStatus(s);
+				/* NOT while the row has a selection waiting to be written. The combos are
+				   the only record of what the user just picked -- putting the source's
+				   current values back would revert it, and the apply on the next tick
+				   reads the combo, so the click would write the setting the source
+				   already had and appear to do nothing. See SourceRow::hasPending. */
+				if (r->hasPending())
+					return;
 				obs_data_t *st = obs_source_get_settings(s);
 				/* keep the combos showing what the instance actually has: the properties
 				   panel, obs-websocket or a scene-collection load can all change it */
@@ -491,7 +605,7 @@ private:
 			   re-entrant repaint turns into a crash. The next tick is 33 ms away. */
 			const int pending = r->takePending();
 			if (pending)
-				withSource(r, [r, pending](obs_source_t *s) { apply(r, s, pending == 1); });
+				withSource(r, [r, pending](obs_source_t *s) { apply(r, s, pending); });
 			withSource(r, [r](obs_source_t *s) { r->tickMeter(s); });
 		}
 	}
@@ -499,28 +613,76 @@ private:
 	/* The preset switch, through the SAME path the properties panel drives: the two settings keys
 	   and obs_source_update. Not a private back door -- going this way keeps the licence gate, the
 	   erase-layer-keys-on-change and every refusal ff_instance_update makes. */
-	static void apply(SourceRow *row, obs_source_t *src, bool pack_changed)
+	static void apply(SourceRow *row, obs_source_t *src, int pending)
 	{
 		const QByteArray pk = row->chosenPack().toUtf8();
-		const QByteArray pr = row->chosenPreset().toUtf8();
 		if (pk.isEmpty())
 			return;
+
+		if (pending & FF_PENDING_PACK) {
+			/* Send the pack ALONE first. The preset combo still holds the old pack's
+			   selection, which very likely is not in the new pack, and asking for a preset
+			   that does not exist is what ff_instance_update answers by loading zero layers
+			   and setting "preset missing" -- a blank source. */
+			obs_data_t *st = obs_data_create();
+			obs_data_set_string(st, S_PACK, pk.constData());
+			obs_source_update(src, st);
+			obs_data_release(st);
+
+			/* Rebuild the lists for the new pack, then CHECK where that left the preset
+			   rather than assuming.
+
+			   What normally happens, measured rather than reasoned: obs_source_properties
+			   below runs ff-props.c's on_pack_changed, which writes a preset valid for the
+			   new pack into the live settings, and libobs defers a video source's update to
+			   the graphics tick, so the deferred ff_instance_update reads the repaired value
+			   and never sees the stale one. `kept` is therefore true on the ordinary path and
+			   the block below does not run.
+
+			   It is kept anyway because that is three libobs behaviours this file does not
+			   control, in a specific order. Both halves were mutation-tested: with the rebuild
+			   no longer feeding a repaired preset, this block alone still lands the source on
+			   a preset the new pack has; with BOTH gone, the source ends on basics' "bars"
+			   inside the "ring" pack -- a preset that does not exist, which ff_instance_update
+			   answers by loading zero layers. That is a blank canvas, and tools/dock-proof.py
+			   now fails on it. */
+			obs_data_t *now = obs_source_get_settings(src);
+			const bool kept = row->refreshLists(src, obs_data_get_string(now, S_PACK),
+							    obs_data_get_string(now, S_PRESET));
+			obs_data_release(now);
+			if (!kept) {
+				const QByteArray first = row->firstPreset().toUtf8();
+				obs_log(LOG_INFO, "dock: pack '%s' does not keep the preset; falling back to '%s'",
+					pk.constData(), first.isEmpty() ? "(none)" : first.constData());
+				if (!first.isEmpty()) {
+					obs_data_t *fix = obs_data_create();
+					obs_data_set_string(fix, S_PRESET, first.constData());
+					obs_source_update(src, fix);
+					obs_data_release(fix);
+					row->refreshLists(src, pk.constData(), first.constData());
+				}
+			}
+			return; /* the preset is now whatever the new pack settled on, already written */
+		}
+
+		/* A preset-only change. The pack is sent as well so the two always agree, but only when
+		   it MATCHES what the source already has: writing the combo's pack unconditionally could
+		   migrate a source whose pack was changed underneath us (properties panel, websocket, a
+		   collection load) between the rescan and this tick -- and a pack change is not free, it
+		   runs erase_layer_keys and drops the instance's per-layer settings. */
+		const QByteArray pr = row->chosenPreset().toUtf8();
+		if (pr.isEmpty())
+			return;
+		obs_data_t *cur = obs_source_get_settings(src);
+		const bool same_pack = pk == obs_data_get_string(cur, S_PACK);
+		obs_data_release(cur);
+
 		obs_data_t *st = obs_data_create();
-		obs_data_set_string(st, S_PACK, pk.constData());
-		/* On a pack change the preset combo still holds the OLD pack's selection, which is not in
-		   the new pack. Sending it would ask for a preset that does not exist; ff_instance_update
-		   and on_pack_changed already repair that, so the pack alone is sent and the repaired
-		   selection is read back below. */
-		if (!pack_changed && !pr.isEmpty())
-			obs_data_set_string(st, S_PRESET, pr.constData());
+		if (same_pack)
+			obs_data_set_string(st, S_PACK, pk.constData());
+		obs_data_set_string(st, S_PRESET, pr.constData());
 		obs_source_update(src, st);
 		obs_data_release(st);
-
-		if (pack_changed) {
-			obs_data_t *now = obs_source_get_settings(src);
-			row->refreshLists(src, obs_data_get_string(now, S_PACK), obs_data_get_string(now, S_PRESET));
-			obs_data_release(now);
-		}
 	}
 
 	/* A strong reference for exactly the length of one call and never across a tick. The source
@@ -561,6 +723,10 @@ void grab_to(const char *path)
 	const QImage img = g_dock->grab().toImage();
 	const bool saved = !img.isNull() && img.save(QString::fromUtf8(path), "PNG");
 	obs_log(LOG_INFO, "dock-grab: %dx%d saved=%s -> %s", img.width(), img.height(), saved ? "TRUE" : "FALSE", path);
+	/* Where the meters are, so the gate can count bar pixels somewhere it KNOWS is a meter. The
+	   bars are #ff6a4d and so is the fault status label, so counting that colour across the whole
+	   grab counts red text: a meter painting nothing passed the moment any row showed a fault. */
+	g_dock->logMeterRects();
 }
 
 void on_frontend_event(enum obs_frontend_event event, void *)
@@ -570,6 +736,17 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	g_dock = new FoxfireDock();
 	const bool ok = obs_frontend_add_dock_by_id(kDockId, obs_module_text("Foxfire.Dock.Title"), g_dock);
 	obs_log(LOG_INFO, "dock: registered=%s", ok ? "TRUE" : "FALSE");
+	if (!ok) {
+		/* Nothing else owns it. The widget is parentless -- OBS takes ownership only on a
+		   successful add -- so leaving it here leaks the dock, every row, every weak source ref
+		   and BOTH QTimers, and ff_dock_unregister cannot clean up after it either: it calls
+		   obs_frontend_remove_dock on an id that was never added, which is a no-op. A 30 Hz
+		   timer still firing into a .so that obs_module_unload has dlclosed is not a leak, it
+		   is a crash on the way out. */
+		delete g_dock;
+		g_dock = nullptr;
+		return;
+	}
 
 	/* Diagnostic hook, same shape as FOXFIRE_INSTALL_ZIP and FOXFIRE_PROC_PROOF in
 	   plugin-main.c. The delay is not decoration: a widget grabbed before the event loop has
@@ -583,7 +760,13 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	   RELOADED. The dock logs what it asked for and what the source ended up with, and
 	   tools/dock-proof.py requires the two to agree. */
 	if (const char *want = getenv("FOXFIRE_DOCK_PICK"))
-		QTimer::singleShot(5000, g_dock, [want]() { g_dock->pickPreset(want); });
+		QTimer::singleShot(5000, g_dock, [want]() { g_dock->pick(want, false); });
+	/* The pack half. Worth its own hook because the two take DIFFERENT paths through apply():
+	   a preset change writes one key, a pack change writes the pack, rebuilds the preset list
+	   for it and then has to land the source on a preset that exists in the new pack. Nothing
+	   gated that path, and it is the one that blanks the canvas when it goes wrong. */
+	if (const char *want = getenv("FOXFIRE_DOCK_PICK_PACK"))
+		QTimer::singleShot(5000, g_dock, [want]() { g_dock->pick(want, true); });
 }
 
 } /* namespace */

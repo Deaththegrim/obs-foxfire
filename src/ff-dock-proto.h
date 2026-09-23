@@ -43,6 +43,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "ff-audio.h" /* enum ff_audio_mode */
 #include <stdbool.h>
+#include <stddef.h> /* offsetof, for the layout assertions at the bottom */
 
 /* void ff_meter_read(in ptr out_frame, out bool valid)
    Copies this instance's most recent analysis frame into the caller's `struct ff_frame`.
@@ -71,3 +72,22 @@ struct ff_dock_status {
 	char audio_msg[256];
 	bool audio_ok;
 };
+
+/* This struct is the ONLY thing that crosses the C/C++ boundary in this project: ff-props.c fills
+   it, ff-dock.cpp reads it, and the calldata carries nothing but a void pointer to it -- so a
+   layout disagreement between the two translation units would not be a compile error, it would be
+   a dock quietly reading the wrong bytes. It is plausible that the two agree and plausible is not
+   checkable, so it is checked. An enum in a struct is where they would actually diverge
+   (-fshort-enums on one side and not the other), which is why the offset past it is pinned too. */
+#ifdef __cplusplus
+#define FF_STATIC_ASSERT static_assert
+#else
+#define FF_STATIC_ASSERT _Static_assert
+#endif
+FF_STATIC_ASSERT(sizeof(enum ff_audio_mode) == sizeof(int), "ff_audio_mode is not int-sized");
+/* Measured, not assumed: 640 bytes of char arrays, install_failed, three bytes of padding, then
+   the enum. Every field AFTER the enum is pinned because that is what a size change would move. */
+FF_STATIC_ASSERT(offsetof(struct ff_dock_status, audio_mode) == 644, "ff_dock_status layout");
+FF_STATIC_ASSERT(offsetof(struct ff_dock_status, audio_msg) == 904, "ff_dock_status layout");
+FF_STATIC_ASSERT(offsetof(struct ff_dock_status, audio_ok) == 1160, "ff_dock_status layout");
+FF_STATIC_ASSERT(sizeof(struct ff_dock_status) == 1164, "ff_dock_status layout");
