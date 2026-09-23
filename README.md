@@ -47,6 +47,13 @@ Foxfire ships as **two separate plugins**, so you can install one without the ot
 
 Both plugins share one packs directory, so a pack installed through either is visible to both.
 
+**Animated art.** A pack's textures and any image you pick yourself may be an animated **GIF**,
+and it plays. Animated **WebP does not work** — not an oversight in Foxfire: OBS decodes every
+image except GIF through ffmpeg, and ffmpeg's WebP decoder does not handle the animated container
+at all (`ffprobe` refuses such a file on its own). Still WebP is fine. If your art is an animated
+WebP, convert it to GIF, or to a still. `tools/animation-proof.py` measures all four cases in a
+real OBS and is what keeps this paragraph honest.
+
 Both are driven by **packs**: directories of `.effect` shaders plus a `pack.json` manifest
 declaring presets (named combinations of layers with default parameter values). The plugin ships
 one free demo pack (`data/packs/demo`, two presets: Bars, Glow). Everything a pack can declare, and

@@ -872,6 +872,42 @@ static void render_layer(struct ff_layer *L, gs_texture_t *src, uint32_t w, uint
 	gs_technique_end(t);
 }
 
+/* Drives ANIMATED art -- animated GIF and animated WebP.
+ *
+ * gs_image_file_init decodes the whole animation, but libobs leaves advancing it to the host: the
+ * texture only ever holds the frame that gs_image_file_init_texture uploaded unless someone calls
+ * gs_image_file_tick and then gs_image_file_update_texture. Nothing did, so every animated asset a
+ * pack or a viewer supplied rendered as ONE FROZEN FRAME -- and the file picker made that worse by
+ * excluding *.gif (honest, if unhelpful) while accepting *.webp, which was therefore taken and then
+ * silently held still.
+ *
+ * Every kind rides this one seam rather than three: ff_renderer_render is what the visualizer
+ * source, the effects filter and the scene transition all call, it already holds the graphics
+ * context both calls need, and it is already handed `dt`.
+ *
+ * Deliberately NOT gated on image->is_animated_gif. That field is named for the format libobs
+ * supported first, and whether it is also set for an animated WebP is not something this file
+ * should assume -- gs_image_file_tick answers cheaply for a still image, and tools/animation-proof.py
+ * measures whether the frames actually move rather than trusting either the flag or this comment. */
+static void tick_animations(struct ff_renderer *r, float dt)
+{
+	if (dt <= 0.f)
+		return;
+	const uint64_t ns = (uint64_t)((double)dt * 1000000000.0);
+	for (size_t i = 0; i < r->nlayers; i++) {
+		struct ff_layer *L = &r->layers[i];
+		for (size_t k = 0; k < L->nparams; k++) {
+			struct ff_param *p = &L->params[k];
+			if (!p->tex || !p->tex->loaded || !p->tex->texture)
+				continue;
+			/* tick reports whether the frame moved; uploading unconditionally would push a
+			   whole texture to the GPU every frame for art that never changes. */
+			if (gs_image_file_tick(p->tex, ns))
+				gs_image_file_update_texture(p->tex);
+		}
+	}
+}
+
 gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f, float progress, gs_texture_t *input,
 				 const struct ff_pair_tex *pair, uint32_t w, uint32_t h, float dt)
 {
@@ -885,6 +921,7 @@ gs_texture_t *ff_renderer_render(struct ff_renderer *r, const struct ff_frame *f
 	r->height = h;
 	r->time += dt;
 	r->frames_rendered++;
+	tick_animations(r, dt);
 	/* Once per rendered frame, before any layer reads it, so every layer in a preset agrees
 	   about which shape the mouth is making. dt is in seconds here and milliseconds there. */
 	ff_viseme_update(&r->viseme, f, dt * 1000.0f, &r->viseme_params);
@@ -1155,11 +1192,12 @@ static void add_param_property(obs_properties_t *grp, const struct ff_param *p, 
 	case GS_SHADER_PARAM_TEXTURE:
 		/* only reached when the shader opted in -- is_exposed() gates it */
 		obs_properties_add_path(grp, key, label, OBS_PATH_FILE,
-					/* no *.gif: gs_image_file_t can animate one, but only if the host
-					   calls gs_image_file_tick + update_texture every frame, and nothing
-					   here does. Offering it would hand back a frozen frame 0 with no
-					   explanation -- worse than not offering it. */
-					"Images (*.png *.jpg *.jpeg *.bmp *.webp);;All files (*.*)", NULL);
+					/* *.gif is offered now that tick_animations drives the decoder. It
+					   used to be excluded precisely because nothing did, which was honest
+					   about GIF and quietly wrong about WebP: *.webp was accepted and then
+					   held on frame 0 with no explanation. Both animate now, and
+					   tools/animation-proof.py measures that rather than asserting it. */
+					"Images (*.png *.jpg *.jpeg *.bmp *.webp *.gif);;All files (*.*)", NULL);
 		break;
 	default:
 		/* VEC2/VEC3, STRING and the matrix types are not user-editable */
