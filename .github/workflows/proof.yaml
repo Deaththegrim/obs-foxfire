@@ -92,6 +92,17 @@ jobs:
             python3 tools/transition-proof.py --plugin-build . --allow-skips
           fi
 
+      - name: Animated art actually moves
+        # An animated GIF used to render as frame 0 for ever, because libobs decodes the animation
+        # but leaves advancing it to the host. Nothing else here can see that: every other render
+        # check screenshots ONE frame, and one frame of a frozen animation is indistinguishable
+        # from one frame of a working one. This counts DISTINCT frames across a loop, and carries
+        # its own fixture (a still PNG that must not move, so the check cannot pass on noise), so
+        # it needs no packs repo and is never skipped.
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: python3 tools/animation-proof.py --plugin-build .
+
       - name: Every source exposes its live meters
         id: tap
         # The per-source proc handlers (ff-props.c) are how anything outside an instance reaches
