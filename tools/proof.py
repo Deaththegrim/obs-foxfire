@@ -301,6 +301,13 @@ def write_filter_base(out: Path) -> Path:
       * one small blown highlight -- a bloom that only lights pixels above a threshold needs at
         least one, and a threshold of 0.72 is typical, so this goes to full white
       * mid-grey skin-ish patches -- the midtones a grade is supposed to protect
+      * a fully TRANSPARENT strip down the right, with a feathered edge into it
+
+    That last one is not decoration. A filter here receives premultiplied alpha, and the failure it
+    invites is an additive term that is not scaled by alpha: at a == 0 it paints the scene BEHIND a
+    transparent source. An opaque fixture cannot express that at all -- which is the same shape of
+    gap as the flat grey field this replaced, one level down. check_transparent_stays_transparent()
+    is what reads it.
 
     Written fresh into the proof's own out/ each run rather than committed: it is a fixture, and a
     fixture nobody can regenerate is one nobody dares change.
@@ -326,9 +333,43 @@ def write_filter_base(out: Path) -> Path:
     d.ellipse([470, 60, 540, 130], fill=(255, 255, 255))  # the highlight a bloom needs
     d.rectangle([420, 210, 520, 300], fill=(196, 150, 122))   # midtone, warm
     d.rectangle([530, 210, 620, 300], fill=(122, 150, 196))   # midtone, cool
+
+    rgba = im.convert("RGBA")
+    a = Image.new("L", (w, h), 255)
+    ad = ImageDraw.Draw(a)
+    ad.rectangle([w - 120, 0, w, h], fill=0)                       # fully transparent
+    for i in range(40):                                            # feathered into it
+        ad.line([(w - 160 + i, 0), (w - 160 + i, h)], fill=int(255 * (1.0 - i / 39.0)))
+    rgba.putalpha(a)
     p = out / "filter-base.png"
-    im.save(p)
+    rgba.save(p)
     return p
+
+
+def transparent_box(size=(640, 360)):
+    """The fully-transparent region of write_filter_base(), in pixels."""
+    w, h = size
+    return (w - 120, 0, w, h)
+
+
+def check_transparent_stays_transparent(raw: bytes, who: str) -> None:
+    """A filter must add NOTHING where its source is fully transparent.
+
+    Premultiplied alpha makes the failure visible rather than hiding it: colour returned with
+    a == 0 is drawn onto the scene with ONE/INVSRCALPHA, so it lights whatever is behind. Measured
+    on the first version of these filters -- grade put an 8% grey wash over a logo's whole bounding
+    box and crt rolled a bright bar down it.
+    """
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(raw)).convert("RGBA")
+    x0, y0, x1, y1 = transparent_box(im.size)
+    px = im.crop((x0 + 8, y0, x1, y1))          # +8 to clear the feather
+    arr = px.getdata()
+    worst = max(max(r, g, b) for r, g, b, _a in arr)
+    ff_proof.check(f"{who}: nothing is drawn where the source is transparent", worst <= 2,
+                   f"brightest pixel in the transparent strip is {worst}/255 -- a filter that "
+                   f"returns colour at alpha 0 paints the scene BEHIND its source")
 
 
 async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Path, report: dict) -> None:
@@ -370,6 +411,7 @@ async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Pa
             await asyncio.sleep(1.5)
             raw = await _shoot(client, name)
             (out / f"{pack_id}-{pr['id']}.png").write_bytes(raw)
+            check_transparent_stays_transparent(raw, f"{pack_id}/{pr['id']}")
             ratio, hue = analyse_diff(before_raw, raw)
             unit = "diff"
         elif kind in ALERT_KINDS:
@@ -465,7 +507,11 @@ async def drive(pack_dir: Path | None, probe_dir: Path | None, out: Path, port: 
                 # Only presets this proof can actually render arm a check. A transition arms one
                 # in transition-proof.py instead, and counting it here would make expected
                 # permanently exceed armed -- which is the signal that something did not run.
+                # Two checks per EFFECTS preset now: the diff, and that nothing was drawn where
+                # the source is transparent. Counted separately or armed overruns expected, which
+                # is the signal reserved for "something did not run".
                 expected += sum(1 for d in preset_decls if d.get("kind") not in TRANSITION_KINDS)
+                expected += sum(1 for d in preset_decls if d.get("kind") in EFFECTS_KINDS)
                 try:
                     await enumerate_pack(client, pack_id, preset_decls, out, report)
                 except Exception as e:
@@ -478,6 +524,7 @@ async def drive(pack_dir: Path | None, probe_dir: Path | None, out: Path, port: 
             # armed count still equals expected exactly (Important 2's armed-vs-expected gate).
             probe_id, probe_decls = _load_manifest(probe_dir)
             expected += sum(1 for d in probe_decls if d.get("kind") not in TRANSITION_KINDS) + 1
+            expected += sum(1 for d in probe_decls if d.get("kind") in EFFECTS_KINDS)
             try:
                 await enumerate_pack(client, probe_id, probe_decls, out, report)
             except Exception as e:
