@@ -289,6 +289,48 @@ async def _shoot(client, source_name: str) -> bytes:
     return base64.b64decode(shot["imageData"].split(",", 1)[1])
 
 
+def write_filter_base(out: Path) -> Path:
+    """The picture a FILTER preset is proved against.
+
+    Everything in it is there because some filter needs it and a flat field does not have it:
+
+      * hard edges and a fine checker -- a chromatic split has nothing to separate without them,
+        and a blur has nothing to soften
+      * a smooth ramp -- a colour grade remaps luminance, so it needs the whole range present, and
+        banding in the result is visible against a ramp and invisible against a patch
+      * one small blown highlight -- a bloom that only lights pixels above a threshold needs at
+        least one, and a threshold of 0.72 is typical, so this goes to full white
+      * mid-grey skin-ish patches -- the midtones a grade is supposed to protect
+
+    Written fresh into the proof's own out/ each run rather than committed: it is a fixture, and a
+    fixture nobody can regenerate is one nobody dares change.
+    """
+    from PIL import Image, ImageDraw
+    w, h = 640, 360
+    im = Image.new("RGB", (w, h))
+    d = ImageDraw.Draw(im)
+    for x in range(w):                                    # horizontal ramp, full 0..255
+        d.line([(x, 0), (x, h)], fill=(x * 255 // (w - 1),) * 3)
+    # The checker runs the FULL width, as a modulation of the ramp rather than flat dark squares.
+    # Confined to the left half it sat entirely in the black end, where an edge has almost no
+    # contrast to displace -- a chromatic split reads as nothing at all, which is exactly how the
+    # first version of this pattern hid three presets that were working.
+    src = im.load()
+    for cy in range(0, h, 16):
+        for cx in range(0, w, 16):
+            if ((cx // 16) + (cy // 16)) % 2 == 0:
+                for y in range(cy, min(cy + 16, h)):
+                    for x in range(cx, min(cx + 16, w)):
+                        r, g, b = src[x, y]
+                        src[x, y] = (int(r * 0.55), int(g * 0.55), int(b * 0.6))
+    d.ellipse([470, 60, 540, 130], fill=(255, 255, 255))  # the highlight a bloom needs
+    d.rectangle([420, 210, 520, 300], fill=(196, 150, 122))   # midtone, warm
+    d.rectangle([530, 210, 620, 300], fill=(122, 150, 196))   # midtone, cool
+    p = out / "filter-base.png"
+    im.save(p)
+    return p
+
+
 async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Path, report: dict) -> None:
     """Drives every preset pack.json declares through the sandbox's live OBS, reusing the harness's
     'tone' audio source (still present -- ff_proof.run() creates it and never removes it) and its
@@ -302,6 +344,7 @@ async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Pa
     kind effects: two screenshots of the same color_source_v3 base -- before the foxfire_effects
     filter is attached, and after -- analysed as a diff (analyse_diff()); see Important 1.
     Any other kind is a named, failing check (Minor 6) -- never treated as a visualizer."""
+    base_png = write_filter_base(out)
     for pr in preset_decls:
         name = f"proof-{pack_id}-{pr['id']}"
         kind = pr["kind"]
@@ -309,12 +352,16 @@ async def enumerate_pack(client, pack_id: str, preset_decls: list[dict], out: Pa
                     "width": 640, "height": 360}
 
         if kind in EFFECTS_KINDS:
-            # color_source_v3, not color_source -- plain color_source does not resolve on this
-            # libobs build (libobs registers three versions of the same id; obs-websocket's
-            # GetInputKindList only exposes the versioned name)
+            # A PATTERN, not a flat colour. The base used to be a solid 0xFF404040 field, and a
+            # flat field is exactly what a SPATIAL filter cannot change: blurring one grey gives
+            # the same grey, and shifting its red and blue channels sideways gives the same grey
+            # again. Measured -- six new bloom and chroma presets came back "diff 0.000 BLANK"
+            # while rendering perfectly, because the fixture could not express what they do. The
+            # pattern carries edges, a gradient, and a highlight above any sane bloom threshold,
+            # so every filter this pack ships has something to act on.
             await client.request("CreateInput", {
-                "sceneName": "ffproof", "inputName": name, "inputKind": "color_source_v3",
-                "inputSettings": {"color": 0xFF404040, "width": 640, "height": 360}})
+                "sceneName": "ffproof", "inputName": name, "inputKind": "image_source",
+                "inputSettings": {"file": str(base_png)}})
             await asyncio.sleep(1.0)
             before_raw = await _shoot(client, name)
             await client.request("CreateSourceFilter", {
