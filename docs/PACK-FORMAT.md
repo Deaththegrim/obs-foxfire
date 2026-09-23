@@ -401,6 +401,16 @@ frame — the art never visibly travels, the frame just pops.
 * **The tint window has to match the art's actual luminance.** The bundled swirl only runs
   0.63–1.00; a window starting at 0.60 left the ramp's first stop unreachable, so "Ink flood"
   never showed its black. This is the sweep's version of the mask's 0–255 rule.
+* **Set the window from the art's bulk (p5–p95), not its extremes (p1–p99), and check the ramp
+  against it.** A window is stretched to cover whatever it is measured from, so measuring the
+  extremes of art whose extremes are 1% of thin bright accent lines spends the whole ramp on
+  pixels nobody sees and leaves the other 99% in its bottom third. Measured on the gothic pack's
+  first build: window 0.03–0.19 over ramps opening on `#0b0a0d`, and the fully-covered frame came
+  out at mean luminance **19–41** against ember's **137–202** — a covering sweep that reads as a
+  dip to black, which is the one thing it must not be. Two fixes, both needed: p5–p95 (median
+  pixel at `k = 0.68`, next to ember's 0.78), and no near-black first stop, because at the median
+  `k` the first stop is most of what is on screen. The end of it is not either input but the
+  picture they make: render at `swap_point` and look at the mean.
 
 ### The beat drives a look, never the clock
 
@@ -417,6 +427,23 @@ taken off `progress` and nothing else.
 The property is testable and worth testing: render the same moment over two completely different
 scenes and require the results to be **identical**. Any pixel that differs is a pixel the cut
 shows through. `tools/transition-proof.py` does the equivalent on a real recording.
+
+### Seeing a pack's transitions, rather than measuring them
+
+`tools/transition-proof.py` answers *does it work* for three presets and prints numbers.
+`tools/preview-transitions.py` answers *what does it look like* for all of them:
+
+    preview-transitions.py --plugin-build . --pack ../foxfire/packs/kitsune-transitions
+
+It seeds one OBS transition per preset (obs-websocket cannot create one, so the scene collection
+is written before OBS starts), cuts through every preset in a single recording over the same two
+flat scenes the proof uses, and writes an `.mp4` of the lot plus two labelled contact sheets. Two
+sheets because one moment cannot show a covering sweep: at the swap the frame is solid fill *by
+design*, so the leading edge — the part the band art draws, and the part a buyer is choosing
+between — appears in no frame at all. The `early` sheet catches it mid-travel.
+
+It asserts nothing and gates nothing. It exists because a preset that measures correctly and
+looks wrong still ships wrong, and nothing in either repo could show a preset in motion before it.
 
 A preset's `thumb` field is optional — omit it, or leave it `""`, and the engine skips validating it
 entirely. Set it and it's checked exactly like an effect path (see Refused paths, above).
