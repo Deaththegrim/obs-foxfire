@@ -255,17 +255,31 @@ static void populate_pack_list(struct ff_instance *in, obs_property_t *p, const 
 	}
 }
 
-static void populate_preset_list(struct ff_instance *in, obs_property_t *p, const char *pack_id)
+/* Fills the list and reports whether `want` is one of the entries, plus the first entry's id.
+   Both answers come from the same walk because they must agree: asking a second time, later, is
+   how the list and the selection drift apart. */
+static void populate_preset_list(struct ff_instance *in, obs_property_t *p, const char *pack_id, const char *want,
+				 bool *want_present, const char **first_id)
 {
+	if (want_present)
+		*want_present = false;
+	if (first_id)
+		*first_id = NULL;
 	if (!p)
 		return;
 	obs_property_list_clear(p);
 	const struct ff_pack *pk = ff_packs_find(&in->packs, pack_id ? pack_id : "");
 	if (!pk)
 		return;
-	for (size_t i = 0; i < pk->npresets; i++)
-		if (preset_kind_matches(&pk->presets[i], in->kind))
-			obs_property_list_add_string(p, pk->presets[i].name, pk->presets[i].id);
+	for (size_t i = 0; i < pk->npresets; i++) {
+		if (!preset_kind_matches(&pk->presets[i], in->kind))
+			continue;
+		obs_property_list_add_string(p, pk->presets[i].name, pk->presets[i].id);
+		if (first_id && !*first_id)
+			*first_id = pk->presets[i].id;
+		if (want_present && want && !strcmp(want, pk->presets[i].id))
+			*want_present = true;
+	}
 }
 
 static bool add_audio_source(void *data, obs_source_t *src)
@@ -294,16 +308,32 @@ static bool on_pack_changed(obs_properties_t *props, obs_property_t *p, obs_data
 	struct ff_instance *in = obs_properties_get_param(props);
 	if (!in)
 		return false;
+	const char *want = obs_data_get_string(s, S_PRESET);
+	bool have = false;
+	const char *first = NULL;
 	pthread_mutex_lock(&in->state_lock);
-	populate_preset_list(in, obs_properties_get(props, S_PRESET), obs_data_get_string(s, S_PACK));
+	populate_preset_list(in, obs_properties_get(props, S_PRESET), obs_data_get_string(s, S_PACK), want, &have,
+			     &first);
 	pthread_mutex_unlock(&in->state_lock);
-	/* The saved preset id usually does not exist in the incoming pack. This does NOT rewrite
-	   S_PRESET to the first entry: this callback also runs on every properties open, and a
-	   setting rewritten there races the video thread's update(), leaving the combo showing one
-	   preset while Status names another. update() reports the mismatch instead and the user's
-	   own pick drives the switch.
+
+	/* Repair the selection ONLY when it is genuinely not in this pack.
+	   Rewriting unconditionally is what the previous version refused to do, for a good reason:
+	   this callback also runs on every properties OPEN, and a setting rewritten there races the
+	   video thread's update() and leaves the combo showing one preset while Status names
+	   another. Guarding on "the preset is not in the list" keeps that: on a normal open the
+	   preset IS in the list, nothing is written, and the race cannot happen.
+	   What it fixes is the case that has no other way out. Switching the Pack combo leaves the
+	   old pack's preset id selected, and the source then draws NOTHING -- measured: set pack to
+	   'ember' with 'bars' selected and the log says "Preset 'bars' is not in pack 'ember'" while
+	   the canvas stays empty. The only visible symptom is a source that stopped working, which
+	   is indistinguishable from the plugin being broken.
 	   No obs_properties_apply_settings() either: it runs every modified callback, this one
 	   included, and would recurse without end. Returning true is what refreshes the page. */
+	if (!have && first) {
+		obs_data_set_string(s, S_PRESET, first);
+		obs_log(LOG_INFO, "preset '%s' is not in pack '%s'; selected '%s'", want,
+			obs_data_get_string(s, S_PACK), first);
+	}
 	return true;
 }
 
@@ -350,7 +380,7 @@ static bool on_install_changed(obs_properties_t *props, obs_property_t *p, obs_d
 
 	pthread_mutex_lock(&in->state_lock);
 	populate_pack_list(in, obs_properties_get(props, S_PACK), obs_data_get_string(s, S_PACK));
-	populate_preset_list(in, obs_properties_get(props, S_PRESET), obs_data_get_string(s, S_PACK));
+	populate_preset_list(in, obs_properties_get(props, S_PRESET), obs_data_get_string(s, S_PACK), NULL, NULL, NULL);
 	pthread_mutex_unlock(&in->state_lock);
 	return true;
 }
@@ -368,7 +398,7 @@ static bool on_reload(obs_properties_t *props, obs_property_t *p, void *data)
 	   for a reload without pretending the preset switched (that would wipe the user's knobs) */
 	in->reload_pending = true;
 	populate_pack_list(in, obs_properties_get(props, S_PACK), in->pack_id);
-	populate_preset_list(in, obs_properties_get(props, S_PRESET), in->pack_id);
+	populate_preset_list(in, obs_properties_get(props, S_PRESET), in->pack_id, NULL, NULL, NULL);
 	pthread_mutex_unlock(&in->state_lock);
 
 	/* libobs defers a video source's update to the video thread; calling ff_instance_update from
@@ -603,7 +633,7 @@ obs_properties_t *ff_instance_properties(struct ff_instance *in)
 
 	obs_property_t *presets = obs_properties_add_list(props, S_PRESET, obs_module_text("Foxfire.Preset"),
 							  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	populate_preset_list(in, presets, in->pack_id);
+	populate_preset_list(in, presets, in->pack_id, NULL, NULL, NULL);
 	obs_property_set_modified_callback(presets, on_preset_changed);
 
 	if (ff_owns_canvas(in->kind)) {
