@@ -428,7 +428,7 @@ The property is testable and worth testing: render the same moment over two comp
 scenes and require the results to be **identical**. Any pixel that differs is a pixel the cut
 shows through. `tools/transition-proof.py` does the equivalent on a real recording.
 
-### Seeing a pack's transitions, rather than measuring them
+### Gating a pack's transitions, and seeing them
 
 `tools/transition-proof.py` answers *does it work* for three presets and prints numbers.
 `tools/preview-transitions.py` answers *what does it look like* for all of them:
@@ -442,8 +442,22 @@ sheets because one moment cannot show a covering sweep: at the swap the frame is
 design*, so the leading edge — the part the band art draws, and the part a buyer is choosing
 between — appears in no frame at all. The `early` sheet catches it mid-travel.
 
-It asserts nothing and gates nothing. It exists because a preset that measures correctly and
-looks wrong still ships wrong, and nothing in either repo could show a preset in motion before it.
+With `--gate` it also judges what it recorded, two checks per preset: the mid frame is not flat
+(a shader that fails to compile draws nothing — measured 0.00 pixel std against a shipped range of
+51–83), and it is not either fixture scene (measured minimum 50 across the 33 shipped presets).
+Both judge the **mid** frame. Judging `early` was wrong and fired on three good `basics` presets:
+at 32% a wipe is legitimately still mostly the outgoing scene, and the minimum distance from a
+fixture colour there is 3.1 against 50.0 at the midpoint.
+
+This is what closes the hole. `packforge proof` marks a transition preset "proved elsewhere" —
+a transition renders nothing in a still — and `transition-proof.py` drives three hardwired
+presets, so every other transition in the product was gated by nothing. CI now reads the pack list
+off disk (a hardcoded list gave `kitsune-transitions` zero coverage on the day it was added),
+renders every pack that has a non-transition preset, and gates every pack that has a transition
+one.
+
+It answers "did every preset draw", not "did the sweep cover" — that is scene-independence, and
+`transition-proof.py` measures it.
 
 A preset's `thumb` field is optional — omit it, or leave it `""`, and the engine skips validating it
 entirely. Set it and it's checked exactly like an effect path (see Refused paths, above).

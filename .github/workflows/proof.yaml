@@ -151,16 +151,73 @@ jobs:
         # an all-zero key, so it came back 7 of 7 blank. packforge now proves a throwaway
         # unlicensed COPY of such a pack (packforge/proof.py::_renderable_copy) and says so in the
         # log; the licence gate keeps its own tests.
+        #
+        # The list is read off disk, not written here. A hardcoded list silently gives a NEW pack
+        # zero coverage: `kitsune-transitions` was added with 18 presets, two shaders and 19 art
+        # files, and this step did not know it existed.
+        #
+        # A pack whose presets are ALL transitions is skipped here and gated by the next step
+        # instead -- `packforge proof` marks a transition preset "proved elsewhere" and correctly
+        # refuses a run that inspected nothing, so running it over such a pack is a guaranteed
+        # exit 1 that says nothing about the pack.
         if: steps.packs.outputs.basics == 'true'
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
         working-directory: ../foxfire
         run: |
-          for pack in basics ring tune overlay alerts mouth ember; do
+          set -euo pipefail
+          kinds() { python3 -c "import json,sys;print(' '.join(sorted({p['kind'] for p in json.load(open(sys.argv[1]))['presets']})))" "$1"; }
+          n=0
+          for man in packs/*/pack.json; do
+            pack="$(dirname "$man")"
+            if [ "$(kinds "$man")" = "transition" ]; then
+              echo "skipping $pack: transition-only, gated by the next step"
+              continue
+            fi
             echo "::group::$pack"
-            python3 -m packforge proof --no-thumbs --engine "$GITHUB_WORKSPACE" "packs/$pack"
+            python3 -m packforge proof --no-thumbs --engine "$GITHUB_WORKSPACE" "$pack"
             echo "::endgroup::"
+            n=$((n + 1))
           done
+          echo "rendered $n pack(s)"
+          # A glob that matched nothing would leave every pack unrendered and the loop green.
+          [ "$n" -gt 0 ] || { echo "no pack was rendered -- that is not a pass"; exit 1; }
+
+      - name: Every transition preset of every pack actually draws
+        id: transitions_render
+        # `packforge proof` cannot see a transition: it marks one "proved elsewhere" because a
+        # transition renders nothing in a still, existing only during a cut. transition-proof.py
+        # then drives exactly THREE hardwired presets. So every other transition in the product --
+        # all 18 of kitsune-transitions, and 11 of basics -- was gated by nothing at all.
+        #
+        # This drives every one of them through a real OBS and judges the recorded frames. See
+        # tools/preview-transitions.py::gate for what the two checks per preset catch and why.
+        if: steps.packs.outputs.basics == 'true'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          set -euo pipefail
+          has_transition() { python3 -c "import json,sys;sys.exit(0 if any(p['kind']=='transition' for p in json.load(open(sys.argv[1]))['presets']) else 1)" "$1"; }
+          n=0
+          for man in ../foxfire/packs/*/pack.json; do
+            pack="$(dirname "$man")"
+            has_transition "$man" || continue
+            echo "::group::$(basename "$pack")"
+            python3 tools/preview-transitions.py --plugin-build . --pack "$pack" \
+              --out "preview-out/$(basename "$pack")" --gate
+            echo "::endgroup::"
+            n=$((n + 1))
+          done
+          echo "gated $n pack(s) with transition presets"
+          [ "$n" -gt 0 ] || { echo "no transition pack was gated -- that is not a pass"; exit 1; }
+
+      - name: Keep the transition previews
+        if: always() && steps.transitions_render.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: transition-previews
+          path: preview-out/
+          if-no-files-found: ignore
 
       - name: The mouth draws the shape the audio asked for
         id: mouth_render
