@@ -34,13 +34,21 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ff-dock.h"
 #include "ff-dock-proto.h"
 #include "ff-frame.h"
+/* for S_PACK / S_PRESET. Included rather than retyping the two strings here: the settings keys are
+   the contract between this dock and ff_instance_update, and a dock writing "preset" while the
+   instance reads something else is a preset switch that silently does nothing. */
+#include "ff-props.h"
 #include <plugin-support.h>
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+#include <QComboBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
+#include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -125,7 +133,14 @@ private:
 /* One row: a source's name, what it is hearing, and its meters. */
 class SourceRow : public QWidget {
 public:
-	explicit SourceRow(const QString &name, QWidget *parent = nullptr) : QWidget(parent), name_(name)
+	/* Takes ownership of `weak`. Held for the row's life, resolved to a strong reference for the
+	   length of one call and no longer -- see FoxfireDock::withSource. The row used to look its
+	   source up by NAME every tick: a hash lookup per source per tick, and, when two sources share
+	   a name, silently the wrong one. obs.h documents obs_source_get_weak_source for exactly this. */
+	SourceRow(const QString &name, obs_weak_source_t *weak, QWidget *parent = nullptr)
+		: QWidget(parent),
+		  name_(name),
+		  weak_(weak)
 	{
 		auto *lay = new QVBoxLayout(this);
 		lay->setContentsMargins(6, 4, 6, 6);
@@ -134,13 +149,41 @@ public:
 		title_->setStyleSheet("font-weight: bold;");
 		status_ = new QLabel(QString(), this);
 		status_->setWordWrap(true);
+
+		auto *picker = new QHBoxLayout();
+		picker->setSpacing(4);
+		pack_ = new QComboBox(this);
+		preset_ = new QComboBox(this);
+		/* A dock is narrow, and the default policy shrank the pack box until it read "Fox" --
+		   measured at 198 px wide, which is a perfectly ordinary docked width. A minimum content
+		   length keeps the names readable, and Expanding lets the two share whatever width the
+		   streamer gives the panel rather than both staying stubbornly small. */
+		for (QComboBox *c : {pack_, preset_}) {
+			c->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+			c->setMinimumContentsLength(9);
+			c->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		}
+		picker->addWidget(pack_, 1);
+		picker->addWidget(preset_, 2);
+
 		meter_ = new MeterWidget(this);
 		lay->addWidget(title_);
 		lay->addWidget(status_);
+		lay->addLayout(picker);
 		lay->addWidget(meter_);
+
+		QObject::connect(pack_, &QComboBox::currentTextChanged, this, [this]() { chosen(true); });
+		QObject::connect(preset_, &QComboBox::currentTextChanged, this, [this]() { chosen(false); });
+	}
+
+	~SourceRow() override
+	{
+		if (weak_)
+			obs_weak_source_release(weak_);
 	}
 
 	const QString &sourceName() const { return name_; }
+	obs_weak_source_t *weak() const { return weak_; }
 
 	/* A deterministic frame, for the grab diagnostic only. A meter reading silence is LEGITIMATELY
 	   flat -- and a meter that paints nothing at all is flat in exactly the same way, so a picture
@@ -215,11 +258,90 @@ public:
 		status_->setText(line);
 	}
 
+	/* The pack and preset lists, taken from the source's OWN properties rather than scanned here.
+	   ff-props.c already decides which packs have a preset of this instance's kind, keeps a
+	   selected-but-mismatched pack in the list so a saved value never silently jumps, and repairs
+	   a preset that is not in the chosen pack. A second enumerator in the dock would be a second
+	   set of those decisions, free to disagree with the panel about the same pack.
+
+	   Not called per tick: obs_source_properties runs a full pack rescan (readdir, JSON parse and
+	   an Ed25519 verify per pack), which at 1 Hz per source would be the most expensive thing this
+	   dock does. Called when the row is built and when the pack actually changes. */
+	void refreshLists(obs_source_t *src, const char *want_pack, const char *want_preset)
+	{
+		obs_properties_t *props = obs_source_properties(src);
+		if (!props)
+			return;
+		const QSignalBlocker b1(pack_), b2(preset_);
+		fill(pack_, obs_properties_get(props, S_PACK), want_pack);
+		fill(preset_, obs_properties_get(props, S_PRESET), want_preset);
+		obs_properties_destroy(props);
+	}
+
+	void syncSelection(const char *pack, const char *preset)
+	{
+		const QSignalBlocker b1(pack_), b2(preset_);
+		select(pack_, pack);
+		select(preset_, preset);
+	}
+
+	/* selects by preset id, as a click would; false if the list does not offer it */
+	bool choosePreset(const char *preset_id)
+	{
+		const int i = preset_->findData(QString::fromUtf8(preset_id));
+		if (i < 0)
+			return false;
+		preset_->setCurrentIndex(i); /* fires chosen(false), setting pending_ */
+		return true;
+	}
+
+	QString chosenPack() const { return pack_->currentData().toString(); }
+	QString chosenPreset() const { return preset_->currentData().toString(); }
+	/* which combo the user just touched, consumed by the dock's apply step */
+	int takePending()
+	{
+		const int p = pending_;
+		pending_ = 0;
+		return p;
+	}
+
 private:
+	static void fill(QComboBox *box, obs_property_t *p, const char *want)
+	{
+		box->clear();
+		if (!p)
+			return;
+		const size_t n = obs_property_list_item_count(p);
+		for (size_t i = 0; i < n; i++) {
+			const char *nm = obs_property_list_item_name(p, i);
+			const char *val = obs_property_list_item_string(p, i);
+			box->addItem(QString::fromUtf8(nm ? nm : ""), QString::fromUtf8(val ? val : ""));
+		}
+		select(box, want);
+	}
+
+	static void select(QComboBox *box, const char *want)
+	{
+		if (!want || !*want)
+			return;
+		const int i = box->findData(QString::fromUtf8(want));
+		if (i >= 0 && i != box->currentIndex())
+			box->setCurrentIndex(i);
+	}
+
+	/* 1 = the pack changed (the preset list must be rebuilt for it), 2 = only the preset did.
+	   Recorded rather than acted on: applying a setting reaches into libobs, and doing that from
+	   inside a Qt signal handler means it happens in the middle of the combo's own update. */
+	void chosen(bool isPack) { pending_ = isPack ? 1 : 2; }
+
 	QString name_;
+	obs_weak_source_t *weak_;
 	QLabel *title_;
 	QLabel *status_;
+	QComboBox *pack_;
+	QComboBox *preset_;
 	MeterWidget *meter_;
+	int pending_ = 0;
 };
 
 class FoxfireDock : public QWidget {
@@ -248,6 +370,28 @@ public:
 		rescan();
 	}
 
+	/* see the FOXFIRE_DOCK_PICK hook */
+	void pickPreset(const char *preset_id)
+	{
+		if (rows_.empty()) {
+			obs_log(LOG_INFO, "dock-pick: no rows");
+			return;
+		}
+		SourceRow *row = rows_.front();
+		if (!row->choosePreset(preset_id)) {
+			obs_log(LOG_INFO, "dock-pick: '%s' is not in the preset list", preset_id);
+			return;
+		}
+		const int pending = row->takePending();
+		obs_log(LOG_INFO, "dock-pick: asked for '%s' (pending=%d)", preset_id, pending);
+		withSource(row, [row, pending](obs_source_t *s) {
+			apply(row, s, pending == 1);
+			obs_data_t *st = obs_source_get_settings(s);
+			obs_log(LOG_INFO, "dock-pick: source now on '%s'", obs_data_get_string(st, S_PRESET));
+			obs_data_release(st);
+		});
+	}
+
 	/* see SourceRow::seedTestFrame -- the grab diagnostic's half of gating the paint path */
 	void seedMeters()
 	{
@@ -258,6 +402,7 @@ public:
 private:
 	struct Found {
 		std::vector<QString> names;
+		std::vector<obs_weak_source_t *> weaks; /* owned until handed to a row or released */
 	};
 
 	static bool collect(void *param, obs_source_t *s)
@@ -266,6 +411,9 @@ private:
 			auto *f = static_cast<Found *>(param);
 			const char *n = obs_source_get_name(s);
 			f->names.emplace_back(QString::fromUtf8(n ? n : ""));
+			/* obs_enum_sources does not keep the source alive past this call; obs.h names
+			   obs_source_get_weak_source as the way to retain one, which is what a row needs. */
+			f->weaks.push_back(obs_source_get_weak_source(s));
 		}
 		return true; /* keep enumerating */
 	}
@@ -277,10 +425,13 @@ private:
 
 		/* Rebuild only when the set actually changed: replacing the rows every second would
 		   throw away the peak-hold state the meters are carrying and flicker the layout. */
-		bool same = found.names.size() == rows_.size();
+		/* Compared by WEAK REF, not by name: two sources may share a name, and a rename is not a
+		   different source. Comparing names rebuilt every row on a rename and never noticed a
+		   swap between two identically named ones. */
+		bool same = found.weaks.size() == rows_.size();
 		if (same)
 			for (size_t i = 0; i < rows_.size(); i++)
-				if (rows_[i]->sourceName() != found.names[i]) {
+				if (rows_[i]->weak() != found.weaks[i]) {
 					same = false;
 					break;
 				}
@@ -291,10 +442,23 @@ private:
 			}
 			rows_.clear();
 			for (size_t i = 0; i < found.names.size(); i++) {
-				auto *row = new SourceRow(found.names[i], this);
+				/* the row takes ownership of the weak ref */
+				auto *row = new SourceRow(found.names[i], found.weaks[i], this);
 				layout_->insertWidget(int(i), row);
 				rows_.push_back(row);
+				withSource(row, [row](obs_source_t *src) {
+					obs_data_t *st = obs_source_get_settings(src);
+					row->refreshLists(src, obs_data_get_string(st, S_PACK),
+							  obs_data_get_string(st, S_PRESET));
+					obs_data_release(st);
+				});
 			}
+			found.weaks.clear(); /* every one handed to a row */
+		} else {
+			/* nothing was rebuilt, so nothing took them */
+			for (auto *w : found.weaks)
+				obs_weak_source_release(w);
+			found.weaks.clear();
 		}
 		/* Logged on CHANGE only, so it is not 30 lines a second, and logged at all because it
 		   is the one thing a pixel gate cannot read off a grab: a dock showing "no sources"
@@ -309,13 +473,54 @@ private:
 			meters_->start(METER_MS);
 
 		for (auto *r : rows_)
-			withSource(r, [r](obs_source_t *s) { r->tickStatus(s); });
+			withSource(r, [r](obs_source_t *s) {
+				r->tickStatus(s);
+				obs_data_t *st = obs_source_get_settings(s);
+				/* keep the combos showing what the instance actually has: the properties
+				   panel, obs-websocket or a scene-collection load can all change it */
+				r->syncSelection(obs_data_get_string(st, S_PACK), obs_data_get_string(st, S_PRESET));
+				obs_data_release(st);
+			});
 	}
 
 	void tick()
 	{
-		for (auto *r : rows_)
+		for (auto *r : rows_) {
+			/* Applied here rather than in the combo's own signal handler: writing a setting
+			   calls into libobs, and doing that from inside the widget's update is how a
+			   re-entrant repaint turns into a crash. The next tick is 33 ms away. */
+			const int pending = r->takePending();
+			if (pending)
+				withSource(r, [r, pending](obs_source_t *s) { apply(r, s, pending == 1); });
 			withSource(r, [r](obs_source_t *s) { r->tickMeter(s); });
+		}
+	}
+
+	/* The preset switch, through the SAME path the properties panel drives: the two settings keys
+	   and obs_source_update. Not a private back door -- going this way keeps the licence gate, the
+	   erase-layer-keys-on-change and every refusal ff_instance_update makes. */
+	static void apply(SourceRow *row, obs_source_t *src, bool pack_changed)
+	{
+		const QByteArray pk = row->chosenPack().toUtf8();
+		const QByteArray pr = row->chosenPreset().toUtf8();
+		if (pk.isEmpty())
+			return;
+		obs_data_t *st = obs_data_create();
+		obs_data_set_string(st, S_PACK, pk.constData());
+		/* On a pack change the preset combo still holds the OLD pack's selection, which is not in
+		   the new pack. Sending it would ask for a preset that does not exist; ff_instance_update
+		   and on_pack_changed already repair that, so the pack alone is sent and the repaired
+		   selection is read back below. */
+		if (!pack_changed && !pr.isEmpty())
+			obs_data_set_string(st, S_PRESET, pr.constData());
+		obs_source_update(src, st);
+		obs_data_release(st);
+
+		if (pack_changed) {
+			obs_data_t *now = obs_source_get_settings(src);
+			row->refreshLists(src, obs_data_get_string(now, S_PACK), obs_data_get_string(now, S_PRESET));
+			obs_data_release(now);
+		}
 	}
 
 	/* A strong reference for exactly the length of one call and never across a tick. The source
@@ -324,9 +529,11 @@ private:
 	   pointer. */
 	template<typename F> static void withSource(SourceRow *row, F fn)
 	{
-		obs_source_t *s = obs_get_source_by_name(row->sourceName().toUtf8().constData());
-		if (!s)
+		if (!row->weak())
 			return;
+		obs_source_t *s = obs_weak_source_get_source(row->weak());
+		if (!s)
+			return; /* destroyed since the rescan that listed it; the next one drops the row */
 		fn(s);
 		obs_source_release(s);
 	}
@@ -369,6 +576,14 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 	   laid it out is blank, and a blank grab is exactly what the gate refuses. */
 	if (const char *out = getenv("FOXFIRE_DOCK_GRAB"))
 		QTimer::singleShot(3000, g_dock, [out]() { grab_to(out); });
+
+	/* Drives a preset switch exactly as a click on the combo does -- same pending flag, same apply
+	   on the next tick, same settings-and-update path. Nothing else can prove the switch works:
+	   the widget is unreachable from obs-websocket and a grab cannot show that an instance
+	   RELOADED. The dock logs what it asked for and what the source ended up with, and
+	   tools/dock-proof.py requires the two to agree. */
+	if (const char *want = getenv("FOXFIRE_DOCK_PICK"))
+		QTimer::singleShot(5000, g_dock, [want]() { g_dock->pickPreset(want); });
 }
 
 } /* namespace */

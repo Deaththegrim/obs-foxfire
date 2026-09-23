@@ -47,6 +47,14 @@ LINE = re.compile(r"proc-proof: \[(PASS|FAIL)\] (.+)")
 DOCK_REG = re.compile(r"dock: registered=(TRUE|FALSE)")
 DOCK_ROWS = re.compile(r"dock: (\d+) source\(s\)")
 DOCK_GRAB = re.compile(r"dock-grab: (\d+)x(\d+) saved=(TRUE|FALSE)")
+PICK_ASK = re.compile(r"dock-pick: asked for '([^']*)' \(pending=(\d+)\)")
+PICK_GOT = re.compile(r"dock-pick: source now on '([^']*)'")
+PICK_ERR = re.compile(r"dock-pick: (no rows|'[^']*' is not in the preset list)")
+
+# The scene collection starts on this preset and the dock is asked to switch to the other. Both
+# are `basics` visualizer presets; the switch proves nothing if they are the same string.
+PICK_FROM = "bars"
+PICK_TO = "wave"
 
 
 def _item(name: str, i: int) -> dict:
@@ -82,7 +90,7 @@ def write_minimal_collection(obs_cfg: Path) -> None:
     d = obs_cfg / "basic" / "scenes"
     d.mkdir(parents=True, exist_ok=True)
     viz = _src("ff_dock_viz", "foxfire_visualizer",
-               {"pack": "basics", "preset": "bars", "width": 640, "height": 360, "audio_mode": 0})
+               {"pack": "basics", "preset": PICK_FROM, "width": 640, "height": 360, "audio_mode": 0})
     scene = _src("A", "scene", {"id_counter": 2, "custom_size": False, "items": [_item("ff_dock_viz", 1)]})
     scene["versioned_id"] = "scene"
     (d / "Untitled.json").write_text(json.dumps(
@@ -154,7 +162,7 @@ def main() -> int:
             ["xvfb-run", "-a", "-s", f"-screen 0 {proof.SCREEN}", "obs", "--multi",
              "--minimize-to-tray"],
             env=dict(os.environ, XDG_CONFIG_HOME=str(cfg), FOXFIRE_PROC_PROOF="1",
-                     FOXFIRE_DOCK_GRAB=str(grab)),
+                     FOXFIRE_DOCK_GRAB=str(grab), FOXFIRE_DOCK_PICK=PICK_TO),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=os.setsid)
         try:
             time.sleep(a.seconds)
@@ -233,6 +241,23 @@ def main() -> int:
     else:
         dcheck("and the picture is not a blank panel", False, "no PNG was produced")
         dcheck("and the meters actually drew their bars", False, "no PNG was produced")
+
+    # The preset switch -- the thing junkie asked for by name, and the one behaviour no picture can
+    # show: a grab cannot tell that an instance RELOADED. The dock drives its own combo exactly as a
+    # click does and logs what it asked for against what the source ended up with.
+    err = PICK_ERR.search(text)
+    ask, got = PICK_ASK.search(text), PICK_GOT.search(text)
+    if err:
+        dcheck("clicking a preset switches the source", False, err.group(1))
+    elif not ask or not got:
+        dcheck("clicking a preset switches the source", False,
+               "the dock never reported a pick -- asked=%s got=%s" % (bool(ask), bool(got)))
+    else:
+        dcheck("clicking a preset switches the source", got.group(1) == ask.group(1),
+               f"asked for '{ask.group(1)}', source ended on '{got.group(1)}'")
+        # If the source was already on the target the check above passes for the wrong reason.
+        dcheck("and it was not already on that preset", ask.group(1) != PICK_FROM,
+               f"started on '{PICK_FROM}', switched to '{ask.group(1)}'")
 
     print(f"\ndock proof: {passed}/{total} tap checks, {dock_checks - dock_fails}/{dock_checks} dock checks")
     return 0 if (passed == total and dock_fails == 0) else 1
